@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+#
+# Tests docker/upgrade on Dockerfiles in a scratch directory, with docker and
+# curl faked on PATH, so nothing is pulled or fetched: the fake docker answers
+# every pull and gives each image the digest FAKE_DIGEST names, and the fake
+# curl answers every /releases/latest with the redirect FAKE_REDIRECT names.
+# FAKE_PULL=fail and FAKE_CURL=fail make each fail as the real one would.
+#
+# Run: docker/upgrade.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+upgrade=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/upgrade
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin"
+cat > "$work/bin/docker" << 'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+case $1 in
+    pull)
+        if [ "${FAKE_PULL:-}" = fail ]; then
+            echo "fake docker: pull $2 failed" >&2
+            exit 1
+        fi
+        ;;
+    inspect) echo "${3%:*}@$FAKE_DIGEST" ;;
+    *) exit 2 ;;
+esac
+EOF
+cat > "$work/bin/curl" << 'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ "${FAKE_CURL:-}" = fail ]; then
+    echo "curl: (6) Could not resolve host: github.com" >&2
+    exit 6
+fi
+printf '%s' "${FAKE_REDIRECT:-}"
+EOF
+chmod +x "$work/bin/docker" "$work/bin/curl"
+
+old=sha256:$(printf '0%.0s' {1..64})
+new=sha256:$(printf 'a%.0s' {1..64})
+export FAKE_DIGEST=$new
+export FAKE_REDIRECT=https://github.com/o/p/releases/tag/v1.2.3
+export PATH=$work/bin:$PATH
+
+failed=()
+
+# Runs upgrade on a Dockerfile holding $2, and checks its status is $3, its
+# stderr holds $4 where that is not empty, and the file afterwards is $5, which
+# is $2 when the run must change nothing.
+check() {
+    local name=$1 before=$2 status=$3 said=$4 after=$5 rc=0
+    local file=$work/$name.Dockerfile
+    printf '%s' "$before" > "$file"
+    "$upgrade" "$file" > "$work/out" 2> "$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(< "$work/err")")
+    elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
+        failed+=("$name: stderr lacks '$said': $(< "$work/err")")
+    elif [ "$(< "$file")" != "$after" ]; then
+        failed+=("$name: the file is now: $(< "$file")")
+    fi
+}
+
+check no-pins $'FROM x:1\nRUN true\n' 0 "nothing to re-pin" $'FROM x:1\nRUN true'
+
+file=$work/missing.Dockerfile
+if "$upgrade" "$file" 2> "$work/err" || ! grep -qF "no such file" "$work/err"; then
+    failed+=("missing: not refused naming it")
+fi
+
+check from-rewrites $'# FROMFREEZE r/x:1\nFROM r/x:1 AS dev\nFROM r/x@'"$old"$'\nFROM r/x:2\nFROM r/xy:1\nFROM base\n' \
+    0 "" $'# FROMFREEZE r/x:1\nFROM r/x@'"$new"$' AS dev\nFROM r/x@'"$new"$'\nFROM r/x@'"$new"$'\nFROM r/xy:1\nFROM base'
+
+check from-bad-form $'# FROMFREEZE nocolon\nFROM nocolon\n' 1 "is not REPO:TAG" \
+    $'# FROMFREEZE nocolon\nFROM nocolon'
+
+check from-names-nothing $'# FROMFREEZE r/x:1\nFROM r/xy:1\n' 1 "names no FROM r/x line" \
+    $'# FROMFREEZE r/x:1\nFROM r/xy:1'
+
+FAKE_PULL=fail check from-pull-fails $'# FROMFREEZE r/x:1\nFROM r/x:1\n' 1 "pull r/x:1 failed" \
+    $'# FROMFREEZE r/x:1\nFROM r/x:1'
+
+FAKE_DIGEST=nonsense check from-no-digest $'# FROMFREEZE r/x:1\nFROM r/x:1\n' 1 "gave r/x:1 no digest" \
+    $'# FROMFREEZE r/x:1\nFROM r/x:1'
+
+check arg-rewrites $'# ARGFREEZE V github:o/p\nFROM s\nARG V=1.0.0\nRUN echo "$V"\nARG V=1.0.0\nARG VV=1.0.0\n' \
+    0 "" $'# ARGFREEZE V github:o/p\nFROM s\nARG V=1.2.3\nRUN echo "$V"\nARG V=1.2.3\nARG VV=1.0.0'
+
+FAKE_REDIRECT=https://github.com/o/p/releases/tag/0.16.9 check arg-unprefixed-tag \
+    $'# ARGFREEZE V github:o/p\nARG V=0.1\n' 0 "" $'# ARGFREEZE V github:o/p\nARG V=0.16.9'
+
+check arg-bad-form $'# ARGFREEZE V\nARG V=1\n' 1 "is not NAME github:OWNER/PROJECT" \
+    $'# ARGFREEZE V\nARG V=1'
+
+check arg-bad-name $'# ARGFREEZE 1V github:o/p\nARG V=1\n' 1 "is not NAME github:OWNER/PROJECT" \
+    $'# ARGFREEZE 1V github:o/p\nARG V=1'
+
+check arg-bad-source $'# ARGFREEZE V gitlab:o/p\nARG V=1\n' 1 "is not github:OWNER/PROJECT" \
+    $'# ARGFREEZE V gitlab:o/p\nARG V=1'
+
+check arg-names-nothing $'# ARGFREEZE V github:o/p\nARG W=1\n' 1 "names no ARG V line" \
+    $'# ARGFREEZE V github:o/p\nARG W=1'
+
+check arg-no-default $'# ARGFREEZE V github:o/p\nARG V=1\nARG V\n' 1 "line 3 is not ARG V=VALUE" \
+    $'# ARGFREEZE V github:o/p\nARG V=1\nARG V'
+
+check arg-quoted $'# ARGFREEZE V github:o/p\nARG V="1"\n' 1 "line 2 is not ARG V=VALUE" \
+    $'# ARGFREEZE V github:o/p\nARG V="1"'
+
+check arg-beside-another $'# ARGFREEZE V github:o/p\nARG W=2 V=1\n' 1 "line 2 is not ARG V=VALUE" \
+    $'# ARGFREEZE V github:o/p\nARG W=2 V=1'
+
+check arg-differing $'# ARGFREEZE V github:o/p\nARG V=1\nARG V=2\n' 1 "hold different values, 1 2" \
+    $'# ARGFREEZE V github:o/p\nARG V=1\nARG V=2'
+
+FAKE_CURL=fail check arg-lookup-fails $'# ARGFREEZE V github:o/p\nARG V=1\n' 6 "Could not resolve host" \
+    $'# ARGFREEZE V github:o/p\nARG V=1'
+
+FAKE_REDIRECT=https://github.com/o/p/releases check arg-no-release \
+    $'# ARGFREEZE V github:o/p\nARG V=1\n' 1 "gave no latest release" $'# ARGFREEZE V github:o/p\nARG V=1'
+
+FAKE_REDIRECT='' check arg-no-redirect $'# ARGFREEZE V github:o/p\nARG V=1\n' 1 "no redirect" \
+    $'# ARGFREEZE V github:o/p\nARG V=1'
+
+FAKE_REDIRECT=https://github.com/o/p/releases/tag/nightly check arg-not-a-version \
+    $'# ARGFREEZE V github:o/p\nARG V=1\n' 1 "tag nightly is not a version" \
+    $'# ARGFREEZE V github:o/p\nARG V=1'
+
+# The ARG's lookup fails after the FROM has resolved, and neither is written.
+FAKE_CURL=fail check nothing-written-on-failure \
+    $'# FROMFREEZE r/x:1\n# ARGFREEZE V github:o/p\nFROM r/x:1\nARG V=1\n' 6 "" \
+    $'# FROMFREEZE r/x:1\n# ARGFREEZE V github:o/p\nFROM r/x:1\nARG V=1'
+
+file=$work/mode.Dockerfile
+printf '# ARGFREEZE V github:o/p\nARG V=1\n' > "$file"
+chmod 640 "$file"
+"$upgrade" "$file" > /dev/null
+if [ "$(stat -c %a "$file" 2> /dev/null || stat -f %Lp "$file")" != 640 ]; then
+    failed+=("mode: the Dockerfile's mode changed")
+fi
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"
