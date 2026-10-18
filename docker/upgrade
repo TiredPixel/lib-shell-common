@@ -1,37 +1,150 @@
 #!/usr/bin/env bash
+#
+# Re-pin a Dockerfile (default ./Dockerfile) to what its pins name today, so an
+# upgrade moves everything forward and the tests that follow it catch what
+# broke. Two kinds of line, among the comments at the top:
+#
+#   # FROMFREEZE REPO:TAG
+#       every FROM REPO line is pinned to the digest REPO:TAG names now
+#   # ARGFREEZE NAME github:OWNER/PROJECT
+#       every ARG NAME=VALUE line is set to the project's latest GitHub
+#       release, a leading v dropped from its tag
+#
+# A version held back is one whose ARGFREEZE line is removed, the ARG set to
+# the version that works and a comment beside it saying why; nothing here then
+# touches it.
+#
+# A pin that names nothing in the file fails the run, as does an ARGFREEZE
+# whose ARG has no default or more than one value, or a lookup that fails: each
+# would otherwise leave a pin where it was with no sign that it had not moved.
+# Nothing is written until every pin has been resolved.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dockerfile=${1:-Dockerfile}
 
-# grep exits 1 when the Dockerfile pins nothing, pipefail carries that out, and
-# errexit then ended the run with no diagnostic on a file that is perfectly
-# valid. Nothing to re-pin is not a failure.
-frozen=$(grep -E '^# FROMFREEZE (.*)$' "$dockerfile" || true)
+die() {
+    echo "$dockerfile: $*" >&2
+    exit 1
+}
 
-if [ -z "$frozen" ]; then
-    echo "$dockerfile: no # FROMFREEZE line, so there is nothing to re-pin" >&2
+[ -f "$dockerfile" ] || die "no such file"
+
+mapfile -t lines < "$dockerfile"
+
+froms=()
+args=()
+for line in "${lines[@]}"; do
+    case $line in
+        "# FROMFREEZE "*) froms+=("${line#"# FROMFREEZE "}") ;;
+        "# ARGFREEZE "*) args+=("${line#"# ARGFREEZE "}") ;;
+    esac
+done
+
+if [ ${#froms[@]} -eq 0 ] && [ ${#args[@]} -eq 0 ]; then
+    echo "$dockerfile: no # FROMFREEZE or # ARGFREEZE line, so there is" \
+        "nothing to re-pin" >&2
     exit 0
 fi
 
-while read -r line; do
-    data=${line#"# FROMFREEZE "}
+# What each line of the file becomes, keyed by its index, so the file is
+# rewritten once, after every pin has resolved.
+declare -A rewrite=()
+
+for data in "${froms[@]}"; do
     repo=${data%:*}
-    tag=${data#*:}
+    tag=${data##*:}
+    [ -n "$repo" ] && [ -n "$tag" ] && [ "$repo" != "$data" ] \
+        || die "FROMFREEZE $data is not REPO:TAG"
+
+    targets=()
+    for i in "${!lines[@]}"; do
+        rest=${lines[$i]#"FROM $repo"}
+        case $rest in
+            "${lines[$i]}") ;;
+            [:@]*) targets+=("$i") ;;
+        esac
+    done
+    [ ${#targets[@]} -gt 0 ] || die "FROMFREEZE $data names no FROM $repo line"
 
     echo "Pulling $repo:$tag"
     docker pull "$repo:$tag"
 
     echo "Digesting $repo:$tag"
-    digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$repo:$tag" | cut -d '@' -f2)
+    digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$repo:$tag")
+    digest=${digest#*@}
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+        || die "docker inspect gave $repo:$tag no digest: $digest"
     echo "  => $digest"
 
-    # Detect GNU or BSD sed and use the appropriate syntax
-    if sed --version >/dev/null 2>&1; then
-        # GNU sed
-        sed -i -E "s|^FROM ${repo}[:@]\S+(.*)$|FROM $repo@$digest\1|g" "$dockerfile"
-    else
-        # BSD/macOS sed
-        sed -i '' -E "s|^FROM ${repo}[:@][^ ]*(.*)$|FROM $repo@$digest\\1|g" "$dockerfile"
-    fi
-done <<< "$frozen"
+    for i in "${targets[@]}"; do
+        # Whatever follows the reference, such as AS dev, stays.
+        rest=${lines[$i]#"FROM $repo"}
+        rest=${rest#[:@]}
+        suffix=""
+        case $rest in
+            *" "*) suffix=" ${rest#* }" ;;
+        esac
+        rewrite[$i]="FROM $repo@$digest$suffix"
+    done
+done
+
+for data in "${args[@]}"; do
+    name=${data%% *}
+    source=${data#* }
+    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ "$source" != "$data" ] \
+        || die "ARGFREEZE $data is not NAME github:OWNER/PROJECT"
+    [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+        || die "ARGFREEZE $name: $source is not github:OWNER/PROJECT"
+    project=${source#github:}
+
+    # Every ARG line naming it, in any form, so a second ARG with no default or
+    # declaring it beside another is refused rather than left behind.
+    targets=()
+    values=()
+    for i in "${!lines[@]}"; do
+        read -r -a words <<< "${lines[$i]}"
+        [ "${words[0]:-}" = ARG ] || continue
+        for word in "${words[@]:1}"; do
+            [ "${word%%=*}" = "$name" ] || continue
+            [[ "${lines[$i]}" =~ ^ARG\ $name=([^[:space:]\"\']+)$ ]] \
+                || die "ARGFREEZE $name: line $((i + 1)) is not" \
+                    "ARG $name=VALUE"
+            targets+=("$i")
+            values+=("${BASH_REMATCH[1]}")
+        done
+    done
+    [ ${#targets[@]} -gt 0 ] || die "ARGFREEZE $name names no ARG $name line"
+    for value in "${values[@]}"; do
+        [ "$value" = "${values[0]}" ] \
+            || die "ARGFREEZE $name: its ARG lines hold different values," \
+                "${values[*]}"
+    done
+
+    # GitHub answers /releases/latest with a redirect to the latest release's
+    # tag, without the API or a token. A project with no release redirects
+    # elsewhere, which the match refuses.
+    echo "Looking up $project's latest release"
+    url=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+        "https://github.com/$project/releases/latest")
+    [[ "$url" =~ ^https://github\.com/[^/]+/[^/]+/releases/tag/([^/?#]+)$ ]] \
+        || die "ARGFREEZE $name: github.com/$project gave no latest" \
+            "release: ${url:-no redirect}"
+    tag=${BASH_REMATCH[1]}
+    version=${tag#v}
+    [[ "$version" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]] \
+        || die "ARGFREEZE $name: $project's latest tag $tag is not a version"
+    echo "  => $version"
+
+    for i in "${targets[@]}"; do
+        rewrite[$i]="ARG $name=$version"
+    done
+done
+
+out=$(mktemp "$dockerfile.XXXXXX")
+trap 'rm -f -- "$out"' EXIT
+for i in "${!lines[@]}"; do
+    printf '%s\n' "${rewrite[$i]:-${lines[$i]}}"
+done > "$out"
+# Copied over rather than moved, so the Dockerfile keeps its own mode.
+cat -- "$out" > "$dockerfile"
