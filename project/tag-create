@@ -9,7 +9,10 @@ dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 # operand of an && list, which errexit exempts -- so a sweep that failed, on an
 # uninitialised submodule or a directory that is not a repository, read as "the
 # tag exists nowhere" and the script went on to sign and push it everywhere.
-existing=$("$dir/each" git tag -l 2>/dev/null | sort -Vu)
+#
+# --no-column because column.ui=always would put several tags on a line, which
+# the exact-line match below would never find.
+existing=$("$dir/each" git tag -l --no-column 2>/dev/null | sort -Vu)
 
 # -F and -x because a tag is a literal, not a pattern: unanchored, 14.655 also
 # matches 14X655, and a tag carrying a metacharacter matches whatever it means.
@@ -20,4 +23,6 @@ fi
 
 "$dir/each" git tag -s "$tag" -m "$tag"
 
-"$dir/each" git push origin "$tag"
+# refs/tags/ so a branch of the same name cannot make the refspec ambiguous, and
+# --no-follow-tags so push.followTags sends no other tag with it.
+"$dir/each" git push --no-follow-tags --recurse-submodules=check origin "refs/tags/$tag"
