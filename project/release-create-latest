@@ -12,10 +12,12 @@ dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 
 "$dir/each" git checkout latest --no-recurse-submodules
 
-"$dir/each" git pull --no-recurse-submodules
+"$dir/each" git pull --ff-only --no-recurse-submodules
 
 "$dir/release-commit-submodules"
 
 "$dir/tag-create" "$tag"
 
-"$dir/each" git push
+# Remote and refspec named, whatever the caller's push.default,
+# remote.pushDefault or push.followTags.
+"$dir/each" git push --no-follow-tags --recurse-submodules=check origin latest:latest

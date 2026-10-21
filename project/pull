@@ -2,7 +2,10 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-git pull --no-recurse-submodules
+# --ff-only here and below, whatever the caller's pull.rebase or pull.ff: a
+# diverged branch stops the sweep, where a merge or a rebase would succeed,
+# unseen, and a release would go on to push it.
+git pull --ff-only --no-recurse-submodules
 
 # One sweep, from here, whose submodules are the projects .projects names --
 # and --recursive reaches theirs in turn. It used to run from inside each
@@ -20,5 +23,5 @@ git pull --no-recurse-submodules
 # shellcheck disable=SC2016
 git submodule foreach --recursive '
     branch=$(git symbolic-ref --short refs/remotes/origin/HEAD | cut -d/ -f2)
-    git checkout "$branch"
-    git pull --no-recurse-submodules'
+    git checkout --no-recurse-submodules "$branch"
+    git pull --ff-only --no-recurse-submodules'

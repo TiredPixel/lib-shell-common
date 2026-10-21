@@ -12,18 +12,22 @@ dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 
 "$dir/each" git checkout testing --no-recurse-submodules
 
-"$dir/each" git pull --no-recurse-submodules
+"$dir/each" git pull --ff-only --no-recurse-submodules
 
 "$dir/release-commit-submodules"
 
 "$dir/tag-create" "$tag"
 
-"$dir/each" git push
+# Remote and refspec named, whatever the caller's push.default,
+# remote.pushDefault or push.followTags.
+"$dir/each" git push --no-follow-tags --recurse-submodules=check origin testing:testing
 
 "$dir/each" git checkout stable --no-recurse-submodules
 
-"$dir/each" git pull --no-recurse-submodules
+"$dir/each" git pull --ff-only --no-recurse-submodules
 
-"$dir/each" git merge "$tag"
+# --ff-only whatever the caller's merge.ff: stable only ever moves to a release,
+# so a stable carrying commits of its own stops here rather than merging.
+"$dir/each" git merge --ff-only "refs/tags/$tag"
 
-"$dir/each" git push
+"$dir/each" git push --no-follow-tags --recurse-submodules=check origin stable:stable
