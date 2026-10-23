@@ -2,19 +2,10 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
-# Resolved here rather than inline, for the reason docker/build-compose states.
-describe=$(git describe 2>/dev/null || true)
+source "$dir/init"
 
-docker build \
-  --target dev \
-  --cache-from "$REPO:$TAG.dev" \
-  --cache-from "$REPO:latest.dev" \
-  --cache-from "$REPO:testing.dev" \
-  --cache-from "$REPO:stable.dev" \
-  --build-arg BUILDKIT_INLINE_CACHE=1 \
-  --build-arg GIT_DESCRIBE="$describe" \
-  -t "$REPO:$TAG.dev" .
+"$dir/build-dev-stable-nopush"
 
 docker push "$REPO:$TAG.dev"

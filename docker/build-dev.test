@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+#
+# Tests docker/build-dev-latest and docker/build-dev-stable, and the -nopush
+# build each runs before its push, in a scratch project with docker and git
+# faked on PATH, so nothing is built, pushed or read from a repository. The fake
+# docker logs each call's arguments, a line to a call, and exits with
+# FAKE_BUILD's status from a build and FAKE_PUSH's from a push. The fake git
+# puts HEAD on branch a/b and describes it as FAKE_DESCRIBE, failing as an
+# untagged repository does where that is empty.
+#
+# Run: docker/build-dev.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/project"
+cat > "$work/bin/docker" << 'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+args=$(printf '%q ' "$@")
+echo "${args% }" >> "$FAKE_LOG"
+case $1 in
+    build)
+        echo "fake docker: building" >&2
+        echo "fake docker: built"
+        exit "${FAKE_BUILD:-0}"
+        ;;
+    push)
+        echo "fake docker: pushed $2"
+        exit "${FAKE_PUSH:-0}"
+        ;;
+    *) exit 2 ;;
+esac
+EOF
+cat > "$work/bin/git" << 'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+case $* in
+    "rev-parse --abbrev-ref HEAD") echo a/b ;;
+    describe)
+        if [ -z "${FAKE_DESCRIBE:-}" ]; then
+            echo "fatal: No names found, cannot describe anything." >&2
+            exit 128
+        fi
+        echo "$FAKE_DESCRIBE"
+        ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod +x "$work/bin/docker" "$work/bin/git"
+echo r/x > "$work/project/.dockerrepo"
+
+export FAKE_LOG=$work/log
+export FAKE_DESCRIBE=v1.2-3-gabcdef0
+export PATH=$work/bin:$PATH
+cd "$work/project"
+
+failed=()
+
+# Runs docker/$2 and checks its status is $3, docker was called as $4 has it, a
+# line to a call, and its stdout is $5 and its stderr $6.
+check() {
+    local name=$1 script=$2 status=$3 calls=$4 out=$5 err=$6 rc=0
+    : > "$FAKE_LOG"
+    "$dir/$script" > "$work/out" 2> "$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(< "$work/err")")
+    elif [ "$(< "$FAKE_LOG")" != "$calls" ]; then
+        failed+=("$name: docker was called as: $(< "$FAKE_LOG")")
+    elif [ "$(< "$work/out")" != "$out" ]; then
+        failed+=("$name: stdout is: $(< "$work/out")")
+    elif [ "$(< "$work/err")" != "$err" ]; then
+        failed+=("$name: stderr is: $(< "$work/err")")
+    fi
+}
+
+# The build docker is called for, from the cache tags $1 and stamped $2.
+build() {
+    echo "build --target dev $1 --build-arg BUILDKIT_INLINE_CACHE=1" \
+        "--build-arg GIT_DESCRIBE=$2 -t r/x:a-b.dev ."
+}
+
+push="push r/x:a-b.dev"
+pushed="fake docker: pushed r/x:a-b.dev"
+
+for model in latest stable; do
+    caches="--cache-from r/x:a-b.dev --cache-from r/x:latest.dev"
+    if [ "$model" = stable ]; then
+        caches+=" --cache-from r/x:testing.dev --cache-from r/x:stable.dev"
+    fi
+    built=$(build "$caches" "$FAKE_DESCRIBE")
+    unstamped=$(build "$caches" "")
+
+    check "$model-nopush" "build-dev-$model-nopush" 0 "$built" \
+        "fake docker: built" "fake docker: building"
+
+    FAKE_BUILD=3 check "$model-nopush-build-fails" "build-dev-$model-nopush" \
+        3 "$built" "fake docker: built" "fake docker: building"
+
+    # Stamped with nothing, and git's fatal: kept off the console.
+    FAKE_DESCRIBE='' check "$model-nopush-untagged" "build-dev-$model-nopush" \
+        0 "$unstamped" "fake docker: built" "fake docker: building"
+
+    check "$model" "build-dev-$model" 0 "$built"$'\n'"$push" \
+        "fake docker: built"$'\n'"$pushed" "fake docker: building"
+
+    FAKE_BUILD=3 check "$model-build-fails" "build-dev-$model" 3 "$built" \
+        "fake docker: built" "fake docker: building"
+
+    FAKE_PUSH=4 check "$model-push-fails" "build-dev-$model" 4 \
+        "$built"$'\n'"$push" "fake docker: built"$'\n'"$pushed" \
+        "fake docker: building"
+done
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"
