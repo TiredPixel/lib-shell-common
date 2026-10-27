@@ -8,8 +8,8 @@ shift 2
 
 function cmd_host() {
     #local host=$1
-    
-    jq '.' <<- EOF
+
+    jq '.' <<-EOF
 		{}
 	EOF
 }
@@ -20,8 +20,8 @@ function cmd_list() {
         grep -E "\.$domain$" |
         xargs -I '{}' echo '"{}"' |
         jq -nr '"[", try (input|tojson, repeat(",\(input|tojson)")), "]"')
-    
-    jq '.' <<- EOF
+
+    jq '.' <<-EOF
 		{
 		    "ungrouped": {
 		        "hosts": $hosts
@@ -34,10 +34,10 @@ function cmd_list() {
 }
 
 case "$1" in
-    --host)
-        cmd_host "$2"
-        ;;
-    --list)
-        cmd_list
-        ;;
+--host)
+    cmd_host "$2"
+    ;;
+--list)
+    cmd_list
+    ;;
 esac

@@ -37,18 +37,18 @@ fi
 err=$(make -q "$target" 2>&1 >/dev/null) && status=0 || status=$?
 
 case $status in
-    0 | 1)
-        exec "$@"
-        ;;
+0 | 1)
+    exec "$@"
+    ;;
 esac
 
 # GNU make and BSD make word this differently, and neither gives it an exit
 # status of its own. Anything else make said is a fault in the project, and
 # stops the sweep rather than quietly narrowing it.
 case $err in
-    *"No rule to make target"* | *"don't know how to make"*)
-        exit 0
-        ;;
+*"No rule to make target"* | *"don't know how to make"*)
+    exit 0
+    ;;
 esac
 
 printf '%s\n' "$err" >&2

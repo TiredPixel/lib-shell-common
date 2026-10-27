@@ -84,7 +84,7 @@ git ls-files -z --stage |
     while IFS= read -r -d '' entry; do
         [[ $entry == '160000 '* ]] || continue
 
-        modules+=( "${entry#*$'\t'}" )
+        modules+=("${entry#*$'\t'}")
     done
 
 for module in "${modules[@]}"; do
@@ -132,7 +132,7 @@ unlisted=()
 for module in "${modules[@]}"; do
     # -F and -x because a path is a literal, not a pattern, and because lib/a
     # is not lib/ab -- the distinction project/tag-create draws for a tag.
-    grep -qFx -- "$module" <<< "$listed" || unlisted+=( "$module" )
+    grep -qFx -- "$module" <<<"$listed" || unlisted+=("$module")
 done
 
 if [ "${#unlisted[@]}" -gt 0 ]; then

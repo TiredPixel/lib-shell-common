@@ -30,14 +30,14 @@ die() {
 
 [ -f "$dockerfile" ] || die "no such file"
 
-mapfile -t lines < "$dockerfile"
+mapfile -t lines <"$dockerfile"
 
 froms=()
 args=()
 for line in "${lines[@]}"; do
     case $line in
-        "# FROMFREEZE "*) froms+=("${line#"# FROMFREEZE "}") ;;
-        "# ARGFREEZE "*) args+=("${line#"# ARGFREEZE "}") ;;
+    "# FROMFREEZE "*) froms+=("${line#"# FROMFREEZE "}") ;;
+    "# ARGFREEZE "*) args+=("${line#"# ARGFREEZE "}") ;;
     esac
 done
 
@@ -54,15 +54,16 @@ declare -A rewrite=()
 for data in "${froms[@]}"; do
     repo=${data%:*}
     tag=${data##*:}
-    [ -n "$repo" ] && [ -n "$tag" ] && [ "$repo" != "$data" ] \
-        || die "FROMFREEZE $data is not REPO:TAG"
+    if [ -z "$repo" ] || [ -z "$tag" ] || [ "$repo" = "$data" ]; then
+        die "FROMFREEZE $data is not REPO:TAG"
+    fi
 
     targets=()
     for i in "${!lines[@]}"; do
         rest=${lines[$i]#"FROM $repo"}
         case $rest in
-            "${lines[$i]}") ;;
-            [:@]*) targets+=("$i") ;;
+        "${lines[$i]}") ;;
+        [:@]*) targets+=("$i") ;;
         esac
     done
     [ ${#targets[@]} -gt 0 ] || die "FROMFREEZE $data names no FROM $repo line"
@@ -73,8 +74,8 @@ for data in "${froms[@]}"; do
     echo "Digesting $repo:$tag"
     digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$repo:$tag")
     digest=${digest#*@}
-    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
-        || die "docker inspect gave $repo:$tag no digest: $digest"
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+        die "docker inspect gave $repo:$tag no digest: $digest"
     echo "  => $digest"
 
     for i in "${targets[@]}"; do
@@ -83,7 +84,7 @@ for data in "${froms[@]}"; do
         rest=${rest#[:@]}
         suffix=""
         case $rest in
-            *" "*) suffix=" ${rest#* }" ;;
+        *" "*) suffix=" ${rest#* }" ;;
         esac
         rewrite[$i]="FROM $repo@$digest$suffix"
     done
@@ -92,10 +93,11 @@ done
 for data in "${args[@]}"; do
     name=${data%% *}
     source=${data#* }
-    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ "$source" != "$data" ] \
-        || die "ARGFREEZE $data is not NAME github:OWNER/PROJECT"
-    [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
-        || die "ARGFREEZE $name: $source is not github:OWNER/PROJECT"
+    if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [ "$source" = "$data" ]; then
+        die "ARGFREEZE $data is not NAME github:OWNER/PROJECT"
+    fi
+    [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+        die "ARGFREEZE $name: $source is not github:OWNER/PROJECT"
     project=${source#github:}
 
     # Every ARG line naming it, in any form, so a second ARG with no default or
@@ -103,12 +105,12 @@ for data in "${args[@]}"; do
     targets=()
     values=()
     for i in "${!lines[@]}"; do
-        read -r -a words <<< "${lines[$i]}"
+        read -r -a words <<<"${lines[$i]}"
         [ "${words[0]:-}" = ARG ] || continue
         for word in "${words[@]:1}"; do
             [ "${word%%=*}" = "$name" ] || continue
-            [[ "${lines[$i]}" =~ ^ARG\ $name=([^[:space:]\"\']+)$ ]] \
-                || die "ARGFREEZE $name: line $((i + 1)) is not" \
+            [[ "${lines[$i]}" =~ ^ARG\ $name=([^[:space:]\"\']+)$ ]] ||
+                die "ARGFREEZE $name: line $((i + 1)) is not" \
                     "ARG $name=VALUE"
             targets+=("$i")
             values+=("${BASH_REMATCH[1]}")
@@ -116,8 +118,8 @@ for data in "${args[@]}"; do
     done
     [ ${#targets[@]} -gt 0 ] || die "ARGFREEZE $name names no ARG $name line"
     for value in "${values[@]}"; do
-        [ "$value" = "${values[0]}" ] \
-            || die "ARGFREEZE $name: its ARG lines hold different values," \
+        [ "$value" = "${values[0]}" ] ||
+            die "ARGFREEZE $name: its ARG lines hold different values," \
                 "${values[*]}"
     done
 
@@ -127,13 +129,13 @@ for data in "${args[@]}"; do
     echo "Looking up $project's latest release"
     url=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
         "https://github.com/$project/releases/latest")
-    [[ "$url" =~ ^https://github\.com/[^/]+/[^/]+/releases/tag/([^/?#]+)$ ]] \
-        || die "ARGFREEZE $name: github.com/$project gave no latest" \
+    [[ "$url" =~ ^https://github\.com/[^/]+/[^/]+/releases/tag/([^/?#]+)$ ]] ||
+        die "ARGFREEZE $name: github.com/$project gave no latest" \
             "release: ${url:-no redirect}"
     tag=${BASH_REMATCH[1]}
     version=${tag#v}
-    [[ "$version" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]] \
-        || die "ARGFREEZE $name: $project's latest tag $tag is not a version"
+    [[ "$version" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]] ||
+        die "ARGFREEZE $name: $project's latest tag $tag is not a version"
     echo "  => $version"
 
     for i in "${targets[@]}"; do
@@ -145,6 +147,6 @@ out=$(mktemp "$dockerfile.XXXXXX")
 trap 'rm -f -- "$out"' EXIT
 for i in "${!lines[@]}"; do
     printf '%s\n' "${rewrite[$i]:-${lines[$i]}}"
-done > "$out"
+done >"$out"
 # Copied over rather than moved, so the Dockerfile keeps its own mode.
-cat -- "$out" > "$dockerfile"
+cat -- "$out" >"$dockerfile"

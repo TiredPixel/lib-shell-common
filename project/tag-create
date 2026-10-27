@@ -16,7 +16,7 @@ existing=$("$dir/each" git tag -l --no-column 2>/dev/null | sort -Vu)
 
 # -F and -x because a tag is a literal, not a pattern: unanchored, 14.655 also
 # matches 14X655, and a tag carrying a metacharacter matches whatever it means.
-if grep -qFx -- "$tag" <<< "$existing"; then
+if grep -qFx -- "$tag" <<<"$existing"; then
     echo "$tag: already exists" >&2
     exit 1
 fi
