@@ -8,7 +8,7 @@ FROM docker.io/library/debian@sha256:4c25275446ca371766b8b093c696782eabce06263fc
 
 LABEL org.opencontainers.image.source=https://github.com/TiredPixel/lib-shell-common
 
-SHELL ["/bin/bash", "-Eeuo", "pipefail", "-c"]
+SHELL ["/bin/bash", "-Eeuo", "pipefail", "-O", "inherit_errexit", "-O", "failglob", "-c"]
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
