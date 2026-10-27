@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+#
+# Tests bin/test in scratch trees, with bin/lint and nproc faked. The fake
+# bin/lint logs "lint" and exits with FAKE_LINT's status; the fake nproc prints
+# FAKE_NPROC. Each fake test logs "start" and "end" with its name, prints its
+# name, and exits with the status in its own name, as in a/fail3.test.
+#
+# Run: bin/test.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+runner=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/test
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/path"
+cat >"$work/path/nproc" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+echo "$FAKE_NPROC"
+EOF
+chmod +x "$work/path/nproc"
+
+export FAKE_LOG=$work/log
+export FAKE_NPROC=4
+export PATH=$work/path:$PATH
+
+# Makes a tree at $work/$1 holding bin/test, the fake bin/lint, and a fake test
+# at each of the remaining paths, and prints its path.
+tree() {
+    local t=$work/$1 f
+    shift
+    mkdir -p "$t/bin"
+    cp -- "$runner" "$t/bin/test"
+    cat >"$t/bin/lint" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+echo lint >>"$FAKE_LOG"
+exit "${FAKE_LINT:-0}"
+EOF
+    chmod +x "$t/bin/lint"
+    for f in "$@"; do
+        mkdir -p "$t/$(dirname "$f")"
+        cat >"$t/$f" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+echo "start $0" >>"$FAKE_LOG"
+sleep 0.1
+echo "end $0" >>"$FAKE_LOG"
+echo "said $0"
+[[ $0 =~ fail([0-9]+) ]] && exit "${BASH_REMATCH[1]}"
+exit 0
+EOF
+        chmod +x "$t/$f"
+    done
+    echo "$t"
+}
+
+failed=()
+
+# Runs bin/test with the remaining arguments in tree $2, and checks its status
+# is $3 and its stdout and stderr together hold each line of $4 and no FAILED
+# line beyond them. Returns 1 where a check failed, so the caller checks the
+# log only after a run as expected.
+check() {
+    local name=$1 t=$2 status=$3 said=$4 rc=0 line
+    shift 4
+    : >"$FAKE_LOG"
+    (cd "$t" && bin/test "$@") >"$work/out" 2>&1 || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/out")")
+        return 1
+    fi
+    while IFS= read -r line <&3; do
+        if [ -n "$line" ] && ! grep -qxF -- "$line" "$work/out"; then
+            failed+=("$name: output lacks '$line': $(<"$work/out")")
+            return 1
+        fi
+    done 3<<<"$said"
+    # grep -c prints 0 and exits 1 on no match.
+    if [ "$(grep -c '^FAILED' "$work/out" || :)" != \
+        "$(grep -c '^FAILED' <<<"$said" || :)" ]; then
+        failed+=("$name: output names other failures: $(<"$work/out")")
+        return 1
+    fi
+}
+
+# Checks the log of case $1 is $2.
+logged() {
+    if [ "$(<"$FAKE_LOG")" != "$2" ]; then
+        failed+=("$1: the log is: $(<"$FAKE_LOG")")
+    fi
+}
+
+# Checks the log of case $1 is the lint, then each test in the rest starting
+# and ending, in any order, since they run in parallel.
+linted_then_ran() {
+    local name=$1 first rest
+    shift
+    first=$(head -n 1 -- "$FAKE_LOG")
+    rest=$(tail -n +2 -- "$FAKE_LOG" | sort)
+    if [ "$first" != lint ] || [ "$rest" != "$(ran "$@")" ]; then
+        failed+=("$name: the log is: $(<"$FAKE_LOG")")
+    fi
+}
+
+# Checks the log of case $1 is each test in the rest starting and ending, in
+# any order, with no lint.
+ran_only() {
+    local name=$1
+    shift
+    if [ "$(sort -- "$FAKE_LOG")" != "$(ran "$@")" ]; then
+        failed+=("$name: the log is: $(<"$FAKE_LOG")")
+    fi
+}
+
+# Each test in $@ starting and ending, sorted.
+ran() {
+    local f
+    for f in "$@"; do
+        echo "end ./$f"
+        echo "start ./$f"
+    done | sort
+}
+
+t=$(tree all-pass a/one.test b/two.test)
+if check all-pass "$t" 0 \
+    "said ./a/one.test"$'\n'"said ./b/two.test"$'\n'"2 test(s) passed"; then
+    linted_then_ran all-pass a/one.test b/two.test
+fi
+
+if FAKE_LINT=5 check lint-fails "$t" 5 ""; then
+    logged lint-fails lint
+fi
+
+if check named "$t" 0 "said ./b/two.test"$'\n'"1 test(s) passed" b/two.test; then
+    ran_only named b/two.test
+fi
+
+for args in a/one one.test a/b/c.test ./a/one.test "a/one.test b/two"; do
+    read -r -a names <<<"$args"
+    bad=${names[-1]}
+    if check "refused $args" "$t" 1 "bin/test: $bad is not a */*.test" \
+        "${names[@]}"; then
+        logged "refused $args" ""
+    fi
+done
+
+t=$(tree one-fails a/one.test b/fail3.test c/three.test)
+if check one-fails "$t" 1 "said ./a/one.test"$'\n'"said ./b/fail3.test"$'\n'"said ./c/three.test"$'\n'"FAILED b/fail3.test (exit 3)"; then
+    linted_then_ran one-fails a/one.test b/fail3.test c/three.test
+fi
+
+if check named-fails "$t" 1 "said ./b/fail3.test"$'\n'"FAILED b/fail3.test (exit 3)" \
+    b/fail3.test; then
+    ran_only named-fails b/fail3.test
+fi
+
+t=$(tree two-fail a/fail2.test b/one.test c/fail4.test)
+if check two-fail "$t" 1 "FAILED a/fail2.test (exit 2)"$'\n'"FAILED c/fail4.test (exit 4)"; then
+    linted_then_ran two-fail a/fail2.test b/one.test c/fail4.test
+fi
+
+# A file not at */*.test is not a test.
+t=$(tree no-tests a/one.tests a/b/c.test)
+if check no-tests "$t" 1 "bin/test: no */*.test found"; then
+    logged no-tests ""
+fi
+
+# One at a time, each test ends before the next starts, in glob order.
+t=$(tree serial b/two.test a/one.test c/three.test)
+if FAKE_NPROC=1 check serial "$t" 0 "3 test(s) passed"; then
+    logged serial "lint"$'\n'"$(printf 'start ./%s\nend ./%s\n' \
+        a/one.test a/one.test b/two.test b/two.test c/three.test c/three.test)"
+fi
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

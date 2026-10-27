@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#
+# Writing counterpart to bin/lint: every pass here rewrites, and bin/lint checks
+# the same files from bin/files for drift afterwards. Runs from the root of the
+# repository.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/files"
+
+echo -e "\n=== FORMAT SHELL\n"
+
+echo "formatting ${#shell_files[@]} shell file(s)" >&2
+shfmt "${shfmt_args[@]}" -w "${shell_files[@]}"
+
+echo -e "\n=== FORMAT YAML\n"
+
+echo "formatting ${#yaml_files[@]} YAML file(s)" >&2
+# -P, since yq otherwise keeps each value's flow or block style and quoting, so
+# the same data could pass in several layouts.
+for f in "${yaml_files[@]}"; do
+    yq -i -P 'sort_keys(..)' "$f"
+done
+
+echo
