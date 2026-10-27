@@ -2,13 +2,13 @@
 # ARGFREEZE YQ_VERSION github:mikefarah/yq
 #
 # dev copies nothing in, so make format runs it on the mounted tree; test adds
-# the tree for the gate. README.md, Building the images, describes both stages.
+# the tree for the gate. README.md, Building, describes both stages.
 #===============================================================================
 FROM docker.io/library/debian@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 AS dev
 
 LABEL org.opencontainers.image.source=https://github.com/TiredPixel/lib-shell-common
 
-SHELL ["/bin/bash", "-Eeuo", "pipefail", "-c"]
+SHELL ["/bin/bash", "-Eeuo", "pipefail", "-O", "inherit_errexit", "-O", "failglob", "-c"]
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -26,7 +26,8 @@ ENV LANG=C.UTF-8 \
 
 ENV PATH=/home/x/r/bin:$PATH
 
-# mikefarah's yq, which lint/yaml-keys needs: Debian's yq is the Python wrapper.
+# mikefarah's yq, which bin/format and lint/yaml-keys need: Debian's yq is the
+# Python wrapper.
 ARG YQ_VERSION=4.54.1
 RUN curl -fsL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_$(dpkg --print-architecture)" -o /usr/local/bin/yq && \
     chmod +x /usr/local/bin/yq && \

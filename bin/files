@@ -11,6 +11,26 @@
 # shellcheck disable=SC2034
 shfmt_args=(-i 4)
 
+# Reads into the array named by $1 what find, given the arguments after $2,
+# prints, NUL-separated and sorted; a failure ends the run naming directory $2.
+# find runs as a background job into a file and its status is checked through
+# wait, since bash can lose a process substitution's status.
+function files_find {
+    local -n files_find_into=$1
+    local files_find_dir=$2 files_find_out
+    shift 2
+
+    files_find_out=$(mktemp)
+    { find "$@" -print0 | LC_ALL=C sort -z; } >"$files_find_out" &
+    wait $! || {
+        rm -- "$files_find_out"
+        echo "bin/files: listing $files_find_dir/ failed" >&2
+        exit 1
+    }
+    mapfile -t -d '' files_find_into <"$files_find_out"
+    rm -- "$files_find_out"
+}
+
 # Appends to shell_files each file directly in directory $1 whose first line is
 # a bash shebang, since the scripts carry no suffix. Checked on this scan's own
 # result, so a directory that is missing or yields nothing fails the run rather
@@ -24,15 +44,7 @@ function files_shell_in {
         echo "bin/files: $dir/ is missing" >&2
         exit 1
     fi
-    # The status is checked through wait, since a process substitution's own
-    # failure would otherwise pass unseen.
-    mapfile -t -d '' entries < <(
-        find "$dir" -mindepth 1 -maxdepth 1 -type f -print0 | LC_ALL=C sort -z
-    )
-    wait $! || {
-        echo "bin/files: listing $dir/ failed" >&2
-        exit 1
-    }
+    files_find entries "$dir" "$dir" -mindepth 1 -maxdepth 1 -type f
     for f in "${entries[@]}"; do
         first=$(head -n 1 -- "$f")
         if [[ $first =~ $pattern ]]; then
@@ -58,14 +70,9 @@ shell_files+=(bin/files)
 # .github/workflows/, so either directory may be absent.
 yaml_files=(docker-compose.yml)
 if [ -d .github ]; then
-    mapfile -t -d '' files_workflows < <(
-        find .github -mindepth 2 -maxdepth 2 -type f \
-            -path '.github/workflows*/*.yml' -print0 | LC_ALL=C sort -z
-    )
-    wait $! || {
-        echo "bin/files: listing .github/ failed" >&2
-        exit 1
-    }
+    files_workflows=()
+    files_find files_workflows .github .github -mindepth 2 -maxdepth 2 -type f \
+        -path '.github/workflows*/*.yml'
     yaml_files+=("${files_workflows[@]}")
     unset files_workflows
 fi
