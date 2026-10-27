@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# Read-only counterpart to bin/format: every check here reports and fails, and
+# none of them write. Anything that rewrites a file belongs in bin/format. Runs
+# from the root of the repository.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+source "$bin/files"
+
+echo -e "\n=== LINT SHELL\n"
+
+echo "checking ${#shell_files[@]} shell file(s)" >&2
+# -P SCRIPTDIR, so a source of a file beside the script, such as docker/init or
+# bin/files, is followed rather than reported as unresolved.
+shellcheck -x -P SCRIPTDIR "${shell_files[@]}"
+shfmt "${shfmt_args[@]}" -d "${shell_files[@]}"
+
+echo -e "\n=== LINT YAML\n"
+
+echo "checking ${#yaml_files[@]} YAML file(s)" >&2
+printf '%s\0' "${yaml_files[@]}" | "$bin/../lint/yaml-keys"
+
+echo

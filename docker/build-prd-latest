@@ -8,13 +8,13 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
 describe=$(git describe 2>/dev/null || true)
 
 docker build \
-  --target prd \
-  --cache-from "$REPO:$TAG.dev" \
-  --cache-from "$REPO:$TAG.prd" \
-  --cache-from "$REPO:latest.dev" \
-  --cache-from "$REPO:latest.prd" \
-  --build-arg BUILDKIT_INLINE_CACHE=1 \
-  --build-arg GIT_DESCRIBE="$describe" \
-  -t "$REPO:$TAG.prd" .
+    --target prd \
+    --cache-from "$REPO:$TAG.dev" \
+    --cache-from "$REPO:$TAG.prd" \
+    --cache-from "$REPO:latest.dev" \
+    --cache-from "$REPO:latest.prd" \
+    --build-arg BUILDKIT_INLINE_CACHE=1 \
+    --build-arg GIT_DESCRIBE="$describe" \
+    -t "$REPO:$TAG.prd" .
 
 docker push "$REPO:$TAG.prd"

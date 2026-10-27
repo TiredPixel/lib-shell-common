@@ -1,0 +1,71 @@
+# shellcheck shell=bash
+#
+# Sourced by bin/format and bin/lint, from the root of the repository, so the
+# two take the same files and the same options and cannot disagree. Sets no
+# shell options, since it runs under its caller's; any failure here ends the
+# caller's run.
+
+# Indented by 4 spaces rather than shfmt's default tab, since spaces are the
+# common practice for shell. Read only by the runners that source this file, so
+# it looks unused here.
+# shellcheck disable=SC2034
+shfmt_args=(-i 4)
+
+# Appends to shell_files each file directly in directory $1 whose first line is
+# a bash shebang, since the scripts carry no suffix. Checked on this scan's own
+# result, so a directory that is missing or yields nothing fails the run rather
+# than quietly narrowing the lint.
+function files_shell_in {
+    local dir=$1 f first
+    local pattern='^#!.*[/[:space:]]bash([[:space:]]|$)'
+    local -a entries found=()
+
+    if ! [ -d "$dir" ]; then
+        echo "bin/files: $dir/ is missing" >&2
+        exit 1
+    fi
+    # The status is checked through wait, since a process substitution's own
+    # failure would otherwise pass unseen.
+    mapfile -t -d '' entries < <(
+        find "$dir" -mindepth 1 -maxdepth 1 -type f -print0 | LC_ALL=C sort -z
+    )
+    wait $! || {
+        echo "bin/files: listing $dir/ failed" >&2
+        exit 1
+    }
+    for f in "${entries[@]}"; do
+        first=$(head -n 1 -- "$f")
+        if [[ $first =~ $pattern ]]; then
+            found+=("$f")
+        fi
+    done
+    if [ ${#found[@]} -eq 0 ]; then
+        echo "bin/files: $dir/ holds no bash script" >&2
+        exit 1
+    fi
+    shell_files+=("${found[@]}")
+}
+
+shell_files=()
+for files_dir in ansible docker lint project terraform bin; do
+    files_shell_in "$files_dir"
+done
+unset files_dir
+# Carries no shebang, since it is sourced.
+shell_files+=(bin/files)
+
+# A proposed workflow waits in .github/workflows.new/ until it is moved into
+# .github/workflows/, so either directory may be absent.
+yaml_files=(docker-compose.yml)
+if [ -d .github ]; then
+    mapfile -t -d '' files_workflows < <(
+        find .github -mindepth 2 -maxdepth 2 -type f \
+            -path '.github/workflows*/*.yml' -print0 | LC_ALL=C sort -z
+    )
+    wait $! || {
+        echo "bin/files: listing .github/ failed" >&2
+        exit 1
+    }
+    yaml_files+=("${files_workflows[@]}")
+    unset files_workflows
+fi

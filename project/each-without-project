@@ -42,7 +42,7 @@ function echo_line() {
 # The child keeps the terminal on stdin rather than /dev/null, which `script`
 # needs to forward keystrokes and a git credential or passphrase prompt needs to
 # be answerable at all.
-if [ -f "$f_projects" ] ; then
+if [ -f "$f_projects" ]; then
     while IFS= read -r project <&3 || [ -n "$project" ]; do
         [ -z "$project" ] && continue
 
@@ -55,12 +55,12 @@ if [ -f "$f_projects" ] ; then
         entry=$(git ls-files --stage -- ":(literal)$project")
 
         case $entry in
-            '160000 '*) ;;
-            *)
-                echo "$project: not a submodule of $PWD, so it cannot be swept" >&2
+        '160000 '*) ;;
+        *)
+            echo "$project: not a submodule of $PWD, so it cannot be swept" >&2
 
-                exit 1
-                ;;
+            exit 1
+            ;;
         esac
 
         pushd "$project" >/dev/null
@@ -70,5 +70,5 @@ if [ -f "$f_projects" ] ; then
         "$@" 3<&-
 
         popd >/dev/null
-    done 3< "$f_projects"
+    done 3<"$f_projects"
 fi

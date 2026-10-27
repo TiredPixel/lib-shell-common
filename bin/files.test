@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+#
+# Tests bin/files in scratch trees, with find faked on PATH, each sourcing it
+# under strict mode as bin/format and bin/lint do, and printing the sets it
+# builds, a line to a file: "shell f" for each shell file, then "yaml f" for
+# each YAML file.
+#
+# Run: bin/files.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+files=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/files
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+cat >"$work/show" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+source "${FILES:-bin/files}"
+printf 'shell %s\n' "${shell_files[@]}"
+printf 'yaml %s\n' "${yaml_files[@]}"
+EOF
+chmod +x "$work/show"
+
+# Fails as a broken find would where its first argument is FAKE_FIND_FAIL, and
+# is the real find otherwise.
+mkdir "$work/path"
+real_find=$(command -v find)
+cat >"$work/path/find" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ "\$1" = "\${FAKE_FIND_FAIL:-}" ]; then
+    echo "fake find: failed" >&2
+    exit 1
+fi
+exec $(printf %q "$real_find") "\$@"
+EOF
+chmod +x "$work/path/find"
+export PATH=$work/path:$PATH
+
+dirs=(ansible docker lint project terraform bin)
+
+# Makes a tree at $work/$1 with one bash script in each listed directory, a
+# copy of bin/files and docker-compose.yml, and prints its path.
+tree() {
+    local t=$work/$1 d
+    mkdir "$t"
+    for d in "${dirs[@]}"; do
+        mkdir "$t/$d"
+        printf '#!/usr/bin/env bash\ntrue\n' >"$t/$d/a"
+    done
+    cp -- "$files" "$t/bin/files"
+    : >"$t/docker-compose.yml"
+    echo "$t"
+}
+
+# The shell lines for a tree as tree made it, with $1 inserted after the
+# docker/ line.
+shells() {
+    local d
+    for d in "${dirs[@]}"; do
+        echo "shell $d/a"
+        if [ "$d" = docker ] && [ -n "${1:-}" ]; then
+            echo "$1"
+        fi
+    done
+    echo "shell bin/files"
+}
+
+failed=()
+
+# Runs show in tree $2 and checks its status is $3, its stdout is $4, and its
+# stderr holds $5 where that is not empty.
+check() {
+    local name=$1 t=$2 status=$3 out=$4 said=$5 rc=0
+    (cd "$t" && "$work/show") >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+    elif [ "$(<"$work/out")" != "$out" ]; then
+        failed+=("$name: stdout is: $(<"$work/out")")
+    elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
+        failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+    fi
+}
+
+# Only a bash shebang is taken, in either form, with or without arguments, and
+# only directly in the directory; the workflow directory is absent.
+t=$(tree shebangs)
+printf '#!/bin/bash\n' >"$t/docker/b"
+printf '#!/bin/bash -e\n' >"$t/docker/b2"
+printf '#!/bin/sh\n' >"$t/docker/c"
+printf 'echo no shebang\n#!/usr/bin/env bash\n' >"$t/docker/d"
+printf '#!/usr/bin/env bashful\n' >"$t/docker/e"
+: >"$t/docker/f"
+mkdir "$t/docker/sub"
+printf '#!/usr/bin/env bash\n' >"$t/docker/sub/g"
+check shebangs "$t" 0 "$(shells "shell docker/b"$'\n'"shell docker/b2")"$'\n'"yaml docker-compose.yml" ""
+
+# Both workflow directories are read, only for *.yml directly in them.
+t=$(tree workflows)
+mkdir -p "$t/.github/workflows" "$t/.github/workflows.new/sub" "$t/.github/x"
+: >"$t/.github/workflows/b.yml"
+: >"$t/.github/workflows/c.yaml"
+: >"$t/.github/workflows.new/a.yml"
+: >"$t/.github/workflows.new/sub/d.yml"
+: >"$t/.github/x/e.yml"
+check workflows "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .github/workflows.new/a.yml"$'\n'"yaml .github/workflows/b.yml" ""
+
+# .github/ present with no workflow directory in it.
+t=$(tree github-empty)
+mkdir "$t/.github"
+check github-empty "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml" ""
+
+for d in "${dirs[@]}"; do
+    t=$(tree "missing-$d")
+    # Sourced from outside the tree, since bin/ may be the one missing.
+    rm -r -- "${t:?}/$d"
+    FILES=$files check "missing-$d" "$t" 1 "" "bin/files: $d/ is missing"
+done
+
+for d in ansible docker lint project terraform; do
+    t=$(tree "no-scripts-$d")
+    printf '#!/bin/sh\n' >"$t/$d/a"
+    check "no-scripts-$d" "$t" 1 "" "bin/files: $d/ holds no bash script"
+done
+
+t=$(tree empty-docker)
+rm -- "$t/docker/a"
+check empty-docker "$t" 1 "" "bin/files: docker/ holds no bash script"
+
+# bin/files alone is not enough: it carries no shebang.
+t=$(tree no-scripts-bin)
+rm -- "$t/bin/a"
+check no-scripts-bin "$t" 1 "" "bin/files: bin/ holds no bash script"
+
+for d in docker .github; do
+    t=$(tree "find-fails-$d")
+    mkdir -p "$t/.github/workflows"
+    FAKE_FIND_FAIL=$d check "find-fails-$d" "$t" 1 "" \
+        "bin/files: listing $d/ failed"
+done
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

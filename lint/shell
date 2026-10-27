@@ -33,19 +33,19 @@ fi
 # no shell scripts at all is a legitimate answer.
 typed=$(file --mime-type "${roots[@]}")
 
-mapfile -t found < <(grep 'text/x-shellscript' <<< "$typed" | cut -d':' -f1 || true)
+mapfile -t found < <(grep 'text/x-shellscript' <<<"$typed" | cut -d':' -f1 || true)
 
 scripts=()
 
 for f in "${found[@]}"; do
     case $(basename "$f") in
-        # Gradle generates these and rewrites them on every wrapper bump, so
-        # their style is not the author's to fix. What matters about a wrapper
-        # is the integrity of the distribution it names, which is a checksum
-        # question -- gradle/actions/wrapper-validation is the check for it.
-        gradlew | gradlew.bat)
-            continue
-            ;;
+    # Gradle generates these and rewrites them on every wrapper bump, so
+    # their style is not the author's to fix. What matters about a wrapper
+    # is the integrity of the distribution it names, which is a checksum
+    # question -- gradle/actions/wrapper-validation is the check for it.
+    gradlew | gradlew.bat)
+        continue
+        ;;
     esac
 
     scripts+=("$f")

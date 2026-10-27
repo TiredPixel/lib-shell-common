@@ -53,7 +53,7 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
     while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
         # :<srcmode> <dstmode> <srcsha> <dstsha> <status>
         # dstsha is all zeroes when the comparison is against the working tree.
-        read -r srcmode dstmode srcsha _ status <<< "${meta#:}"
+        read -r srcmode dstmode srcsha _ status <<<"${meta#:}"
 
         if [ "$srcmode" != 160000 ] && [ "$dstmode" != 160000 ]; then
             continue
@@ -65,13 +65,13 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
         # replaced by a regular file; U an unmerged path.
         if [ "$status" != M ] ||
             [ "$srcmode" != 160000 ] || [ "$dstmode" != 160000 ]; then
-            refused+=( "$status $path" )
+            refused+=("$status $path")
 
             continue
         fi
 
-        bumped+=( "$path" )
-        recorded+=( "$srcsha" )
+        bumped+=("$path")
+        recorded+=("$srcsha")
     done
 
 if [ "${#refused[@]}" -gt 0 ]; then
@@ -123,10 +123,10 @@ if [ "${#bumped[@]}" -gt 0 ]; then
         git -C "$path" merge-base --is-ancestor "$now" "$was" || backwards=$?
 
         case "$forwards$backwards" in
-            01) direction=forwards ;;
-            10) direction="moves back" ;;
-            11) direction=diverged ;;
-            *)  direction="direction unknown" ;;
+        01) direction=forwards ;;
+        10) direction="moves back" ;;
+        11) direction=diverged ;;
+        *) direction="direction unknown" ;;
         esac
 
         printf '  %s  %s -> %s  (%s)\n' \
@@ -136,7 +136,7 @@ if [ "${#bumped[@]}" -gt 0 ]; then
         # --literal-pathspecs, which exports GIT_LITERAL_PATHSPECS=1 into every
         # hook. A submodule path may carry a glob metacharacter, or begin with
         # a colon -- the distinction project/tag-create draws for a tag.
-        paths+=( ":(literal)$path" )
+        paths+=(":(literal)$path")
     done
 
     # --only takes the working tree contents of exactly these paths and

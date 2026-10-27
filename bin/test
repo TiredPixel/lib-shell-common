@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+#
+# The gate: bin/lint, then every */*.test, at most nproc at a time, each one's
+# output shown once it ends. Every test runs whatever the others do, and each
+# that fails is named. Runs from the root of the repository.
+#
+# Tests named as arguments run alone, without the lint: it covers the whole
+# tree, so running it for a handful of named tests costs far more than the tests
+# do. bin/lint is the standalone entry point, and CI passes no names.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+if [ $# -gt 0 ]; then
+    tests=("$@")
+    for t in "${tests[@]}"; do
+        if ! [[ $t =~ ^[^/]+/[^/]+\.test$ ]]; then
+            printf 'bin/test: %q is not a */*.test\n' "$t" >&2
+            exit 1
+        fi
+    done
+else
+    # failglob would end the run on bash's own "no match" error.
+    shopt -u failglob
+    shopt -s nullglob
+    tests=(*/*.test)
+    shopt -u nullglob
+    shopt -s failglob
+    if [ ${#tests[@]} -eq 0 ]; then
+        echo "bin/test: no */*.test found" >&2
+        exit 1
+    fi
+    "$bin/lint"
+fi
+
+logs=$(mktemp -d)
+trap 'rm -rf -- "$logs"' EXIT
+
+max=$(nproc)
+declare -A running=()
+failed=()
+
+# Waits for any running test to end, then shows its output and records its
+# status.
+function reap {
+    local pid i rc=0
+
+    wait -n -p pid || rc=$?
+    i=${running[$pid]}
+    unset "running[$pid]"
+    echo -e "\n=== TEST ${tests[$i]}\n"
+    cat -- "$logs/$i"
+    if [ "$rc" -ne 0 ]; then
+        failed+=("${tests[$i]} (exit $rc)")
+    fi
+}
+
+for i in "${!tests[@]}"; do
+    while [ ${#running[@]} -ge "$max" ]; do
+        reap
+    done
+    "./${tests[$i]}" >"$logs/$i" 2>&1 &
+    running[$!]=$i
+done
+while [ ${#running[@]} -gt 0 ]; do
+    reap
+done
+
+echo
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "${#tests[@]} test(s) passed"
