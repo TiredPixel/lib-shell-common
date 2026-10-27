@@ -2,7 +2,7 @@
 # ARGFREEZE YQ_VERSION github:mikefarah/yq
 #
 # dev copies nothing in, so make format runs it on the mounted tree; test adds
-# the tree for the gate. README.md, Building the images, describes both stages.
+# the tree for the gate. README.md, Building, describes both stages.
 #===============================================================================
 FROM docker.io/library/debian@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 AS dev
 
