@@ -3,8 +3,10 @@
 # Tests docker/upgrade on Dockerfiles in a scratch directory, with docker and
 # curl faked on PATH, so nothing is pulled or fetched: the fake docker answers
 # every pull and gives each image the digest FAKE_DIGEST names, and the fake
-# curl answers every /releases/latest with the redirect FAKE_REDIRECT names.
-# FAKE_PULL=fail and FAKE_CURL=fail make each fail as the real one would.
+# curl, naming each URL it is given on stderr, answers every /releases/latest
+# with the redirect FAKE_REDIRECT names and every PyPI JSON lookup with
+# FAKE_PYPI. FAKE_PULL=fail and FAKE_CURL=fail make each fail as the real one
+# would.
 #
 # Run: docker/upgrade.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -34,11 +36,18 @@ cat >"$work/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
+url=${!#}
+echo "fake curl: $url" >&2
 if [ "${FAKE_CURL:-}" = fail ]; then
-    echo "curl: (6) Could not resolve host: github.com" >&2
+    host=${url#https://}
+    echo "curl: (6) Could not resolve host: ${host%%/*}" >&2
     exit 6
 fi
-printf '%s' "${FAKE_REDIRECT:-}"
+case $url in
+    https://github.com/*/releases/latest) printf '%s' "${FAKE_REDIRECT:-}" ;;
+    https://pypi.org/pypi/*/json) printf '%s' "${FAKE_PYPI:-}" ;;
+    *) exit 2 ;;
+esac
 EOF
 chmod +x "$work/bin/docker" "$work/bin/curl"
 
@@ -46,6 +55,7 @@ old=sha256:$(printf '0%.0s' {1..64})
 new=sha256:$(printf 'a%.0s' {1..64})
 export FAKE_DIGEST=$new
 export FAKE_REDIRECT=https://github.com/o/p/releases/tag/v1.2.3
+export FAKE_PYPI='{"info": {"name": "m-d", "version": "2.0.1"}}'
 export PATH=$work/bin:$PATH
 
 failed=()
@@ -95,13 +105,13 @@ check arg-rewrites $'# ARGFREEZE V github:o/p\nFROM s\nARG V=1.0.0\nRUN echo "$V
 FAKE_REDIRECT=https://github.com/o/p/releases/tag/0.16.9 check arg-unprefixed-tag \
     $'# ARGFREEZE V github:o/p\nARG V=0.1\n' 0 "" $'# ARGFREEZE V github:o/p\nARG V=0.16.9'
 
-check arg-bad-form $'# ARGFREEZE V\nARG V=1\n' 1 "is not NAME github:OWNER/PROJECT" \
+check arg-bad-form $'# ARGFREEZE V\nARG V=1\n' 1 "is not NAME github:OWNER/PROJECT or NAME pypi:PACKAGE" \
     $'# ARGFREEZE V\nARG V=1'
 
-check arg-bad-name $'# ARGFREEZE 1V github:o/p\nARG V=1\n' 1 "is not NAME github:OWNER/PROJECT" \
+check arg-bad-name $'# ARGFREEZE 1V github:o/p\nARG V=1\n' 1 "is not NAME github:OWNER/PROJECT or NAME pypi:PACKAGE" \
     $'# ARGFREEZE 1V github:o/p\nARG V=1'
 
-check arg-bad-source $'# ARGFREEZE V gitlab:o/p\nARG V=1\n' 1 "is not github:OWNER/PROJECT" \
+check arg-bad-source $'# ARGFREEZE V gitlab:o/p\nARG V=1\n' 1 "is not github:OWNER/PROJECT or pypi:PACKAGE" \
     $'# ARGFREEZE V gitlab:o/p\nARG V=1'
 
 check arg-names-nothing $'# ARGFREEZE V github:o/p\nARG W=1\n' 1 "names no ARG V line" \
@@ -132,15 +142,46 @@ FAKE_REDIRECT=https://github.com/o/p/releases/tag/nightly check arg-not-a-versio
     $'# ARGFREEZE V github:o/p\nARG V=1\n' 1 "tag nightly is not a version" \
     $'# ARGFREEZE V github:o/p\nARG V=1'
 
+check pypi-rewrites $'# ARGFREEZE V pypi:m-d\n# ARGFREEZE W github:o/p\nFROM s\nARG V=1.0\nARG W=1.0.0\nARG V=1.0\n' \
+    0 "fake curl: https://pypi.org/pypi/m-d/json" \
+    $'# ARGFREEZE V pypi:m-d\n# ARGFREEZE W github:o/p\nFROM s\nARG V=2.0.1\nARG W=1.2.3\nARG V=2.0.1'
+
+check pypi-bad-source $'# ARGFREEZE V pypi:o/p\nARG V=1\n' 1 "is not github:OWNER/PROJECT or pypi:PACKAGE" \
+    $'# ARGFREEZE V pypi:o/p\nARG V=1'
+
+check pypi-empty-package $'# ARGFREEZE V pypi:\nARG V=1\n' 1 "is not github:OWNER/PROJECT or pypi:PACKAGE" \
+    $'# ARGFREEZE V pypi:\nARG V=1'
+
+FAKE_CURL=fail check pypi-lookup-fails $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 6 \
+    "Could not resolve host: pypi.org" $'# ARGFREEZE V pypi:m-d\nARG V=1'
+
+FAKE_PYPI='<html>Not Found</html>' check pypi-not-json $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 1 \
+    "pypi.org/pypi/m-d/json is not PyPI's JSON" $'# ARGFREEZE V pypi:m-d\nARG V=1'
+
+FAKE_PYPI='{"info": {"version": "nightly"}}' check pypi-not-a-version \
+    $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 1 "latest version on PyPI, nightly, is not a version" \
+    $'# ARGFREEZE V pypi:m-d\nARG V=1'
+
+FAKE_PYPI='{"info": {"version": "1.0\n2.0"}}' check pypi-two-lines \
+    $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 1 "is not a version" $'# ARGFREEZE V pypi:m-d\nARG V=1'
+
+FAKE_PYPI='{"info": {}}' check pypi-no-version $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 1 \
+    "latest version on PyPI, none, is not a version" $'# ARGFREEZE V pypi:m-d\nARG V=1'
+
 # The ARG's lookup fails after the FROM has resolved, and neither is written.
 FAKE_CURL=fail check nothing-written-on-failure \
     $'# FROMFREEZE r/x:1\n# ARGFREEZE V github:o/p\nFROM r/x:1\nARG V=1\n' 6 "" \
     $'# FROMFREEZE r/x:1\n# ARGFREEZE V github:o/p\nFROM r/x:1\nARG V=1'
 
+# Likewise when a PyPI lookup fails after a GitHub one has resolved.
+FAKE_PYPI='{"info": {}}' check nothing-written-on-pypi-failure \
+    $'# ARGFREEZE W github:o/p\n# ARGFREEZE V pypi:m-d\nARG W=1\nARG V=1\n' 1 "" \
+    $'# ARGFREEZE W github:o/p\n# ARGFREEZE V pypi:m-d\nARG W=1\nARG V=1'
+
 file=$work/mode.Dockerfile
 printf '# ARGFREEZE V github:o/p\nARG V=1\n' >"$file"
 chmod 640 "$file"
-"$upgrade" "$file" >/dev/null
+"$upgrade" "$file" >/dev/null 2>"$work/err"
 if [ "$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file")" != 640 ]; then
     failed+=("mode: the Dockerfile's mode changed")
 fi
