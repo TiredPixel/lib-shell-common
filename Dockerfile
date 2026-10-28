@@ -15,6 +15,7 @@ RUN apt-get update && \
     ca-certificates \
     curl \
     diffutils \
+    jq \
     shellcheck \
     shfmt \
     && \

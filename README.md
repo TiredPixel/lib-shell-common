@@ -37,6 +37,8 @@ upgrade-pre:
 	lib/shell-common/docker/upgrade
 ```
 
+An `ARGFREEZE` line with a `pypi:` source also needs `jq` where `docker/upgrade` runs.
+
 ## Testing
 
 `make test` runs this repository's lint, then its tests, in the `shell_test` container (*Building*). The lint fails where anything is unformatted; `make format` (*Formatting*) fixes it.

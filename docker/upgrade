@@ -9,6 +9,9 @@
 #   # ARGFREEZE NAME github:OWNER/PROJECT
 #       every ARG NAME=VALUE line is set to the project's latest GitHub
 #       release, a leading v dropped from its tag
+#   # ARGFREEZE NAME pypi:PACKAGE
+#       every ARG NAME=VALUE line is set to the package's latest version on
+#       PyPI, read with jq from its JSON
 #
 # A version held back is one whose ARGFREEZE line is removed, the ARG set to
 # the version that works and a comment beside it saying why; nothing here then
@@ -94,11 +97,13 @@ for data in "${args[@]}"; do
     name=${data%% *}
     source=${data#* }
     if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [ "$source" = "$data" ]; then
-        die "ARGFREEZE $data is not NAME github:OWNER/PROJECT"
+        die "ARGFREEZE $data is not NAME github:OWNER/PROJECT or" \
+            "NAME pypi:PACKAGE"
     fi
     [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
-        die "ARGFREEZE $name: $source is not github:OWNER/PROJECT"
-    project=${source#github:}
+        [[ "$source" =~ ^pypi:[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+        die "ARGFREEZE $name: $source is not github:OWNER/PROJECT or" \
+            "pypi:PACKAGE"
 
     # Every ARG line naming it, in any form, so a second ARG with no default or
     # declaring it beside another is refused rather than left behind.
@@ -123,19 +128,39 @@ for data in "${args[@]}"; do
                 "${values[*]}"
     done
 
-    # GitHub answers /releases/latest with a redirect to the latest release's
-    # tag, without the API or a token. A project with no release redirects
-    # elsewhere, which the match refuses.
-    echo "Looking up $project's latest release"
-    url=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
-        "https://github.com/$project/releases/latest")
-    [[ "$url" =~ ^https://github\.com/[^/]+/[^/]+/releases/tag/([^/?#]+)$ ]] ||
-        die "ARGFREEZE $name: github.com/$project gave no latest" \
-            "release: ${url:-no redirect}"
-    tag=${BASH_REMATCH[1]}
-    version=${tag#v}
-    [[ "$version" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]] ||
-        die "ARGFREEZE $name: $project's latest tag $tag is not a version"
+    case $source in
+    github:*)
+        project=${source#github:}
+        # GitHub answers /releases/latest with a redirect to the latest
+        # release's tag, without the API or a token. A project with no release
+        # redirects elsewhere, which the match refuses.
+        echo "Looking up $project's latest release"
+        url=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+            "https://github.com/$project/releases/latest")
+        [[ "$url" =~ ^https://github\.com/[^/]+/[^/]+/releases/tag/([^/?#]+)$ ]] ||
+            die "ARGFREEZE $name: github.com/$project gave no latest" \
+                "release: ${url:-no redirect}"
+        tag=${BASH_REMATCH[1]}
+        version=${tag#v}
+        [[ "$version" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]] ||
+            die "ARGFREEZE $name: $project's latest tag $tag is not a version"
+        ;;
+    pypi:*)
+        package=${source#pypi:}
+        # .info.version is the latest release, a pre-release only where the
+        # package has nothing else. -L follows PyPI's redirect from a name not
+        # in its normal form.
+        echo "Looking up $package's latest version on PyPI"
+        json=$(curl -fsSL "https://pypi.org/pypi/$package/json")
+        version=$(jq -r '.info.version // empty' <<<"$json") ||
+            die "ARGFREEZE $name: pypi.org/pypi/$package/json is not" \
+                "PyPI's JSON"
+        # A PEP 440 version may open with an epoch, N!, as in 1!2.0.
+        [[ "$version" =~ ^([0-9]+!)?[0-9][0-9A-Za-z.+_-]*$ ]] ||
+            die "ARGFREEZE $name: $package's latest version on PyPI," \
+                "${version:-none}, is not a version"
+        ;;
+    esac
     echo "  => $version"
 
     for i in "${targets[@]}"; do
