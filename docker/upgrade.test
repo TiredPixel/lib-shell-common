@@ -146,6 +146,13 @@ check pypi-rewrites $'# ARGFREEZE V pypi:m-d\n# ARGFREEZE W github:o/p\nFROM s\n
     0 "fake curl: https://pypi.org/pypi/m-d/json" \
     $'# ARGFREEZE V pypi:m-d\n# ARGFREEZE W github:o/p\nFROM s\nARG V=2.0.1\nARG W=1.2.3\nARG V=2.0.1'
 
+FAKE_PYPI='{"info": {"version": "1!2.0"}}' check pypi-epoch \
+    $'# ARGFREEZE V pypi:m-d\nARG V=1.0\n' 0 "" $'# ARGFREEZE V pypi:m-d\nARG V=1!2.0'
+
+FAKE_PYPI='{"info": {"version": "!2.0"}}' check pypi-bare-epoch-mark \
+    $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 1 "latest version on PyPI, !2.0, is not a version" \
+    $'# ARGFREEZE V pypi:m-d\nARG V=1'
+
 check pypi-bad-source $'# ARGFREEZE V pypi:o/p\nARG V=1\n' 1 "is not github:OWNER/PROJECT or pypi:PACKAGE" \
     $'# ARGFREEZE V pypi:o/p\nARG V=1'
 
