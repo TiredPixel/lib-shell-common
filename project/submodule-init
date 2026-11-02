@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 #
 # Brings this repository's own submodules, not theirs, in line with its
-# .gitmodules: syncs every URL into .git/config and each checked-out
-# submodule's remote, and checks out each submodule not yet checked out at the
-# commit recorded here. project/pull runs it at every level of its sweep.
+# .gitmodules: syncs the URL of each initialised submodule into .git/config and
+# each checked-out submodule's remote, and initialises and checks out, at the
+# commit recorded here, each submodule not yet checked out. project/pull runs it
+# at every level of its sweep.
 #
 # A submodule already checked out is left where it is. Updating it too would
 # check out the recorded commit over whatever it holds, and one ahead of that
 # commit with uncommitted edits to a file changed since would stop the sweep --
 # work project/release-assert deliberately allows. --checkout overrides a
-# submodule.<name>.update of rebase, merge or none, which would otherwise
-# rebase or merge onto the recorded commit, or leave the submodule empty.
+# submodule.<name>.update of rebase, merge or none, which would otherwise rebase
+# or merge onto the recorded commit, or leave the submodule empty.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# lastpipe so the loop below runs in this shell and keeps what it reads, and so
-# pipefail sees git's status, for the reason project/release-commit-submodules
-# gives.
+# A pipeline rather than a process substitution, so pipefail sees git's status,
+# and lastpipe so the loop below runs in this shell and keeps what it reads, for
+# the reasons project/release-assert gives.
 shopt -s lastpipe
 
 # git ls-files prints paths from the current directory and git submodule
@@ -33,8 +34,8 @@ git ls-files -s -z |
         [ "${entry%% *}" = 160000 ] || continue
         path=${entry#*$'\t'}
 
-        # Repository discovery walks up, so an empty directory answers with
-        # this repository's top level, which is what marks it missing.
+        # Repository discovery walks up, so an empty directory answers with this
+        # repository's top level, which is what marks it missing.
         top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=
         if [[ ! $top -ef $path ]]; then
             missing+=(":(literal)$path")

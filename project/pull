@@ -13,9 +13,9 @@ git pull --ff-only --no-recurse-submodules
 # would be skipped without a word, and a URL changed in .gitmodules would never
 # reach .git/config, leaving every later fetch on the old remote. Each level
 # therefore brings its own submodules in line with the .gitmodules it has just
-# pulled -- this one here, each submodule inside the sweep below, before
-# foreach lists and descends into its children. It is not recursive, since the
-# recursion is foreach's; exported, so the sweep's sh can reach it.
+# pulled -- this one here, each submodule inside the sweep below, before foreach
+# lists and descends into its children. It is not recursive, since the recursion
+# is foreach's; exported, so the sweep's sh can reach it.
 export PROJECT_SUBMODULE_INIT=$dir/submodule-init
 "$PROJECT_SUBMODULE_INIT"
 
@@ -29,10 +29,10 @@ export PROJECT_SUBMODULE_INIT=$dir/submodule-init
 # checkout before pull, because a submodule is checked out at a recorded commit
 # and a detached HEAD has nothing to pull into. The branch comes from
 # origin/HEAD rather than a literal, so a project whose default branch is not
-# the usual one still follows its own -- not git submodule update --remote,
-# which also defaults to the remote HEAD but under --rebase or --merge acts on
-# whatever branch the submodule already has checked out. Only the remote's name
-# is stripped, since a branch name may itself hold a slash.
+# the usual one still follows its own. git submodule update --remote is not
+# used: it also defaults to the remote HEAD, but under --rebase or --merge acts
+# on whatever branch the submodule already has checked out. Only the remote's
+# name is stripped, since a branch name may itself hold a slash.
 # The string is for the sh foreach runs in each submodule, which expands it.
 # shellcheck disable=SC2016
 git submodule foreach --recursive '

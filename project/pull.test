@@ -3,8 +3,8 @@
 # Tests project/pull against real repositories in a scratch dir: a parent, app,
 # whose submodule lib has a submodule of its own, deep, each with a bare remote
 # and an upstream clone that commits to it. lib's default branch holds a slash
-# and deep's is not the parent's, so the sweep is seen following each one's
-# own. Every case builds its fixture afresh and runs project/pull in app.
+# and deep's is not the parent's, so the sweep is seen following each one's own.
+# Every case builds its fixture afresh and runs project/pull in app.
 #
 # Run: project/pull.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -37,7 +37,7 @@ mkrepo() {
     git -C "$w/$1.up" push -q -u origin "$2"
 }
 
-# Commits $2 to $w/$1.up's current branch and pushes it.
+# Makes an empty commit, message $2, on $w/$1.up's current branch and pushes it.
 upcommit() {
     git -C "$w/$1.up" commit -q --allow-empty -m "$2"
     git -C "$w/$1.up" push -q
@@ -101,8 +101,7 @@ branch_of() {
     fi
 }
 
-# Runs project/pull in app, keeping its status in rc and its output in
-# $w/out.
+# Runs project/pull in app, keeping its status in rc and its output in $w/out.
 run() {
     rc=0
     (cd "$w/app" && "$pull") >"$w/out" 2>&1 || rc=$?
@@ -192,8 +191,8 @@ expect nested-moved "deep's remote" \
 expect nested-moved "deep's commit" "$(head_of "$w/app/lib/deep")" \
     "$(git -C "$w/deep-moved.git" rev-parse trunk)"
 
-# An update of none, set in .gitmodules, is overridden: honoured, it would
-# leave a submodule added upstream empty.
+# An update of none, set in .gitmodules, is overridden: honoured, it would leave
+# a submodule added upstream empty.
 fixture
 mkrepo extra trunk
 git -C "$w/app.up" submodule add -q "$w/extra.git" extra
