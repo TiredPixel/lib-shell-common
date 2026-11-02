@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#
+# Brings this repository's own submodules, not theirs, in line with its
+# .gitmodules: syncs every URL into .git/config and each checked-out
+# submodule's remote, and checks out each submodule not yet checked out at the
+# commit recorded here. project/pull runs it at every level of its sweep.
+#
+# A submodule already checked out is left where it is. Updating it too would
+# check out the recorded commit over whatever it holds, and one ahead of that
+# commit with uncommitted edits to a file changed since would stop the sweep --
+# work project/release-assert deliberately allows. --checkout overrides a
+# submodule.<name>.update of rebase, merge or none, which would otherwise
+# rebase or merge onto the recorded commit, or leave the submodule empty.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+# lastpipe so the loop below runs in this shell and keeps what it reads, and so
+# pipefail sees git's status, for the reason project/release-commit-submodules
+# gives.
+shopt -s lastpipe
+
+# git ls-files prints paths from the current directory and git submodule
+# resolves them against it; at the root the two agree.
+cd "$(git rev-parse --show-toplevel)"
+
+git submodule sync
+
+missing=()
+
+git ls-files -s -z |
+    while IFS= read -r -d '' entry; do
+        # <mode> <id> <stage>\t<path>
+        [ "${entry%% *}" = 160000 ] || continue
+        path=${entry#*$'\t'}
+
+        # Repository discovery walks up, so an empty directory answers with
+        # this repository's top level, which is what marks it missing.
+        top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=
+        if [[ ! $top -ef $path ]]; then
+            missing+=(":(literal)$path")
+        fi
+    done
+
+if [ "${#missing[@]}" -gt 0 ]; then
+    git submodule update --init --checkout -- "${missing[@]}"
+fi
