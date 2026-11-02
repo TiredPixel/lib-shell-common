@@ -30,12 +30,12 @@ echo -e "BUILD\n"
 "$dir/each-without-project" "$dir/make-if-declared" build
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "BUILD START\n"
+echo -e "START\n"
 
 "$dir/start"
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "BUILD STOP\n"
+echo -e "STOP\n"
 
 "$dir/stop"
 #-------------------------------------------------------------------------------

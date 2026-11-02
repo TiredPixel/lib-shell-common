@@ -25,6 +25,20 @@ shopt -s lastpipe
 
 f_projects=.projects
 
+top=$(git rev-parse --show-toplevel)
+
+if [[ ! $PWD -ef $top ]]; then
+    echo "$PWD: refusing to release from below the top level, $top:" >&2
+    echo "$f_projects is read from the current directory and only the" >&2
+    echo "submodules under it are checked, so the checks would cover only part" >&2
+    echo "of the repository, every submodule would read as missing from" >&2
+    echo "$f_projects and the sweep would reach no project, yet the release" >&2
+    echo "commit records pointers across the whole repository. Run it from" >&2
+    echo "$top." >&2
+
+    exit 1
+fi
+
 # --ignore-submodules=all hides every submodule change, so whatever is left is
 # by definition work outside them, and no path list is needed to say so.
 # gitmodules(5) states that --ignore-submodules on the command line overrides

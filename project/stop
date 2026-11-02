@@ -11,6 +11,10 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 # shellcheck disable=SC2016
 "$dir/each" sh -c '
     set -eu
-    test ! -f docker-compose.yml ||
+    found=
+    for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+        test ! -f "$f" || found=1
+    done
+    test -z "$found" ||
         test -z "$(docker compose config --services)" ||
         docker compose stop'
