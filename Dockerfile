@@ -22,6 +22,7 @@ RUN apt-get update \
         curl \
         diffutils \
         docker-compose \
+        git \
         jq \
         kcov \
         pipx \

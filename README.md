@@ -29,11 +29,13 @@ A repository takes this one as a submodule at `lib/shell-common`:
 git submodule add https://github.com/TiredPixel/lib-shell-common.git lib/shell-common
 ```
 
-It calls the scripts by path from its root, such as `lib/shell-common/docker/build-compose --profile test` in its `make build`. Its `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile`:
+It calls the scripts by path from its root, such as `lib/shell-common/docker/build-compose --profile test` in its `make build`. Its `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile`. The first two lines make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
 
 ```make
 upgrade-pre:
-	cd lib/shell-common && git checkout latest && git pull
+	git submodule sync lib/shell-common
+	git submodule update --init --checkout lib/shell-common
+	cd lib/shell-common && git checkout latest && git pull --ff-only
 	lib/shell-common/docker/upgrade
 ```
 

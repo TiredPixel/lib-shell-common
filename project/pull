@@ -7,6 +7,20 @@ shopt -s inherit_errexit failglob
 # unseen, and a release would go on to push it.
 git pull --ff-only --no-recurse-submodules
 
+# foreach visits only submodules that are checked out, so one added upstream
+# would be skipped without a word, and a URL changed in .gitmodules would never
+# reach .git/config, leaving every later fetch on the old remote. Each level
+# therefore syncs and initialises its own submodules from the .gitmodules it
+# has just pulled -- this one here, each submodule inside the sweep below,
+# before foreach lists and descends into its children. Neither is recursive,
+# since the recursion is foreach's. --checkout overrides a
+# submodule.<name>.update of rebase, merge or none, which would otherwise
+# rebase or merge a branch onto the recorded commit, or skip the submodule.
+# Initialising detaches a submodule already checked out onto the recorded
+# commit; the sweep puts it back on its branch at once.
+git submodule sync
+git submodule update --init --checkout
+
 # One sweep, from here, whose submodules are the projects .projects names --
 # and --recursive reaches theirs in turn. It used to run from inside each
 # project instead, which started the recursion one level too low: it brought
@@ -19,11 +33,15 @@ git pull --ff-only --no-recurse-submodules
 # origin/HEAD rather than a literal, so a project whose default branch is not
 # the usual one still follows its own -- which is also why this cannot be
 # git submodule update --remote, whose --rebase and --merge act on the branch
-# the parent recorded instead.
+# the parent recorded instead. Only the remote's name is stripped, since a
+# branch name may itself hold a slash.
 # The string is for the sh foreach runs in each submodule, which expands it.
 # shellcheck disable=SC2016
 git submodule foreach --recursive '
     set -eu
-    branch=$(git symbolic-ref --short refs/remotes/origin/HEAD | cut -d/ -f2)
+    ref=$(git symbolic-ref --short refs/remotes/origin/HEAD)
+    branch=${ref#origin/}
     git checkout --no-recurse-submodules "$branch"
-    git pull --ff-only --no-recurse-submodules'
+    git pull --ff-only --no-recurse-submodules
+    git submodule sync
+    git submodule update --init --checkout'
