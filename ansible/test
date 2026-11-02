@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+# The exclusions ansible/format makes, for the same reasons.
 ansible-lint \
     --offline \
     --strict \

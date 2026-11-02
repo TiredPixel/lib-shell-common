@@ -67,6 +67,9 @@ shells() {
         fi
     done
     echo "shell bin/files"
+    echo "shell docker/init"
+    echo "shell project/echo-line"
+    echo "shell project/release-onto"
 }
 
 failed=()

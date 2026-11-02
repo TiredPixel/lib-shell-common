@@ -2,27 +2,16 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
-# tput exits 2 with no terminal -- CI, cron, a make that is not on a tty --
-# and a command substitution used as an argument cannot fail the command it is
-# an argument to, so the width silently became empty and the rule vanished.
-# Resolved first with a fallback, which is the shape the rest of this library
-# was already corrected to.
-function echo_line() {
-    local cols
-
-    cols=$(tput cols 2>/dev/null || echo 80)
-
-    # To stderr, as the name printed beside it already is. On stdout the rule
-    # lands in the data: project/tag-create captures this sweep's output to ask
-    # whether a tag exists anywhere, and read back a line of dashes instead of
-    # the tags -- so the check answered "not present" every time.
-    printf %"$cols"s | tr " " "-" >&2
-}
+source "$dir/echo-line"
 
 "$dir/each-without-project" "$@"
 
-echo_line
+# To stderr, as the name printed beside it already is. On stdout the rule
+# lands in the data: project/tag-create captures this sweep's output to ask
+# whether a tag exists anywhere, and read back a line of dashes instead of the
+# tags -- so the check answered "not present" every time.
+echo_line '-' >&2
 echo -e "$(basename "$PWD")\n" >&2
 "$@"

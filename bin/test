@@ -43,7 +43,7 @@ failed=()
 
 # Waits for any running test to end, then shows its output and records its
 # status.
-function reap {
+reap() {
     local pid i rc=0
 
     wait -n -p pid || rc=$?

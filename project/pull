@@ -20,6 +20,7 @@ git pull --ff-only --no-recurse-submodules
 # the usual one still follows its own -- which is also why this cannot be
 # git submodule update --remote, whose --rebase and --merge act on the branch
 # the parent recorded instead.
+# The string is for the sh foreach runs in each submodule, which expands it.
 # shellcheck disable=SC2016
 git submodule foreach --recursive '
     branch=$(git symbolic-ref --short refs/remotes/origin/HEAD | cut -d/ -f2)

@@ -15,7 +15,7 @@ shfmt_args=(-i 4)
 # prints, NUL-separated and sorted; a failure ends the run naming directory $2.
 # find runs as a background job into a file and its status is checked through
 # wait, since bash can lose a process substitution's status.
-function files_find {
+files_find() {
     local -n files_find_into=$1
     local files_find_dir=$2 files_find_out
     shift 2
@@ -35,7 +35,7 @@ function files_find {
 # a bash shebang, since the scripts carry no suffix. Checked on this scan's own
 # result, so a directory that is missing or yields nothing fails the run rather
 # than quietly narrowing the lint.
-function files_shell_in {
+files_shell_in() {
     local dir=$1 f first
     local pattern='^#!.*[/[:space:]]bash([[:space:]]|$)'
     local -a entries found=()
@@ -63,8 +63,8 @@ for files_dir in ansible docker lint project terraform bin; do
     files_shell_in "$files_dir"
 done
 unset files_dir
-# Carries no shebang, since it is sourced.
-shell_files+=(bin/files)
+# Carry no shebang, since they are sourced.
+shell_files+=(bin/files docker/init project/echo-line project/release-onto)
 
 # A proposed workflow waits in .github/workflows.new/ until it is moved into
 # .github/workflows/, so either directory may be absent.

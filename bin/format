@@ -6,7 +6,9 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/files"
+bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+source "$bin/files"
 
 echo -e "\n=== FORMAT SHELL\n"
 

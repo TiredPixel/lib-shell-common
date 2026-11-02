@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# Tests project/release-onto, sourced in a shell with no options set and in
+# one under the strict mode its callers run, with every project/ script it
+# calls faked in a scratch dir: each fake logs its name and arguments, a line
+# to a call, and exits with FAKE_RC_<name>'s status. Sourcing must set none of
+# the shell's options.
+#
+# Run: project/release-onto.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+helper=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/release-onto
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/project"
+for f in release-assert each release-commit-submodules tag-create; do
+    cat >"$work/project/$f" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+printf '%s' $f >>"\$FAKE_LOG"
+[ \$# -eq 0 ] || printf ' %s' "\$@" >>"\$FAKE_LOG"
+echo >>"\$FAKE_LOG"
+exit "\${FAKE_RC_${f//-/_}:-0}"
+EOF
+    chmod +x "$work/project/$f"
+done
+export FAKE_LOG=$work/log
+
+# The shells that source the helper are scripts in files rather than -c
+# strings, as its callers are, so BASH_SOURCE is set in them as it is in a
+# caller.
+cat >"$work/release" <<'EOF'
+if [ "$1" = strict ]; then
+    set -Eeuo pipefail
+    shopt -s inherit_errexit failglob
+fi
+source "$2"
+release_onto "$3" "$4" "$5"
+EOF
+cat >"$work/options" <<'EOF'
+before=$SHELLOPTS:$BASHOPTS
+source "$1"
+[ "$SHELLOPTS:$BASHOPTS" = "$before" ]
+EOF
+
+failed=()
+
+# The calls a whole release of tag $2 onto branch $1 makes, in order.
+calls() {
+    printf '%s\n' \
+        release-assert \
+        "each git checkout $1 --no-recurse-submodules" \
+        "each git pull --ff-only --no-recurse-submodules" \
+        release-commit-submodules \
+        "tag-create $2" \
+        "each git push --no-follow-tags --recurse-submodules=check origin $1:$1"
+}
+
+# Runs release_onto $3 $4 in a bash with no options or, where $2 is strict,
+# under the callers' strict mode, and checks its status is $5 and the calls
+# made are $6.
+check() {
+    local name=$1 mode=$2 branch=$3 tag=$4 status=$5 want=$6 rc=0
+    : >"$FAKE_LOG"
+    bash --norc --noprofile "$work/release" "$mode" "$helper" \
+        "$work/project" "$branch" "$tag" >/dev/null 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+    elif [ "$(<"$FAKE_LOG")" != "$want" ]; then
+        failed+=("$name: the calls were: $(<"$FAKE_LOG")")
+    fi
+}
+
+check strict-release strict testing 1.2 0 "$(calls testing 1.2)"
+check plain-release plain latest 3.4 0 "$(calls latest 3.4)"
+# Under its callers' errexit, a failing step ends the release there.
+FAKE_RC_tag_create=4 check strict-tag-fails strict latest 1.2 4 \
+    "$(calls latest 1.2 | head -n 5)"
+FAKE_RC_release_assert=1 check strict-refused strict latest 1.2 1 release-assert
+
+# Sourcing changes none of the shell's options.
+bash --norc --noprofile "$work/options" "$helper" ||
+    failed+=("options: sourcing changed the shell's options")
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

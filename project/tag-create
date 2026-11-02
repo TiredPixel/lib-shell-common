@@ -3,7 +3,7 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 tag=${1:?must be set to the tag to create}
-dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 # The sweep's status is checked rather than discarded. It used to be the left
 # operand of an && list, which errexit exempts -- so a sweep that failed, on an
