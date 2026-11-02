@@ -2,8 +2,8 @@
 concurrency:
   cancel-in-progress: true
   group: ${{ github.workflow }}-${{ github.ref }}
-# Strict as the repository's scripts are: GitHub's default bash for run steps
-# lacks pipefail, -u, inherit_errexit and failglob.
+# Strict as the repository's scripts are, which GitHub's default shell for run
+# steps is not (defaults.run.shell in GitHub's workflow syntax reference).
 defaults:
   run:
     shell: bash -Eeuo pipefail -O inherit_errexit -O failglob {0}
@@ -36,10 +36,11 @@ jobs:
       - name: Test
         run: |
           make test
-    # Bounded because GitHub's default runs to hours. Generous, as a run with
-    # no cached image yet builds from cold.
+    # Bounded so a hung run stops well before GitHub's default timeout.
+    # Generous, as a run with no cached image yet builds from cold.
     timeout-minutes: 15
-  # Pushes the dev image as the layer cache build takes, which nothing deploys.
+  # Pushes the dev image that the build job takes as its layer cache; nothing
+  # deploys it.
   # Only on a person's push, never an app's, whose tree would otherwise run here
   # with this write.
   cache:

@@ -2,8 +2,8 @@
 #
 # Runs bin/test under kcov, with any test names it is given, and writes the
 # report to tmp/coverage/, replacing the last one, since kcov otherwise merges
-# into whatever is there. Covers only the repository's own files. Runs from
-# the root of the repository.
+# into whatever is there. Covers only the repository's own files. Runs from the
+# root of the repository.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 

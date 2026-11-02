@@ -8,10 +8,10 @@ source "$dir/echo-line"
 
 "$dir/each-without-project" "$@"
 
-# To stderr, as the name printed beside it already is. On stdout the rule
-# lands in the data: project/tag-create captures this sweep's output to ask
-# whether a tag exists anywhere, and read back a line of dashes instead of the
-# tags -- so the check answered "not present" every time.
+# To stderr, as the name printed beside it already is. On stdout the rule lands
+# in the data: project/tag-create captures this sweep's output to ask whether a
+# tag exists anywhere, and would read back a line of dashes instead of the tags
+# -- so the check would answer "not present" every time.
 echo_line '-' >&2
 echo -e "$(basename "$PWD")\n" >&2
 "$@"

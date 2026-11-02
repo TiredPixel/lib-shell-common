@@ -1,7 +1,7 @@
-# Read by the test stage alone, since dev copies nothing in. Every top-level
-# dot path is kept out, so a per-user one such as an editor's directory never
-# reaches the image, and the project's own are let back in by name; .env and
-# the Compose overrides hold this checkout's settings, not the tree's.
+# Read by the test stage alone, since dev copies nothing in. Every top-level dot
+# path is kept out, so a per-user one such as an editor's directory never
+# reaches the image, and the project's own are let back in by name; .env and the
+# Compose overrides hold this checkout's settings, not the tree's.
 /.*
 **/.git
 /docker-compose.*.yml

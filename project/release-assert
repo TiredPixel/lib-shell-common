@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
 #
-# Refuses a release taken from a repository that is in no state to release
-# from, and reports the submodules the release will not tag.
+# Refuses a release taken from a repository that is in no state to release from,
+# and reports the submodules the release will not tag.
 #
 # It runs before the sweep rather than beside the commit, so a refusal costs
 # nothing: no branch has been switched, nothing pulled, no tag signed. That
 # placement is also what makes project/release-commit-submodules sound -- the
-# sweep only ever moves submodule pointers here, so a tree carrying nothing
-# else now is still carrying nothing else when the commit comes.
+# sweep only ever moves submodule pointers here, so a tree carrying nothing else
+# now is still carrying nothing else when the commit comes.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 # lastpipe so the loop below runs in this shell and keeps what it reads, and so
 # pipefail sees git's status. A process substitution hides it entirely:
-# `mapfile -d "" -t x < <(false)` succeeds, leaving an empty array that reads
-# as "no submodules" -- the silent-failure shape project/tag-create already
-# carries a comment about.
+# `mapfile -d "" -t x < <(false)` succeeds, leaving an empty array that reads as
+# "no submodules".
 #
 # lastpipe needs job control off, and a script reached through its shebang
 # always has it off: the setting is not inherited across the exec, so a caller
-# running with job control on cannot pass it in. Only a `set -m` here would
-# take it back, and it would do so silently -- the loop would run in a subshell
-# and the array arrive empty.
+# running with job control on cannot pass it in. Only a `set -m` here would take
+# it back, and it would do so silently -- the loop would run in a subshell and
+# the array arrive empty.
 shopt -s lastpipe
 
 f_projects=.projects
@@ -47,10 +46,11 @@ if [ -n "$dirty" ]; then
     exit 1
 fi
 
-# git status reports none of these, and git commit --only cannot run under any
-# of them: git-commit(1) says it "refuses to run when given pathnames" during a
-# merge. Caught here, saying what it is about, rather than surfacing after the
-# sweep as `fatal: cannot do a partial commit during a merge`.
+# git status reports none of these. During a merge or cherry-pick git commit
+# --only refuses to run, failing after the sweep as
+# `fatal: cannot do a partial commit during a merge` (or `a cherry-pick`);
+# during a revert, rebase or am it runs, and the release commit lands inside
+# that operation. Either way it is caught here, saying what it is about.
 git_dir=$(git rev-parse --git-dir)
 
 for f in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
@@ -61,8 +61,8 @@ for f in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
     fi
 done
 
-# An unmerged submodule path is hidden by --ignore-submodules=all above, and
-# would reach git commit as `error: path '...' is unmerged`.
+# The status check above already refuses an unmerged path, a submodule's
+# included, which it lists as UU; this is a second guard for the same case.
 unmerged=$(git ls-files --unmerged)
 
 if [ -n "$unmerged" ]; then
@@ -73,11 +73,11 @@ if [ -n "$unmerged" ]; then
 fi
 
 # The submodules this release will not tag. .projects is a curated list -- see
-# project/each-without-project -- so an omission is usually deliberate, and
-# this reports rather than refuses. It is the only place the other kind of
-# omission shows: a submodule that does belong, added without a line, is
-# otherwise never checked out, never pulled and never tagged, and the release
-# reports success without it.
+# project/each-without-project -- so an omission is usually deliberate, and this
+# reports rather than refuses. It is the only place the other kind of omission
+# shows: a submodule that does belong, added without a line, is otherwise never
+# checked out, never pulled and never tagged, and the release reports success
+# without it.
 modules=()
 
 git ls-files -z --stage |
@@ -89,16 +89,16 @@ git ls-files -z --stage |
 
 for module in "${modules[@]}"; do
     # A submodule git cannot resolve is invisible rather than loud: git tests
-    # the gitlink by reading the repository the directory holds, and where
-    # there is none it answers unchanged. So a directory carrying content but
-    # no repository of its own -- a deinit that left files, a broken vendoring,
-    # a checkout interrupted -- makes the pointer read as unchanged, and the
+    # the gitlink by reading the repository the directory holds, and where there
+    # is none it answers unchanged. So a directory carrying content but no
+    # repository of its own -- a deinit that left files, a broken vendoring, a
+    # checkout interrupted -- makes the pointer read as unchanged, and the
     # release records the commit it already held while the tree carries
     # something else. Nothing raises anywhere.
     #
-    # An empty directory is the other thing and is left alone: that is a
-    # submodule nobody initialised, its pointer cannot move, and for one
-    # .projects does not name it is the normal state.
+    # An empty directory is the other case and is left alone: it is a submodule
+    # nobody initialised, so its pointer cannot move, and for a submodule
+    # .projects does not name, that is the normal state.
     if [ ! -d "$module" ]; then
         echo "$PWD: $module: not checked out, so a release cannot record it" >&2
 
@@ -130,8 +130,8 @@ fi
 unlisted=()
 
 for module in "${modules[@]}"; do
-    # -F and -x because a path is a literal, not a pattern, and because lib/a
-    # is not lib/ab -- the distinction project/tag-create draws for a tag.
+    # -F and -x because a path is a literal, not a pattern, and because lib/a is
+    # not lib/ab -- the distinction project/tag-create draws for a tag.
     grep -qFx -- "$module" <<<"$listed" || unlisted+=("$module")
 done
 

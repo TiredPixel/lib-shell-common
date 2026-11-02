@@ -63,8 +63,8 @@ failed=()
 
 # Runs bin/test with the remaining arguments in tree $2, and checks its status
 # is $3 and its stdout and stderr together hold each line of $4 and no FAILED
-# line beyond them. Returns 1 where a check failed, so the caller checks the
-# log only after a run as expected.
+# line beyond them. Returns 1 where a check failed, so the caller checks the log
+# only after a run as expected.
 check() {
     local name=$1 t=$2 status=$3 said=$4 rc=0 line
     shift 4
@@ -95,8 +95,8 @@ logged() {
     fi
 }
 
-# Checks the log of case $1 is the lint, then each test in the rest starting
-# and ending, in any order, since they run in parallel.
+# Checks the log of case $1 is the lint, then each test in the rest starting and
+# ending, in any order, since they run in parallel.
 linted_then_ran() {
     local name=$1 first rest
     shift
@@ -107,8 +107,8 @@ linted_then_ran() {
     fi
 }
 
-# Checks the log of case $1 is each test in the rest starting and ending, in
-# any order, with no lint.
+# Checks the log of case $1 is each test in the rest starting and ending, in any
+# order, with no lint.
 ran_only() {
     local name=$1
     shift

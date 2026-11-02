@@ -4,17 +4,18 @@ shopt -s inherit_errexit failglob
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
-# Two questions, cheapest first: is this a compose project, and has it
-# anything to bring up. They cannot be folded into one -- compose resolves a
-# project from any directory inside it, so dropping the file test would let a
-# project carrying none adopt an ancestor's. The second catches services that
-# all sit behind a profile, which selects nothing and which compose calls an
-# error rather than nothing to do.
+# Two questions, cheapest first: is this a compose project, and has it anything
+# to bring up. They cannot be folded into one -- compose resolves a project from
+# any directory inside it, so dropping the file test would let a project
+# carrying none adopt an ancestor's. The second catches services that all sit
+# behind a profile, which selects nothing and which compose calls an error
+# rather than nothing to do.
 #
 # --wait, so a service that dies on start or never turns healthy fails the
-# project it belongs to. The daemon-wide health poll this replaced filtered on
-# health status, which an exited container does not have, so a crash on start
-# passed; and it stalled on an unhealthy container from an unrelated project.
+# project it belongs to. A daemon-wide health poll would not do: filtering on
+# health status misses an exited container, which has none, so a crash on start
+# would pass, and it would stall on an unhealthy container from an unrelated
+# project.
 # A one-shot service exiting 0 fails --wait too, unless it is a
 # service_completed_successfully dependency of a service that stays up.
 # Override the bound with DC_WAIT_TIMEOUT.

@@ -2,7 +2,8 @@
 #
 # Re-pin a Dockerfile (default ./Dockerfile) to what its pins name today, so an
 # upgrade moves everything forward and the tests that follow it catch what
-# broke. Two kinds of line, among the comments at the top:
+# broke. Two kinds of comment line, read wherever they fall in the file, though
+# kept at the top by convention:
 #
 #   # FROMFREEZE REPO:TAG
 #       every FROM REPO line is pinned to the digest REPO:TAG names now
@@ -17,13 +18,13 @@
 #       latest for the package, which may be scoped, as @SCOPE/NAME, read with
 #       jq from its JSON
 #
-# A version held back is one whose ARGFREEZE line is removed, the ARG set to
-# the version that works and a comment beside it saying why; nothing here then
+# A version held back is one whose ARGFREEZE line is removed, the ARG set to the
+# version that works and a comment beside it saying why; nothing here then
 # touches it.
 #
-# A pin that names nothing in the file fails the run, as does an ARGFREEZE
-# whose ARG has no default or more than one value, or a lookup that fails: each
-# would otherwise leave a pin where it was with no sign that it had not moved.
+# A pin that names nothing in the file fails the run, as does an ARGFREEZE whose
+# ARG has no default or more than one value, or a lookup that fails: each would
+# otherwise leave a pin where it was with no sign that it had not moved.
 # Nothing is written until every pin has been resolved.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -104,7 +105,8 @@ for data in "${args[@]}"; do
         die "ARGFREEZE $data is not NAME github:OWNER/PROJECT," \
             "NAME pypi:PACKAGE or NAME npm:PACKAGE"
     fi
-    # npm's rules for a new package's name: lower case, optionally scoped.
+    # npm's rules for a new package's name: lower case, optionally scoped (npm
+    # Docs, package.json, "name", docs.npmjs.com, checked 2026-11).
     [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
         [[ "$source" =~ ^pypi:[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
         [[ "$source" =~ ^npm:(@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$ ]] ||
@@ -155,7 +157,9 @@ for data in "${args[@]}"; do
         package=${source#pypi:}
         # .info.version is the latest release, a pre-release only where the
         # package has nothing else. -L follows PyPI's redirect from a name not
-        # in its normal form.
+        # in its normal form. PyPI's JSON API (docs.pypi.org/api/json/, checked
+        # 2026-11) documents the latest version, not the pre-release or the
+        # redirect behaviour.
         echo "Looking up $package's latest version on PyPI"
         json=$(curl -fsSL "https://pypi.org/pypi/$package/json")
         version=$(jq -r '.info.version // empty' <<<"$json") ||

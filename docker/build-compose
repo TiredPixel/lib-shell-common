@@ -2,12 +2,13 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# git describe fails in a repo carrying no tag, and a command substitution in
-# an argument cannot fail the command it is an argument to -- so the build went
-# ahead with an empty stamp, a fatal: on stderr its only sign. Empty is the
-# right value for an untagged working copy; what it must not be is accidental.
-# A consumer that stamps this value should refuse an empty one at the point
-# that actually stamps.
+# git describe fails in a repo carrying no tag, and a command substitution in an
+# argument cannot fail the command it is an argument to -- so inline it would
+# let the build go ahead with an empty stamp, a fatal: on stderr its only sign.
+# Empty is the right value for an untagged working copy; what it must not be is
+# accidental.
+# A consumer that stamps this value should refuse an empty one at the point that
+# actually stamps.
 describe=$(git describe 2>/dev/null || true)
 
 docker compose "$@" build \

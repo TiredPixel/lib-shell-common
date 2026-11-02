@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Tests project/release-onto, sourced in a shell with no options set and in
-# one under the strict mode its callers run, with every project/ script it
-# calls faked in a scratch dir: each fake logs its name and arguments, a line
-# to a call, and exits with FAKE_RC_<name>'s status. Sourcing must set none of
-# the shell's options.
+# Tests project/release-onto, sourced in a shell with no options set and in one
+# under the strict mode its callers run, with every project/ script it calls
+# faked in a scratch dir: each fake logs its name and arguments, a line to a
+# call, and exits with the status in FAKE_RC_<name>, hyphens in the name made
+# underscores (FAKE_RC_tag_create). Sourcing must set none of the shell's
+# options.
 #
 # Run: project/release-onto.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -29,9 +30,8 @@ EOF
 done
 export FAKE_LOG=$work/log
 
-# The shells that source the helper are scripts in files rather than -c
-# strings, as its callers are, so BASH_SOURCE is set in them as it is in a
-# caller.
+# The shells that source the helper are scripts in files rather than -c strings,
+# as its callers are, so BASH_SOURCE is set in them as it is in a caller.
 cat >"$work/release" <<'EOF'
 if [ "$1" = strict ]; then
     set -Eeuo pipefail
@@ -60,8 +60,8 @@ calls() {
 }
 
 # Runs release_onto $3 $4 in a bash with no options or, where $2 is strict,
-# under the callers' strict mode, and checks its status is $5 and the calls
-# made are $6.
+# under the callers' strict mode, and checks its status is $5 and the calls made
+# are $6.
 check() {
     local name=$1 mode=$2 branch=$3 tag=$4 status=$5 want=$6 rc=0
     : >"$FAKE_LOG"

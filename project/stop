@@ -4,9 +4,9 @@ shopt -s inherit_errexit failglob
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
-# The pair of questions project/start asks, for the same reasons. stop
-# tolerates an empty selection where up does not, but the two halves state
-# one policy rather than leaning on that difference.
+# The pair of questions project/start asks, for the same reasons. stop tolerates
+# an empty selection where up does not, but the two halves state one policy
+# rather than leaning on that difference.
 # The string is for sh, which expands it in each project.
 # shellcheck disable=SC2016
 "$dir/each" sh -c '
