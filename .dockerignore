@@ -12,3 +12,4 @@
 !/.env.example
 !/.github
 !/.gitignore
+!/.hadolint.yaml

@@ -68,11 +68,20 @@ shell_files+=(bin/files docker/init project/echo-line project/release-onto)
 
 # A proposed workflow waits in .github/workflows.new/ until it is moved into
 # .github/workflows/, so either directory may be absent.
-yaml_files=(docker-compose.yml)
+yaml_files=(docker-compose.yml .hadolint.yaml)
 if [ -d .github ]; then
     files_workflows=()
     files_find files_workflows .github .github -mindepth 2 -maxdepth 2 -type f \
-        -path '.github/workflows*/*.yml'
+        \( -path '.github/workflows*/*.yml' -o -path '.github/workflows*/*.yaml' \)
     yaml_files+=("${files_workflows[@]}")
     unset files_workflows
 fi
+
+# Read only by the runners that source this file, so they look unused here.
+# shellcheck disable=SC2034
+docker_files=(Dockerfile)
+# shellcheck disable=SC2034
+markdown_files=(README.md)
+
+# No formatter or linter exists for what else is tracked: the Makefile, the
+# .dockerignore, .gitignore and .env.example, .dockerrepo and the LICENSE.
