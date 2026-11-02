@@ -9,7 +9,7 @@ Bash 4.4 or newer. Every executable script here opens `set -Eeuo pipefail` follo
 Working on this repository needs:
 
 - Docker Engine or Docker Desktop with Compose v2
-- `make`
+- `make`, whose recipes run under Bash 4.4 or newer
 
 ## Installation
 
@@ -61,7 +61,7 @@ The `docker/` scripts that build or push tagged images, or log in, such as `dock
 make test
 ```
 
-The lint is ShellCheck and shfmt on every Bash script; `lint/yaml-keys` and yamllint on the YAML files `bin/files` lists, with `docker-compose config` on `docker-compose.yml` and actionlint on the workflows; dockerfmt and hadolint on the `Dockerfile`; and mdformat on `README.md`. The tests are the `*/*.test` scripts, run side by side, as many at a time as there are CPUs; each failing test is named, and the run fails if any did.
+The lint is ShellCheck and shfmt on every Bash script; `lint/yaml-keys` and yamllint on the YAML files `bin/files` lists, with `docker-compose config` on `docker-compose.yml` and actionlint on the workflows; dockerfmt and hadolint on the `Dockerfile`; mdformat on `README.md`; checkmake on the `Makefile`; and dotenv-linter on `.env.example`. The tests are the `*/*.test` scripts, run side by side, as many at a time as there are CPUs; each failing test is named, and the run fails if any did.
 
 Named tests skip the lint, and each must be a `*/*.test` path from the repository's root:
 
@@ -85,7 +85,7 @@ make coverage
 
 ## Formatting
 
-`make format` rewrites the tree in place: shfmt, indented by 4, on every Bash script; keys sorted with yq in the YAML files `bin/files` lists; dockerfmt on the `Dockerfile`; and mdformat on `README.md`.
+`make format` rewrites the tree in place: shfmt, indented by 4, on every Bash script; keys sorted with yq in the YAML files `bin/files` lists; dockerfmt on the `Dockerfile`; mdformat on `README.md`; and dotenv-linter's fixes on `.env.example`.
 
 ```sh
 make format

@@ -1,3 +1,7 @@
+# Strict as the repository's scripts are, which make's default /bin/sh is not.
+SHELL := bash
+.SHELLFLAGS := -Eeuo pipefail -O inherit_errexit -O failglob -c
+
 # --profile test so the shell and shell_test services are built here rather than
 # on demand by the --build the other targets carry.
 build:

@@ -34,4 +34,11 @@ echo -e "\n=== FORMAT MARKDOWN\n"
 echo "formatting ${#markdown_files[@]} Markdown file(s)" >&2
 mdformat "${mdformat_args[@]}" "${markdown_files[@]}"
 
+echo -e "\n=== FORMAT DOTENV\n"
+
+echo "formatting ${#dotenv_files[@]} dotenv file(s)" >&2
+# --no-backup, since a backup beside each file would be left in the tree, where
+# .gitignore's /.env* would hide it.
+dotenv-linter fix --no-backup "${dotenv_files[@]}"
+
 echo
