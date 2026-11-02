@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#
+# Runs bin/test under kcov, with any test names it is given, and writes the
+# report to tmp/coverage/, replacing the last one, since kcov otherwise merges
+# into whatever is there. Covers only the repository's own files. Runs from
+# the root of the repository.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+out=$PWD/tmp/coverage
+
+if [ -e "$out" ]; then
+    echo "removing ${out:?}" >&2
+    rm -rf -- "${out:?}"
+fi
+mkdir -p -- "$out"
+
+kcov --include-path="$PWD" "$out" "$bin/test" "$@"
+
+echo "coverage report: tmp/coverage/index.html" >&2

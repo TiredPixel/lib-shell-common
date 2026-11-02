@@ -12,7 +12,7 @@ version=$(git describe)
 
 tags=("$TAG")
 
-if [ "$version" == "$release" ]; then
+if [ "$version" = "$release" ]; then
     r=$release
     r_=""
 
@@ -20,7 +20,7 @@ if [ "$version" == "$release" ]; then
         tags+=("$r")
         r=${r%.*}
 
-        if [ "$r" == "$r_" ]; then
+        if [ "$r" = "$r_" ]; then
             break
         else
             r_=$r

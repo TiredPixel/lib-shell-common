@@ -12,7 +12,7 @@ regex_kubernetes_configmap=$(
 )
 
 grep '^      regex: .*|node_cpu_seconds_total|.*' "$f_ansible_template" |
-    awk '{ print $2}' |
+    awk '{print $2}' |
     sed 's/|/\n/g' |
     grep -Ev "($regex_kubernetes_configmap)" |
     tr '\n' '|' |

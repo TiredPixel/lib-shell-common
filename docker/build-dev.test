@@ -22,18 +22,18 @@ cat >"$work/bin/docker" <<'EOF'
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 args=$(printf '%q ' "$@")
-echo "${args% }" >> "$FAKE_LOG"
+echo "${args% }" >>"$FAKE_LOG"
 case $1 in
-    build)
-        echo "fake docker: building" >&2
-        echo "fake docker: built"
-        exit "${FAKE_BUILD:-0}"
-        ;;
-    push)
-        echo "fake docker: pushed $2"
-        exit "${FAKE_PUSH:-0}"
-        ;;
-    *) exit 2 ;;
+build)
+    echo "fake docker: building" >&2
+    echo "fake docker: built"
+    exit "${FAKE_BUILD:-0}"
+    ;;
+push)
+    echo "fake docker: pushed $2"
+    exit "${FAKE_PUSH:-0}"
+    ;;
+*) exit 2 ;;
 esac
 EOF
 cat >"$work/bin/git" <<'EOF'
@@ -41,15 +41,15 @@ cat >"$work/bin/git" <<'EOF'
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 case $* in
-    "rev-parse --abbrev-ref HEAD") echo a/b ;;
-    describe)
-        if [ -z "${FAKE_DESCRIBE:-}" ]; then
-            echo "fatal: No names found, cannot describe anything." >&2
-            exit 128
-        fi
-        echo "$FAKE_DESCRIBE"
-        ;;
-    *) exit 2 ;;
+"rev-parse --abbrev-ref HEAD") echo a/b ;;
+describe)
+    if [ -z "${FAKE_DESCRIBE:-}" ]; then
+        echo "fatal: No names found, cannot describe anything." >&2
+        exit 128
+    fi
+    echo "$FAKE_DESCRIBE"
+    ;;
+*) exit 2 ;;
 esac
 EOF
 chmod +x "$work/bin/docker" "$work/bin/git"

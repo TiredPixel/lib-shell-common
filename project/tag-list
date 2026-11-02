@@ -2,6 +2,6 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
-"$dir/each" git tag -l --no-column 2>/dev/null | sort -Vu | tail
+"$dir/each" git tag -l --no-column | sort -Vu | tail

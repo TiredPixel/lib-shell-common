@@ -1,0 +1,27 @@
+# shellcheck shell=bash
+#
+# Sourced by project/release-create-latest and project/release-create-stable,
+# which release onto a branch by the same steps. Sets no shell options, since
+# it runs under its caller's.
+
+# Releases tag $3 from branch $2 in every project, through the project/
+# scripts in directory $1: refuses a tree in no state to release, brings each
+# project's $2 current, commits the submodule pointers, tags, and pushes $2.
+release_onto() {
+    local dir=$1 branch=$2 tag=$3
+
+    "$dir/release-assert"
+
+    "$dir/each" git checkout "$branch" --no-recurse-submodules
+
+    "$dir/each" git pull --ff-only --no-recurse-submodules
+
+    "$dir/release-commit-submodules"
+
+    "$dir/tag-create" "$tag"
+
+    # Remote and refspec named, whatever the caller's push.default,
+    # remote.pushDefault or push.followTags.
+    "$dir/each" git push --no-follow-tags --recurse-submodules=check origin \
+        "$branch:$branch"
+}

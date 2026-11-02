@@ -47,7 +47,7 @@ An `ARGFREEZE` line with a `pypi:` or `npm:` source also needs `jq` where `docke
 make test
 ```
 
-The lint is ShellCheck and shfmt on every Bash script, and `lint/yaml-keys` on `docker-compose.yml` and the workflows. The tests are the `*/*.test` scripts, run side by side, as many at a time as there are CPUs; each failing test is named, and the run fails if any did.
+The lint is ShellCheck and shfmt on every Bash script; `lint/yaml-keys` and yamllint on `docker-compose.yml` and the workflows, with `docker-compose config` on the one and actionlint on the others; dockerfmt on the `Dockerfile`; and mdformat on `README.md`. The tests are the `*/*.test` scripts, run side by side, as many at a time as there are CPUs; each failing test is named, and the run fails if any did.
 
 Named tests skip the lint, and each must be a `*/*.test` path from the repository's root:
 
@@ -61,9 +61,17 @@ make test TESTS=docker/upgrade.test
 make lint
 ```
 
+## Measuring coverage
+
+`make coverage` runs the gate under kcov in the `shell` container and writes its report to `tmp/coverage/`, replacing the last one; `TESTS` narrows it as it does `make test`. Like `make format`, it writes to the tree, so it needs `DC_BIND_USER` set as *Installation* describes where Docker is rootless.
+
+```sh
+make coverage
+```
+
 ## Formatting
 
-`make format` rewrites the tree in place: shfmt, indented by 4, on every Bash script, and keys sorted with yq in `docker-compose.yml` and the workflows.
+`make format` rewrites the tree in place: shfmt, indented by 4, on every Bash script; keys sorted with yq in `docker-compose.yml` and the workflows; dockerfmt on the `Dockerfile`; and mdformat on `README.md`.
 
 ```sh
 make format
@@ -71,9 +79,9 @@ make format
 
 ## Building
 
-The image builds two stages. `dev` is the formatting, linting and test toolchain, running as the unprivileged user `x`; it copies nothing in, so `make format` runs it on the mounted tree. `test` adds a copy of the repository's tree to it.
+The image builds two stages. `dev` is the formatting, linting and test toolchain, running as the unprivileged user `x`; it copies nothing in, so `make format` runs it on the mounted tree. `test` adds a copy of the repository's tree to it, leaving out every top-level dot path but the project's own, which `.dockerignore` names, so a per-user one, such as an editor's directory, never reaches the image.
 
-The `shell` and `shell_test` services sit under the `test` profile, which every make target that runs Compose passes. The `shell` service runs `bin/format` from `dev` on the tree mounted read-write, since its rewrites must reach it. The `shell_test` service runs the gates from `test` on its own copy, with no mount and no network.
+The `shell` and `shell_test` services sit under the `test` profile, which every make target that runs Compose passes. The `shell` service runs `bin/format` and `bin/coverage` from `dev` on the tree mounted read-write, since their writes must reach it. The `shell_test` service runs the gates from `test` on its own copy, with no mount and no network.
 
 `make build` builds both stages:
 

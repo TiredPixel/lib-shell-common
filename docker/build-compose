@@ -2,8 +2,6 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-opts=("$@")
-
 # git describe fails in a repo carrying no tag, and a command substitution in
 # an argument cannot fail the command it is an argument to -- so the build went
 # ahead with an empty stamp, a fatal: on stderr its only sign. Empty is the
@@ -12,5 +10,5 @@ opts=("$@")
 # that actually stamps.
 describe=$(git describe 2>/dev/null || true)
 
-docker compose "${opts[@]}" build \
+docker compose "$@" build \
     --build-arg GIT_DESCRIBE="$describe"

@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+# lib/ holds submodules, which are linted in their own repositories; vault
+# files are encrypted, so there is nothing to lint in them.
 ansible-lint \
     --offline \
     --strict \

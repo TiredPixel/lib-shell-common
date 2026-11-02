@@ -2,6 +2,10 @@
 # on demand by the --build the other targets carry.
 build:
 	docker/build-compose --profile test
+# The shell service, since its mount is the one that lets the report reach
+# tmp/coverage/ on the host.
+coverage:
+	docker compose --profile test run --rm --build shell coverage $(TESTS)
 format:
 	docker compose --profile test run --rm --build shell format
 lint:
@@ -15,4 +19,4 @@ upgrade:
 	$(MAKE) upgrade-pre
 	$(MAKE) build
 	$(MAKE) test
-.PHONY: build format lint test upgrade-pre upgrade
+.PHONY: build coverage format lint test upgrade-pre upgrade

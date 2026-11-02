@@ -6,7 +6,9 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/files"
+bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+source "$bin/files"
 
 echo -e "\n=== FORMAT SHELL\n"
 
@@ -21,5 +23,17 @@ echo "formatting ${#yaml_files[@]} YAML file(s)" >&2
 for f in "${yaml_files[@]}"; do
     yq -i -P 'sort_keys(..)' "$f"
 done
+
+echo -e "\n=== FORMAT DOCKERFILE\n"
+
+echo "formatting ${#docker_files[@]} Dockerfile(s)" >&2
+# --newline, so each keeps its final newline, which dockerfmt otherwise drops.
+dockerfmt --newline --write "${docker_files[@]}"
+
+echo -e "\n=== FORMAT MARKDOWN\n"
+
+echo "formatting ${#markdown_files[@]} Markdown file(s)" >&2
+# --wrap no, so each paragraph is one line, which renderers reflow.
+mdformat --wrap no "${markdown_files[@]}"
 
 echo
