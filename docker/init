@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 #
-# Sourced by the docker/ scripts that build, push or log in, to export REPO,
-# from .dockerrepo, and TAG, from the branch. Sets no shell options, since it
-# runs under its caller's.
+# Sourced by the docker/ scripts that build or push $REPO:$TAG images, or log
+# in, to export REPO, from .dockerrepo, and TAG, from the branch. Sets no shell
+# options, since it runs under its caller's.
 
 export DOCKER_BUILDKIT=1
 
@@ -23,8 +23,9 @@ fi
 # variable holding nothing satisfies set -u and leaves the tag empty, which
 # pushes $REPO:.dev rather than failing.
 #
-# Checked and exited explicitly rather than by ${TAG:?}, whose error exits 127
-# in a shell sourcing this without errexit.
+# Checked and exited explicitly rather than by ${TAG:?}, so the error says what
+# to do and the status is 1 even where init is sourced from a bash -c string
+# without errexit, where ${TAG:?} exits 127.
 if [ -z "$TAG" ]; then
     echo "${BASH_SOURCE[0]}: TAG: detached HEAD and no CI branch variable set;" \
         "check out a branch" >&2

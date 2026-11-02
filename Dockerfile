@@ -36,8 +36,8 @@ ENV LANG=C.UTF-8 \
 
 ENV PATH=/home/x/r/bin:$PATH
 
-# mikefarah's yq, which bin/format and lint/yaml-keys need: Debian's yq is the
-# Python wrapper.
+# mikefarah's yq, which bin/format and lint/yaml-keys need: Debian 13's yq is
+# the Python wrapper.
 ARG YQ_VERSION=4.54.1
 RUN curl -fsL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_$(dpkg --print-architecture)" -o /usr/local/bin/yq \
     && chmod +x /usr/local/bin/yq \
@@ -45,7 +45,7 @@ RUN curl -fsL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/
     && yq --version | grep -qF "version v${YQ_VERSION}"
 
 # actionlint, which bin/lint runs on the workflows, and hadolint, which it runs
-# on this file: Debian packages neither.
+# on this file: Debian 13 packages neither.
 ARG ACTIONLINT_VERSION=1.7.12
 RUN curl -fsL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_$(dpkg --print-architecture).tar.gz" \
     | tar -xz -C /usr/local/bin actionlint \
@@ -61,14 +61,14 @@ RUN case $(dpkg --print-architecture) in \
     chmod +x /usr/local/bin/hadolint && \
     hadolint --version | grep -qF " ${HADOLINT_VERSION}"
 
-# dockerfmt, which bin/format runs on this file: Debian does not package it.
+# dockerfmt, which bin/format runs on this file: Debian 13 does not package it.
 ARG DOCKERFMT_VERSION=0.5.4
 RUN curl -fsL "https://github.com/reteps/dockerfmt/releases/download/v${DOCKERFMT_VERSION}/dockerfmt-v${DOCKERFMT_VERSION}-linux-$(dpkg --print-architecture).tar.gz" \
     | tar -xz -C /usr/local/bin dockerfmt \
     && dockerfmt version | grep -qF "${DOCKERFMT_VERSION}"
 
 # mdformat, which bin/format runs on Markdown, from pipx with its gfm and
-# frontmatter plugins injected: Debian's mdformat package carries neither.
+# frontmatter plugins injected: Debian 13's mdformat package carries neither.
 ARG MDFORMAT_VERSION=1.0.0
 ARG MDFORMAT_GFM_VERSION=1.0.0
 ARG MDFORMAT_FRONTMATTER_VERSION=2.2.0

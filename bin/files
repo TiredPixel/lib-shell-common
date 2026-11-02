@@ -5,9 +5,9 @@
 # shell options, since it runs under its caller's; any failure here ends the
 # caller's run.
 
-# Indented by 4 spaces rather than shfmt's default tab, since spaces are the
-# common practice for shell. Read only by the runners that source this file, so
-# it looks unused here.
+# Indented by 4 spaces, departing from shfmt's default indent (see
+# `shfmt --help`), since spaces are the common practice for shell. Read only by
+# the runners that source this file, so it looks unused here.
 # shellcheck disable=SC2034
 shfmt_args=(-i 4)
 

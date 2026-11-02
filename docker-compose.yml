@@ -1,5 +1,4 @@
 ---
-# The services make runs.
 services:
   # Runs bin/format and bin/coverage, whose writes have to reach the host tree,
   # which only this mount carries there. The whole tree is bound rather than

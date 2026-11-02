@@ -4,12 +4,12 @@
 # declares it. The sweeps in project/build and project/upgrade reach every
 # project through it.
 #
-# The decision cannot be taken from `make -q`'s exit status, which is what this
-# replaces: it answers 2 for every error it meets -- a target it holds no rule
-# for, a Makefile it cannot parse, a directory holding no Makefile at all -- so
-# reading 2 as "nothing to do here" drops a project whose Makefile is broken
-# out of the sweep and reports success having skipped it. An uninitialised
-# submodule is an empty directory, and looks exactly the same.
+# The decision cannot be taken from `make -q`'s exit status: it answers 2 for
+# every error it meets -- a target it holds no rule for, a Makefile it cannot
+# parse, a directory holding no Makefile at all -- so reading 2 as "nothing to
+# do here" drops a project whose Makefile is broken out of the sweep and reports
+# success having skipped it. An uninitialised submodule is an empty directory,
+# and looks exactly the same.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -32,8 +32,8 @@ fi
 
 # -q runs nothing. It answers 0 when the target is up to date and 1 when it
 # needs remaking, and either means the rule exists, which is the whole question
-# here. stdout is dropped and stderr kept, because the wording of the
-# diagnostic is what separates the two failures below.
+# here. stdout is dropped and stderr kept, because the wording of the diagnostic
+# is what separates the two failures below.
 err=$(make -q "$target" 2>&1 >/dev/null) && status=0 || status=$?
 
 case $status in

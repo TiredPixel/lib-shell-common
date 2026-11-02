@@ -7,19 +7,19 @@ shopt -s inherit_errexit failglob
 # unseen, and a release would go on to push it.
 git pull --ff-only --no-recurse-submodules
 
-# One sweep, from here, whose submodules are the projects .projects names --
-# and --recursive reaches theirs in turn. It used to run from inside each
-# project instead, which started the recursion one level too low: it brought
-# each project's own submodules current but never the project, so a stage that
-# reports having pulled everything left every project on whatever commit its
-# working tree happened to sit on.
+# One sweep, from here, whose submodules are the projects .projects names -- and
+# --recursive reaches theirs in turn. Run from inside each project instead, the
+# recursion would start one level too low: it would bring each project's own
+# submodules current but never the project, so a stage that reports having
+# pulled everything would leave every project on whatever commit its working
+# tree happened to sit on.
 #
 # checkout before pull, because a submodule is checked out at a recorded commit
 # and a detached HEAD has nothing to pull into. The branch comes from
 # origin/HEAD rather than a literal, so a project whose default branch is not
-# the usual one still follows its own -- which is also why this cannot be
-# git submodule update --remote, whose --rebase and --merge act on the branch
-# the parent recorded instead.
+# the usual one still follows its own -- not git submodule update --remote,
+# which also defaults to the remote HEAD but under --rebase or --merge acts on
+# whatever branch the submodule already has checked out.
 # The string is for the sh foreach runs in each submodule, which expands it.
 # shellcheck disable=SC2016
 git submodule foreach --recursive '

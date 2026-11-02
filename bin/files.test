@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Tests bin/files in scratch trees, with find faked on PATH, each sourcing it
-# under strict mode as bin/format and bin/lint do, and printing the sets it
-# builds, a line to a file: "shell f" for each shell file, then "yaml f" for
-# each YAML file.
+# under strict mode as bin/format and bin/lint do, and printing the two sets it
+# finds, a line to a file: "shell f" for each shell file, then "yaml f" for each
+# YAML file.
 #
 # Run: bin/files.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -42,8 +42,8 @@ export PATH=$work/path:$PATH
 
 dirs=(ansible docker lint project terraform bin)
 
-# Makes a tree at $work/$1 with one bash script in each listed directory, a
-# copy of bin/files and docker-compose.yml, and prints its path.
+# Makes a tree at $work/$1 with one bash script in each listed directory, a copy
+# of bin/files and an empty docker-compose.yml, and prints its path.
 tree() {
     local t=$work/$1 d
     mkdir "$t"
@@ -56,8 +56,8 @@ tree() {
     echo "$t"
 }
 
-# The shell lines for a tree as tree made it, with $1 inserted after the
-# docker/ line.
+# The shell lines for a tree as tree made it, with $1 inserted after the docker/
+# line.
 shells() {
     local d
     for d in "${dirs[@]}"; do

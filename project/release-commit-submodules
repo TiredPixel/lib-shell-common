@@ -2,12 +2,11 @@
 #
 # Commits the submodule pointers a release moved, and nothing else.
 #
-# It replaces `git add -A`, which staged the whole working tree: a release
-# taken beside unrelated work committed that work, and build output the
-# repository did not ignore landed in the release commit. The guard in front of
-# it was `if ! git diff --quiet`, which asks about the index rather than HEAD,
-# so content already staged read as nothing to do -- and which turns git's 128
-# on error into the "there are changes" branch.
+# It stages only pointer moves, since `git add -A` would commit any unrelated
+# work beside the release and any build output the repository does not ignore.
+# It compares against HEAD rather than through `git diff --quiet`, which asks
+# about the index, so content already staged would read as nothing to do, and
+# which turns git's 128 on error into the "there are changes" branch.
 #
 # project/release-assert has already refused a tree carrying anything but
 # submodule pointers, so what is left here is a pointer or a fault.
@@ -19,15 +18,12 @@ shopt -s inherit_errexit failglob
 
 # lastpipe so the loop below runs in this shell and keeps what it reads, and so
 # pipefail sees git's status. A process substitution hides it entirely:
-# `mapfile -d "" -t x < <(false)` succeeds, leaving an empty array that reads
-# as "nothing to commit" -- and the release would go on to sign and push a tag
-# without the bump. project/tag-create carries a comment about the same shape.
+# `mapfile -d "" -t x < <(false)` succeeds, leaving an empty array that reads as
+# "nothing to commit" -- and the release would go on to sign and push a tag
+# without the bump.
 #
-# lastpipe needs job control off, and a script reached through its shebang
-# always has it off: the setting is not inherited across the exec, so a caller
-# running with job control on cannot pass it in. Only a `set -m` here would
-# take it back, and it would do so silently -- the loop would run in a subshell
-# and the array arrive empty.
+# lastpipe needs job control off, which holds here for the reason
+# project/release-assert gives.
 shopt -s lastpipe
 
 # Every path question settled in one place. Pathspecs handed to git commit are
@@ -45,10 +41,10 @@ refused=()
 # `git rev-parse HEAD:<path>` is not needed -- which matters, because without
 # --verify it prints the unresolvable string on stdout and exits 128.
 #
-# --ignore-submodules=dirty confines this to the recorded commit, the only
-# thing this repository can commit about a submodule. It does not suppress a
-# removal: git tests a missing path before it consults the setting, so the
-# status letter is read rather than assumed.
+# --ignore-submodules=dirty confines this to the recorded commit, the only thing
+# this repository can commit about a submodule. It does not suppress a removal:
+# git tests a missing path before it consults the setting, so the status letter
+# is read rather than assumed.
 git diff-index --raw -z --ignore-submodules=dirty HEAD |
     while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
         # :<srcmode> <dstmode> <srcsha> <dstsha> <status>
@@ -59,10 +55,10 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
             continue
         fi
 
-        # A pointer move is M with a gitlink either side. A is a submodule
-        # added and not committed; D a directory that is not checked out, which
-        # git commit --only would record as the submodule's removal; T one
-        # replaced by a regular file; U an unmerged path.
+        # A pointer move is M with a gitlink either side. A is a submodule added
+        # and not committed; D a directory that is not checked out, which git
+        # commit --only would record as the submodule's removal; T one replaced
+        # by a regular file; U an unmerged path.
         if [ "$status" != M ] ||
             [ "$srcmode" != 160000 ] || [ "$dstmode" != 160000 ]; then
             refused+=("$status $path")
@@ -113,9 +109,9 @@ if [ "${#bumped[@]}" -gt 0 ]; then
         # would report a direction nobody established. Asked both ways, because
         # one alone cannot separate a rewind from a divergence -- and a
         # divergence, which drops commits this repository already recorded, is
-        # the worse of the two. Reported and not refused: what a release
-        # carries is what is in the tree, and a submodule is not forced up to
-        # date because it may not have been reviewed yet.
+        # the worse of the two. Reported and not refused: what a release carries
+        # is what is in the tree, and a submodule is not forced up to date
+        # because it may not have been reviewed yet.
         forwards=0
         git -C "$path" merge-base --is-ancestor "$was" "$now" || forwards=$?
 
@@ -134,8 +130,10 @@ if [ "${#bumped[@]}" -gt 0 ]; then
 
         # :(literal) as pathspec magic rather than the global
         # --literal-pathspecs, which exports GIT_LITERAL_PATHSPECS=1 into every
-        # hook. A submodule path may carry a glob metacharacter, or begin with
-        # a colon -- the distinction project/tag-create draws for a tag.
+        # hook. A submodule path is a literal, not a pattern -- the distinction
+        # project/tag-create draws for a tag -- and may carry a glob
+        # metacharacter or begin with a colon, which a plain pathspec would read
+        # as a glob or as magic.
         paths+=(":(literal)$path")
     done
 
@@ -149,9 +147,9 @@ fi
 
 # Whatever the tree still holds is outside this release. Called from a release
 # script it can only be a submodule carrying its own uncommitted work, which no
-# commit here can record, because project/release-assert refused everything
-# else before the sweep began. The heading does not say that, though: this
-# script does not check it, and run on its own the claim would be false.
+# commit here can record, because project/release-assert refused everything else
+# before the sweep began. The heading does not say that, though: this script
+# does not check it, and run on its own the claim would be false.
 # To stderr, as project/each's echo_line comment insists -- project/tag-create
 # captures a sweep's stdout.
 remaining=$(git status --short --untracked-files=normal)

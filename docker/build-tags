@@ -2,9 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# REPO and TAG rather than a second derivation of each: init resolves a
-# detached HEAD, which the copy here did not, and CircleCI's branch variable
-# moved there with it so every caller gets both.
+# REPO and TAG come from init rather than a second derivation here, since init
+# resolves a detached HEAD from whichever CI names the branch.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
 
 release=$(git describe --abbrev=0)

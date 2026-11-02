@@ -5,17 +5,18 @@ shopt -s inherit_errexit failglob
 tag=${1:?must be set to the tag to create}
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
-# The sweep's status is checked rather than discarded. It used to be the left
-# operand of an && list, which errexit exempts -- so a sweep that failed, on an
-# uninitialised submodule or a directory that is not a repository, read as "the
-# tag exists nowhere" and the script went on to sign and push it everywhere.
+# The sweep's status is checked rather than discarded: as the left operand of an
+# && list it would be exempt from errexit, so a sweep that failed, on an
+# uninitialised submodule or a directory that is not a repository, would read as
+# "the tag exists nowhere" and the script would go on to sign and push it
+# everywhere.
 #
 # --no-column because column.ui=always would put several tags on a line, which
 # the exact-line match below would never find.
 existing=$("$dir/each" git tag -l --no-column | sort -Vu)
 
-# -F and -x because a tag is a literal, not a pattern: unanchored, 14.655 also
-# matches 14X655, and a tag carrying a metacharacter matches whatever it means.
+# -F because a tag is a literal, not a pattern -- as a regex 14.655 also matches
+# 14X655 -- and -x because 14.6 is not 14.655.
 if grep -qFx -- "$tag" <<<"$existing"; then
     echo "$tag: already exists" >&2
     exit 1

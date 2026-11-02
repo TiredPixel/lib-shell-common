@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 #
 # Sourced by project/release-create-latest and project/release-create-stable,
-# which release onto a branch by the same steps. Sets no shell options, since
-# it runs under its caller's.
+# which release onto a branch by the same steps. Sets no shell options, since it
+# runs under its caller's.
 
-# Releases tag $3 from branch $2 in every project, through the project/
-# scripts in directory $1: refuses a tree in no state to release, brings each
-# project's $2 current, commits the submodule pointers, tags, and pushes $2.
+# Releases tag $3 from branch $2 in every project, through the project/ scripts
+# in directory $1: refuses a tree in no state to release, brings each project's
+# $2 current, commits the submodule pointers, tags, and pushes $2.
 release_onto() {
     local dir=$1 branch=$2 tag=$3
 

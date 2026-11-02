@@ -27,7 +27,7 @@ done
 echo -e "\n=== FORMAT DOCKERFILE\n"
 
 echo "formatting ${#docker_files[@]} Dockerfile(s)" >&2
-# --newline, so each keeps its final newline, which dockerfmt otherwise drops.
+# --newline, so each keeps its final newline.
 dockerfmt --newline --write "${docker_files[@]}"
 
 echo -e "\n=== FORMAT MARKDOWN\n"
