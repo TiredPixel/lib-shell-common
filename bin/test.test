@@ -3,7 +3,9 @@
 # Tests bin/test in scratch trees, with bin/lint and nproc faked. The fake
 # bin/lint logs "lint" and exits with FAKE_LINT's status; the fake nproc prints
 # FAKE_NPROC. Each fake test logs "start" and "end" with its name, prints its
-# name, and exits with the status in its own name, as in a/fail3.test.
+# name, and exits with the status in its own name, as in a/fail3.test. Between
+# start and end it sleeps, or, where FAKE_GATES is set, reads a line from the
+# FIFO there named after its file, so the case decides when it ends.
 #
 # Run: bin/test.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -48,7 +50,11 @@ EOF
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 echo "start $0" >>"$FAKE_LOG"
-sleep 0.1
+if [ -n "${FAKE_GATES-}" ]; then
+    read -r _ <"$FAKE_GATES/${0##*/}"
+else
+    sleep 0.1
+fi
 echo "end $0" >>"$FAKE_LOG"
 echo "said $0"
 [[ $0 =~ fail([0-9]+) ]] && exit "${BASH_REMATCH[1]}"
@@ -175,6 +181,56 @@ t=$(tree serial b/two.test a/one.test c/three.test)
 if FAKE_NPROC=1 check serial "$t" 0 "3 test(s) passed"; then
     logged serial "lint"$'\n'"$(printf 'start ./%s\nend ./%s\n' \
         a/one.test a/one.test b/two.test b/two.test c/three.test c/three.test)"
+fi
+
+# Two at a time, no third test starts before one ends, whatever the timing. The
+# tests hold until released, so once two have started and the kernel shows
+# bin/test blocked waiting for a child, it has started every test it will before
+# one ends, and its children are exactly those. The case holds each gate open
+# read-write, so a release is buffered for a test not yet started rather than
+# blocking.
+t=$(tree capped a/one.test b/two.test c/three.test)
+gates=$work/gates
+mkdir "$gates"
+for f in one.test two.test three.test; do
+    mkfifo "$gates/$f"
+done
+exec 4<>"$gates/one.test" 5<>"$gates/two.test" 6<>"$gates/three.test"
+: >"$FAKE_LOG"
+(cd "$t" && FAKE_NPROC=2 FAKE_GATES=$gates exec bin/test 4>&- 5>&- 6>&-) \
+    >"$work/out" 2>&1 &
+pid=$!
+settled=
+# Bounded so a bin/test that never settles fails the case rather than hanging;
+# the sleep only paces the polling, and no result depends on it.
+for _ in {1..3000}; do
+    if [ "$(grep -c '^start ' "$FAKE_LOG" || :)" -ge 2 ] &&
+        [ -r "/proc/$pid/wchan" ] &&
+        [ "$(<"/proc/$pid/wchan")" = do_wait ]; then
+        settled=1
+        break
+    fi
+    sleep 0.01
+done
+if [ -z "$settled" ]; then
+    failed+=("capped: never waited with two tests started: $(<"$FAKE_LOG")")
+else
+    # The file carries no final newline, so read returns 1 having read it.
+    { read -r -a children || :; } <"/proc/$pid/task/$pid/children"
+    if [ ${#children[@]} -ne 2 ]; then
+        failed+=("capped: ${#children[@]} tests ran at once, not 2")
+    fi
+fi
+echo >&4
+echo >&5
+echo >&6
+rc=0
+wait "$pid" || rc=$?
+exec 4>&- 5>&- 6>&-
+if [ "$rc" -ne 0 ] || ! grep -qxF "3 test(s) passed" "$work/out"; then
+    failed+=("capped: exit $rc: $(<"$work/out")")
+else
+    linted_then_ran capped a/one.test b/two.test c/three.test
 fi
 
 if [ ${#failed[@]} -gt 0 ]; then
