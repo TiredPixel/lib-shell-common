@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+#
+# Tests lint/yaml-keys on YAML files in a scratch directory, with the real yq
+# and diff, giving it each set of paths NUL-separated on stdin as bin/lint does.
+#
+# Run: lint/yaml-keys.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+keys=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/yaml-keys
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/y"
+printf 'a: 1\nb:\n  c: 2\n  d: 3\n' >"$work/y/sorted.yml"
+printf 'b: 1\na: 2\n' >"$work/y/top.yml"
+printf 'a:\n  d: 1\n  c: 2\n' >"$work/y/nested.yml"
+printf 'b: 1\na: 2\n' >"$work/y/with space.yml"
+
+failed=()
+
+# Runs yaml-keys on the paths after $4, relative to $work/y, and checks its
+# status is $2, its stdout is empty, and its stderr is $3 exactly.
+check() {
+    local name=$1 status=$2 err=$3 rc=0
+    shift 3
+    (cd "$work/y" && printf '%s\0' "$@" | "$keys") >"$work/out" 2>"$work/err" ||
+        rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+    elif [ -s "$work/out" ]; then
+        failed+=("$name: stdout is: $(<"$work/out")")
+    elif [ "$(<"$work/err")" != "$err" ]; then
+        failed+=("$name: stderr is: $(<"$work/err")")
+    fi
+}
+
+hint="YAML key order: rewrite with yq -i -P 'sort_keys(..)'."
+
+check sorted 0 "yaml-keys: checked 1 file(s)" sorted.yml
+
+check unsorted-top 1 "top.yml: keys not sorted"$'\n'"yaml-keys: checked 1 file(s)"$'\n'"$hint" \
+    top.yml
+
+check unsorted-nested 1 "nested.yml: keys not sorted"$'\n'"yaml-keys: checked 1 file(s)"$'\n'"$hint" \
+    nested.yml
+
+# Every offender is named, not only the first, and a sorted one is not.
+check every-offender 1 "top.yml: keys not sorted"$'\n'"with space.yml: keys not sorted"$'\n'"yaml-keys: checked 3 file(s)"$'\n'"$hint" \
+    top.yml sorted.yml "with space.yml"
+
+# An empty set is reported, not refused.
+rc=0
+(cd "$work/y" && "$keys" </dev/null) >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 0 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "yaml-keys: checked 0 file(s)" ]; then
+    failed+=("none: exit $rc, stderr: $(<"$work/err")")
+fi
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

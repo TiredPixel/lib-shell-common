@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# Tests lint/version-assert on each VERSION it must refuse or accept, at each
+# bound it checks. It reads only VERSION, so nothing is faked.
+#
+# Run: lint/version-assert.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+assert=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/version-assert
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+failed=()
+
+# Runs version-assert with VERSION set to $2, or unset where $2 is "-unset-",
+# and checks its status is $3, its stdout is empty, and its stderr holds $4
+# where that is not empty or is empty where $4 is.
+check() {
+    local name=$1 version=$2 status=$3 said=$4 rc=0
+    if [ "$version" = -unset- ]; then
+        env -u VERSION "$assert" >"$work/out" 2>"$work/err" || rc=$?
+    else
+        VERSION=$version "$assert" >"$work/out" 2>"$work/err" || rc=$?
+    fi
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+    elif [ -s "$work/out" ]; then
+        failed+=("$name: stdout is: $(<"$work/out")")
+    elif [ -z "$said" ] && [ -s "$work/err" ]; then
+        failed+=("$name: stderr is: $(<"$work/err")")
+    elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
+        failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+    fi
+}
+
+check unset -unset- 1 "must be set to the version to stamp"
+check empty "" 1 "must be set to the version to stamp"
+check placeholder 0.0 1 "VERSION is 0.0, which is the unstamped placeholder"
+check three-parts 1.2.3 1 "a release is major.minor and nothing else"
+check describe 14.654.4-gdd8f39ac 1 "a release is major.minor and nothing else"
+check major-only 14 1 "a release is major.minor and nothing else"
+check release 14.655 0 ""
+check zero-major 0.1 0 ""
+check minor-largest 1.9999 0 ""
+check minor-too-large 1.10000 1 "VERSION minor is 10000"
+# The test builtin reads a leading zero as decimal, so 0654 is 654.
+check minor-leading-zero 1.0654 0 ""
+check major-largest 209999.0 0 ""
+check major-too-large 210000.0 1 "VERSION major is 210000"
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"
