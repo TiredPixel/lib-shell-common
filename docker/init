@@ -6,7 +6,18 @@
 
 export DOCKER_BUILDKIT=1
 
-REPO=$(<.dockerrepo)
+# Checked and exited explicitly, as TAG is below, so a missing or empty
+# .dockerrepo says what to do and exits 1 with or without errexit. Read with cat
+# rather than $(<...), whose failure Bash before 5.3 treats as fatal under
+# errexit even beside ||. cat's error is left on stderr, since it says why
+# (missing, denied, a directory) where the check below cannot.
+REPO=$(cat -- .dockerrepo) || REPO=""
+
+if [ -z "$REPO" ]; then
+    echo "${BASH_SOURCE[0]}: REPO: .dockerrepo missing or empty;" \
+        "write the image repository, such as ghcr.io/OWNER/NAME, to it" >&2
+    exit 1
+fi
 
 # git rev-parse --abbrev-ref HEAD answers the literal "HEAD" in a detached
 # checkout, which is what a pull request and a tag push both produce -- so the

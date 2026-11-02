@@ -4,4 +4,17 @@ shopt -s inherit_errexit failglob
 
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
 
-printf '%s' "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+# Docker's rule for an image name: its first path component is a registry host
+# only where it holds a . or a : or is localhost, and otherwise the image is on
+# Docker Hub, which docker login reaches by naming no server.
+server=()
+case $REPO in
+*/*)
+    case ${REPO%%/*} in
+    *.* | *:* | localhost) server=("${REPO%%/*}") ;;
+    esac
+    ;;
+esac
+
+printf '%s' "$DOCKER_PASSWORD" |
+    docker login -u "$DOCKER_USERNAME" --password-stdin "${server[@]}"
