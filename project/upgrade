@@ -32,6 +32,7 @@ echo -e "UPGRADE\n"
 # tells the sweep an upgrade failed. Which project declares the target is
 # make-if-declared's question, not this one's.
 "$dir/each-without-project" "$dir/make-if-declared" upgrade sh -c '
+    set -eu
     if script --version >/dev/null 2>&1; then
         script -q -e -c "make upgrade" /dev/null
     else

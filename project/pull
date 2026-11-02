@@ -23,6 +23,7 @@ git pull --ff-only --no-recurse-submodules
 # The string is for the sh foreach runs in each submodule, which expands it.
 # shellcheck disable=SC2016
 git submodule foreach --recursive '
+    set -eu
     branch=$(git symbolic-ref --short refs/remotes/origin/HEAD | cut -d/ -f2)
     git checkout --no-recurse-submodules "$branch"
     git pull --ff-only --no-recurse-submodules'

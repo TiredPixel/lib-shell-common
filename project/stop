@@ -10,6 +10,7 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 # The string is for sh, which expands it in each project.
 # shellcheck disable=SC2016
 "$dir/each" sh -c '
+    set -eu
     test ! -f docker-compose.yml ||
         test -z "$(docker compose config --services)" ||
         docker compose stop'
