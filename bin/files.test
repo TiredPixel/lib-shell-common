@@ -66,6 +66,7 @@ shells() {
             echo "$1"
         fi
     done
+    echo "shell ansible/lint-args"
     echo "shell bin/files"
     echo "shell docker/init"
     echo "shell project/echo-line"

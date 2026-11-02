@@ -27,13 +27,11 @@ done
 echo -e "\n=== FORMAT DOCKERFILE\n"
 
 echo "formatting ${#docker_files[@]} Dockerfile(s)" >&2
-# --newline, so each keeps its final newline.
-dockerfmt --newline --write "${docker_files[@]}"
+dockerfmt "${dockerfmt_args[@]}" --write "${docker_files[@]}"
 
 echo -e "\n=== FORMAT MARKDOWN\n"
 
 echo "formatting ${#markdown_files[@]} Markdown file(s)" >&2
-# --wrap no, so each paragraph is one line, which renderers reflow.
-mdformat --wrap no "${markdown_files[@]}"
+mdformat "${mdformat_args[@]}" "${markdown_files[@]}"
 
 echo

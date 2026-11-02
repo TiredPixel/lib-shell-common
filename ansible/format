@@ -2,11 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# lib/ holds submodules, which are linted in their own repositories; vault files
-# are encrypted, so there is nothing to lint in them.
-ansible-lint \
-    --offline \
-    --strict \
-    --exclude lib/ \
-    --exclude 'group_vars/*/*vault.yml' \
-    --fix
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+source "$dir/lint-args"
+
+ansible-lint "${ansible_lint_args[@]}" --fix

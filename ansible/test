@@ -2,9 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# The exclusions ansible/format makes, for the same reasons.
-ansible-lint \
-    --offline \
-    --strict \
-    --exclude lib/ \
-    --exclude 'group_vars/*/*vault.yml'
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+source "$dir/lint-args"
+
+ansible-lint "${ansible_lint_args[@]}"

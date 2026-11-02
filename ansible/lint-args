@@ -1,0 +1,19 @@
+# shellcheck shell=bash
+#
+# Sourced by ansible/format and ansible/test, so the writing and checking passes
+# take the same options and cannot disagree. Sets no shell options, since it
+# runs under its caller's.
+
+# lib/ holds submodules, which are linted in their own repositories; vault files
+# are encrypted, so there is nothing to lint in them. Read only by the scripts
+# that source this file, so it looks unused here.
+# shellcheck disable=SC2034
+ansible_lint_args=(
+    # No installing requirements.yml and no refreshing schemas, so a run reaches
+    # no network and writes no cache into the tree.
+    --offline
+    # Warnings fail as errors do.
+    --strict
+    --exclude lib/
+    --exclude 'group_vars/*/*vault.yml'
+)

@@ -22,7 +22,6 @@
 # this only once they have one, so a dev build skips both the stamp and the
 # check; a publishing path calls it unconditionally and gets the presence check
 # with it.
-
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 

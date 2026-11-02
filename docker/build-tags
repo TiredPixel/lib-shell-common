@@ -12,27 +12,27 @@ version=$(git describe)
 tags=("$TAG")
 
 if [ "$version" = "$release" ]; then
-    r=$release
-    r_=""
+    prefix=$release
+    previous=""
 
     while true; do
-        tags+=("$r")
-        r=${r%.*}
+        tags+=("$prefix")
+        prefix=${prefix%.*}
 
-        if [ "$r" = "$r_" ]; then
+        if [ "$prefix" = "$previous" ]; then
             break
         else
-            r_=$r
+            previous=$prefix
         fi
     done
 fi
 
-args=()
+tag_args=()
 caches=()
 
 for tag in "${tags[@]}"; do
-    args+=("-t")
-    args+=("$REPO:$tag")
+    tag_args+=("-t")
+    tag_args+=("$REPO:$tag")
     caches+=("--cache-from")
     caches+=("$REPO:$tag")
 done
@@ -41,7 +41,7 @@ docker build \
     --build-arg BUILDKIT_INLINE_CACHE=1 \
     --build-arg GIT_DESCRIBE="$version" \
     "${caches[@]}" \
-    "${args[@]}" .
+    "${tag_args[@]}" .
 
 for tag in "${tags[@]}"; do
     docker push "$REPO:$tag"

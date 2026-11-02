@@ -45,12 +45,12 @@ fi
 echo -e "\n=== LINT DOCKERFILE\n"
 
 echo "checking ${#docker_files[@]} Dockerfile(s)" >&2
-dockerfmt --newline --check "${docker_files[@]}"
+dockerfmt "${dockerfmt_args[@]}" --check "${docker_files[@]}"
 hadolint "${docker_files[@]}"
 
 echo -e "\n=== LINT MARKDOWN\n"
 
 echo "checking ${#markdown_files[@]} Markdown file(s)" >&2
-mdformat --wrap no --check "${markdown_files[@]}"
+mdformat "${mdformat_args[@]}" --check "${markdown_files[@]}"
 
 echo

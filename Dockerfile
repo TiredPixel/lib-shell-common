@@ -57,10 +57,10 @@ RUN case $(dpkg --print-architecture) in \
     amd64) arch=x86_64 ;; \
     arm64) arch=arm64 ;; \
     *) exit 1 ;; \
-    esac && \
-    curl -fsL "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-${arch}" -o /usr/local/bin/hadolint && \
-    chmod +x /usr/local/bin/hadolint && \
-    hadolint --version | grep -qF " ${HADOLINT_VERSION}"
+    esac \
+    && curl -fsL "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-${arch}" -o /usr/local/bin/hadolint \
+    && chmod +x /usr/local/bin/hadolint \
+    && hadolint --version | grep -qF " ${HADOLINT_VERSION}"
 
 # dockerfmt, which bin/format runs on this file: Debian 13 does not package it.
 ARG DOCKERFMT_VERSION=0.5.4
@@ -73,10 +73,9 @@ RUN curl -fsL "https://github.com/reteps/dockerfmt/releases/download/v${DOCKERFM
 ARG MDFORMAT_VERSION=1.0.0
 ARG MDFORMAT_GFM_VERSION=1.0.0
 ARG MDFORMAT_FRONTMATTER_VERSION=2.2.0
-RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
-    pipx install "mdformat==${MDFORMAT_VERSION}" \
-    && PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
-        pipx inject mdformat "mdformat-gfm==${MDFORMAT_GFM_VERSION}" \
+RUN export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
+    && pipx install "mdformat==${MDFORMAT_VERSION}" \
+    && pipx inject mdformat "mdformat-gfm==${MDFORMAT_GFM_VERSION}" \
         "mdformat-frontmatter==${MDFORMAT_FRONTMATTER_VERSION}" \
     && mdformat --version | grep -qF "mdformat ${MDFORMAT_VERSION}"
 
