@@ -4,9 +4,9 @@
 # curl faked on PATH, so nothing is pulled or fetched: the fake docker answers
 # every pull and gives each image the digest FAKE_DIGEST names, and the fake
 # curl, naming each URL it is given on stderr, answers every /releases/latest
-# with the redirect FAKE_REDIRECT names and every PyPI JSON lookup with
-# FAKE_PYPI. FAKE_PULL=fail and FAKE_CURL=fail make each fail as the real one
-# would.
+# with the redirect FAKE_REDIRECT names, every PyPI JSON lookup with FAKE_PYPI
+# and every npm /latest lookup with FAKE_NPM. FAKE_PULL=fail and FAKE_CURL=fail
+# make each fail as the real one would.
 #
 # Run: docker/upgrade.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -46,6 +46,7 @@ fi
 case $url in
     https://github.com/*/releases/latest) printf '%s' "${FAKE_REDIRECT:-}" ;;
     https://pypi.org/pypi/*/json) printf '%s' "${FAKE_PYPI:-}" ;;
+    https://registry.npmjs.org/*/latest) printf '%s' "${FAKE_NPM:-}" ;;
     *) exit 2 ;;
 esac
 EOF
@@ -56,6 +57,7 @@ new=sha256:$(printf 'a%.0s' {1..64})
 export FAKE_DIGEST=$new
 export FAKE_REDIRECT=https://github.com/o/p/releases/tag/v1.2.3
 export FAKE_PYPI='{"info": {"name": "m-d", "version": "2.0.1"}}'
+export FAKE_NPM='{"name": "n-d", "version": "3.4.5"}'
 export PATH=$work/bin:$PATH
 
 failed=()
@@ -105,14 +107,16 @@ check arg-rewrites $'# ARGFREEZE V github:o/p\nFROM s\nARG V=1.0.0\nRUN echo "$V
 FAKE_REDIRECT=https://github.com/o/p/releases/tag/0.16.9 check arg-unprefixed-tag \
     $'# ARGFREEZE V github:o/p\nARG V=0.1\n' 0 "" $'# ARGFREEZE V github:o/p\nARG V=0.16.9'
 
-check arg-bad-form $'# ARGFREEZE V\nARG V=1\n' 1 "is not NAME github:OWNER/PROJECT or NAME pypi:PACKAGE" \
+check arg-bad-form $'# ARGFREEZE V\nARG V=1\n' 1 \
+    "is not NAME github:OWNER/PROJECT, NAME pypi:PACKAGE or NAME npm:PACKAGE" \
     $'# ARGFREEZE V\nARG V=1'
 
-check arg-bad-name $'# ARGFREEZE 1V github:o/p\nARG V=1\n' 1 "is not NAME github:OWNER/PROJECT or NAME pypi:PACKAGE" \
+check arg-bad-name $'# ARGFREEZE 1V github:o/p\nARG V=1\n' 1 \
+    "is not NAME github:OWNER/PROJECT, NAME pypi:PACKAGE or NAME npm:PACKAGE" \
     $'# ARGFREEZE 1V github:o/p\nARG V=1'
 
-check arg-bad-source $'# ARGFREEZE V gitlab:o/p\nARG V=1\n' 1 "is not github:OWNER/PROJECT or pypi:PACKAGE" \
-    $'# ARGFREEZE V gitlab:o/p\nARG V=1'
+check arg-bad-source $'# ARGFREEZE V gitlab:o/p\nARG V=1\n' 1 \
+    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V gitlab:o/p\nARG V=1'
 
 check arg-names-nothing $'# ARGFREEZE V github:o/p\nARG W=1\n' 1 "names no ARG V line" \
     $'# ARGFREEZE V github:o/p\nARG W=1'
@@ -153,11 +157,11 @@ FAKE_PYPI='{"info": {"version": "!2.0"}}' check pypi-bare-epoch-mark \
     $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 1 "latest version on PyPI, !2.0, is not a version" \
     $'# ARGFREEZE V pypi:m-d\nARG V=1'
 
-check pypi-bad-source $'# ARGFREEZE V pypi:o/p\nARG V=1\n' 1 "is not github:OWNER/PROJECT or pypi:PACKAGE" \
-    $'# ARGFREEZE V pypi:o/p\nARG V=1'
+check pypi-bad-source $'# ARGFREEZE V pypi:o/p\nARG V=1\n' 1 \
+    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V pypi:o/p\nARG V=1'
 
-check pypi-empty-package $'# ARGFREEZE V pypi:\nARG V=1\n' 1 "is not github:OWNER/PROJECT or pypi:PACKAGE" \
-    $'# ARGFREEZE V pypi:\nARG V=1'
+check pypi-empty-package $'# ARGFREEZE V pypi:\nARG V=1\n' 1 \
+    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V pypi:\nARG V=1'
 
 FAKE_CURL=fail check pypi-lookup-fails $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 6 \
     "Could not resolve host: pypi.org" $'# ARGFREEZE V pypi:m-d\nARG V=1'
@@ -175,6 +179,34 @@ FAKE_PYPI='{"info": {"version": "1.0\n2.0"}}' check pypi-two-lines \
 FAKE_PYPI='{"info": {}}' check pypi-no-version $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 1 \
     "latest version on PyPI, none, is not a version" $'# ARGFREEZE V pypi:m-d\nARG V=1'
 
+check npm-rewrites $'# ARGFREEZE V npm:n-d\n# ARGFREEZE W github:o/p\nFROM s\nARG V=1.0\nARG W=1.0.0\nARG V=1.0\n' \
+    0 "fake curl: https://registry.npmjs.org/n-d/latest" \
+    $'# ARGFREEZE V npm:n-d\n# ARGFREEZE W github:o/p\nFROM s\nARG V=3.4.5\nARG W=1.2.3\nARG V=3.4.5'
+
+check npm-scoped $'# ARGFREEZE V npm:@s/n.d\nARG V=1\n' \
+    0 "fake curl: https://registry.npmjs.org/@s/n.d/latest" $'# ARGFREEZE V npm:@s/n.d\nARG V=3.4.5'
+
+check npm-upper-case $'# ARGFREEZE V npm:N\nARG V=1\n' 1 \
+    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V npm:N\nARG V=1'
+
+check npm-empty-scope $'# ARGFREEZE V npm:@s/\nARG V=1\n' 1 \
+    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V npm:@s/\nARG V=1'
+
+check npm-empty-package $'# ARGFREEZE V npm:\nARG V=1\n' 1 \
+    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V npm:\nARG V=1'
+
+FAKE_CURL=fail check npm-lookup-fails $'# ARGFREEZE V npm:n-d\nARG V=1\n' 6 \
+    "Could not resolve host: registry.npmjs.org" $'# ARGFREEZE V npm:n-d\nARG V=1'
+
+FAKE_NPM='<html>Not Found</html>' check npm-not-json $'# ARGFREEZE V npm:n-d\nARG V=1\n' 1 \
+    "registry.npmjs.org/n-d/latest is not npm's JSON" $'# ARGFREEZE V npm:n-d\nARG V=1'
+
+FAKE_NPM='{"version": "nightly"}' check npm-not-a-version $'# ARGFREEZE V npm:n-d\nARG V=1\n' 1 \
+    "latest version on npm, nightly, is not a version" $'# ARGFREEZE V npm:n-d\nARG V=1'
+
+FAKE_NPM='{}' check npm-no-version $'# ARGFREEZE V npm:n-d\nARG V=1\n' 1 \
+    "latest version on npm, none, is not a version" $'# ARGFREEZE V npm:n-d\nARG V=1'
+
 # The ARG's lookup fails after the FROM has resolved, and neither is written.
 FAKE_CURL=fail check nothing-written-on-failure \
     $'# FROMFREEZE r/x:1\n# ARGFREEZE V github:o/p\nFROM r/x:1\nARG V=1\n' 6 "" \
@@ -184,6 +216,11 @@ FAKE_CURL=fail check nothing-written-on-failure \
 FAKE_PYPI='{"info": {}}' check nothing-written-on-pypi-failure \
     $'# ARGFREEZE W github:o/p\n# ARGFREEZE V pypi:m-d\nARG W=1\nARG V=1\n' 1 "" \
     $'# ARGFREEZE W github:o/p\n# ARGFREEZE V pypi:m-d\nARG W=1\nARG V=1'
+
+# And when an npm lookup fails after a PyPI one has resolved.
+FAKE_NPM='{}' check nothing-written-on-npm-failure \
+    $'# ARGFREEZE W pypi:m-d\n# ARGFREEZE V npm:n-d\nARG W=1\nARG V=1\n' 1 "" \
+    $'# ARGFREEZE W pypi:m-d\n# ARGFREEZE V npm:n-d\nARG W=1\nARG V=1'
 
 file=$work/mode.Dockerfile
 printf '# ARGFREEZE V github:o/p\nARG V=1\n' >"$file"

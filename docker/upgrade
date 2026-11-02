@@ -12,6 +12,10 @@
 #   # ARGFREEZE NAME pypi:PACKAGE
 #       every ARG NAME=VALUE line is set to the package's latest version on
 #       PyPI, read with jq from its JSON
+#   # ARGFREEZE NAME npm:PACKAGE
+#       every ARG NAME=VALUE line is set to the version npm's registry tags
+#       latest for the package, which may be scoped, as @SCOPE/NAME, read with
+#       jq from its JSON
 #
 # A version held back is one whose ARGFREEZE line is removed, the ARG set to
 # the version that works and a comment beside it saying why; nothing here then
@@ -97,13 +101,15 @@ for data in "${args[@]}"; do
     name=${data%% *}
     source=${data#* }
     if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [ "$source" = "$data" ]; then
-        die "ARGFREEZE $data is not NAME github:OWNER/PROJECT or" \
-            "NAME pypi:PACKAGE"
+        die "ARGFREEZE $data is not NAME github:OWNER/PROJECT," \
+            "NAME pypi:PACKAGE or NAME npm:PACKAGE"
     fi
+    # npm's rules for a new package's name: lower case, optionally scoped.
     [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
         [[ "$source" =~ ^pypi:[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
-        die "ARGFREEZE $name: $source is not github:OWNER/PROJECT or" \
-            "pypi:PACKAGE"
+        [[ "$source" =~ ^npm:(@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$ ]] ||
+        die "ARGFREEZE $name: $source is not github:OWNER/PROJECT," \
+            "pypi:PACKAGE or npm:PACKAGE"
 
     # Every ARG line naming it, in any form, so a second ARG with no default or
     # declaring it beside another is refused rather than left behind.
@@ -158,6 +164,17 @@ for data in "${args[@]}"; do
         # A PEP 440 version may open with an epoch, N!, as in 1!2.0.
         [[ "$version" =~ ^([0-9]+!)?[0-9][0-9A-Za-z.+_-]*$ ]] ||
             die "ARGFREEZE $name: $package's latest version on PyPI," \
+                "${version:-none}, is not a version"
+        ;;
+    npm:*)
+        package=${source#npm:}
+        echo "Looking up $package's latest version on npm"
+        json=$(curl -fsS "https://registry.npmjs.org/$package/latest")
+        version=$(jq -r '.version // empty' <<<"$json") ||
+            die "ARGFREEZE $name: registry.npmjs.org/$package/latest is not" \
+                "npm's JSON"
+        [[ "$version" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]] ||
+            die "ARGFREEZE $name: $package's latest version on npm," \
                 "${version:-none}, is not a version"
         ;;
     esac

@@ -37,7 +37,7 @@ upgrade-pre:
 	lib/shell-common/docker/upgrade
 ```
 
-An `ARGFREEZE` line with a `pypi:` source also needs `jq` where `docker/upgrade` runs.
+An `ARGFREEZE` line with a `pypi:` or `npm:` source also needs `jq` where `docker/upgrade` runs.
 
 ## Testing
 
