@@ -192,26 +192,39 @@ expect nested-moved "deep's remote" \
 expect nested-moved "deep's commit" "$(head_of "$w/app/lib/deep")" \
     "$(git -C "$w/deep-moved.git" rev-parse trunk)"
 
-# An update of rebase is overridden: honoured, it would rebase lib's branch
-# onto the commit app records, a side branch's, and the branch would end
-# there, ahead of its upstream, rather than on it.
+# An update of none, set in .gitmodules, is overridden: honoured, it would
+# leave a submodule added upstream empty.
 fixture
-git -C "$w/lib.up" checkout -q -b side
-git -C "$w/lib.up" commit -q --allow-empty -m side
-git -C "$w/lib.up" push -q -u origin side
-git -C "$w/app.up/lib" fetch -q
-git -C "$w/app.up/lib" checkout -q origin/side
-git -C "$w/app.up" commit -q -am "lib on side"
+mkrepo extra trunk
+git -C "$w/app.up" submodule add -q "$w/extra.git" extra
+git -C "$w/app.up" config -f .gitmodules submodule.extra.update none
+git -C "$w/app.up" add .gitmodules
+git -C "$w/app.up" commit -q -m "add extra"
 git -C "$w/app.up" push -q
-git -C "$w/lib.up" checkout -q release/x
-upcommit lib lib2
-git -C "$w/app" config submodule.lib.update rebase
-git -C "$w/app/lib" checkout -q release/x
 run
-expect rebase status "$rc" 0
-expect rebase "lib's branch" "$(branch_of "$w/app/lib")" release/x
-expect rebase "lib's commit" "$(head_of "$w/app/lib")" \
+expect update-none status "$rc" 0
+expect update-none "extra's branch" "$(branch_of "$w/app/extra")" trunk
+expect update-none "extra's commit" "$(head_of "$w/app/extra")" \
+    "$(git -C "$w/extra.git" rev-parse trunk)"
+
+# A submodule already checked out is not checked out again at the commit app
+# records: lib, ahead of it, holds an uncommitted edit to a file changed since,
+# which that checkout would refuse to overwrite.
+fixture
+echo upstream >"$w/lib.up/file"
+git -C "$w/lib.up" add file
+git -C "$w/lib.up" commit -q -m file
+git -C "$w/lib.up" push -q
+git -C "$w/app/lib" checkout -q release/x
+git -C "$w/app/lib" pull -q --ff-only
+echo local >"$w/app/lib/file"
+upcommit lib lib2
+run
+expect dirty-ahead status "$rc" 0
+expect dirty-ahead "lib's branch" "$(branch_of "$w/app/lib")" release/x
+expect dirty-ahead "lib's commit" "$(head_of "$w/app/lib")" \
     "$(git -C "$w/lib.git" rev-parse release/x)"
+expect dirty-ahead "lib's file" "$(<"$w/app/lib/file")" local
 
 # A parent branch with no upstream fails before any submodule moves.
 fixture

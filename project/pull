@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
 # --ff-only here and below, whatever the caller's pull.rebase or pull.ff: a
 # diverged branch stops the sweep, where a merge or a rebase would succeed,
 # unseen, and a release would go on to push it.
@@ -10,16 +12,12 @@ git pull --ff-only --no-recurse-submodules
 # foreach visits only submodules that are checked out, so one added upstream
 # would be skipped without a word, and a URL changed in .gitmodules would never
 # reach .git/config, leaving every later fetch on the old remote. Each level
-# therefore syncs and initialises its own submodules from the .gitmodules it
-# has just pulled -- this one here, each submodule inside the sweep below,
-# before foreach lists and descends into its children. Neither is recursive,
-# since the recursion is foreach's. --checkout overrides a
-# submodule.<name>.update of rebase, merge or none, which would otherwise
-# rebase or merge a branch onto the recorded commit, or skip the submodule.
-# Initialising detaches a submodule already checked out onto the recorded
-# commit; the sweep puts it back on its branch at once.
-git submodule sync
-git submodule update --init --checkout
+# therefore brings its own submodules in line with the .gitmodules it has just
+# pulled -- this one here, each submodule inside the sweep below, before
+# foreach lists and descends into its children. It is not recursive, since the
+# recursion is foreach's; exported, so the sweep's sh can reach it.
+export PROJECT_SUBMODULE_INIT=$dir/submodule-init
+"$PROJECT_SUBMODULE_INIT"
 
 # One sweep, from here, whose submodules are the projects .projects names --
 # and --recursive reaches theirs in turn. It used to run from inside each
@@ -43,5 +41,4 @@ git submodule foreach --recursive '
     branch=${ref#origin/}
     git checkout --no-recurse-submodules "$branch"
     git pull --ff-only --no-recurse-submodules
-    git submodule sync
-    git submodule update --init --checkout'
+    "$PROJECT_SUBMODULE_INIT"'
