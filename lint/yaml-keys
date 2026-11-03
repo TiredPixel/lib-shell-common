@@ -8,24 +8,46 @@
 #
 # Every offender is named rather than only the first, since one formatting run
 # fixes them all either way -- stopping at the first only costs the reader a
-# second run to find the second.
+# second run to find the second. A file yq cannot read is named apart from one
+# whose keys are out of order, since rewriting it would not help.
 #
 # Requires yq (mikefarah), whose sort_keys expression the Python jq wrapper of
 # the same name does not implement.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-fail=0
+unsorted=0
+unreadable=0
 checked=0
 
-while IFS= read -r -d '' f; do
+sorted=$(mktemp)
+trap 'rm -f -- "$sorted"' EXIT
+
+# The path list is read from fd 3 and stdin is /dev/null, so nothing run inside
+# the loop can consume the paths still to come.
+while IFS= read -r -d '' f <&3; do
     checked=$((checked + 1))
 
-    if ! yq -P 'sort_keys(..)' "$f" | diff -q - "$f" >/dev/null; then
-        echo "$f: keys not sorted" >&2
-        fail=1
+    # Written to a file rather than piped into diff, so yq's own status is seen
+    # and a file it cannot parse is not reported as merely unsorted.
+    if ! yq -P 'sort_keys(..)' "$f" >"$sorted"; then
+        echo "$f: yq could not read it, so its keys were not checked" >&2
+        unreadable=1
+        continue
     fi
-done
+
+    # diff exits 1 on a difference and above that on trouble, which is fatal.
+    rc=0
+    diff -q -- "$sorted" "$f" >/dev/null || rc=$?
+    case $rc in
+    0) ;;
+    1)
+        echo "$f: keys not sorted" >&2
+        unsorted=1
+        ;;
+    *) exit "$rc" ;;
+    esac
+done 3<&0 </dev/null
 
 # Reported rather than fatal: an empty set is a project with no YAML as easily
 # as a caller whose own path list came out wrong, and only the caller can tell
@@ -33,7 +55,10 @@ done
 # reading like everything-passed.
 echo "$(basename "$0"): checked $checked file(s)" >&2
 
-if [ "$fail" -ne 0 ]; then
+if [ "$unsorted" -ne 0 ]; then
     echo "YAML key order: rewrite with yq -i -P 'sort_keys(..)'." >&2
+fi
+
+if [ "$unsorted" -ne 0 ] || [ "$unreadable" -ne 0 ]; then
     exit 1
 fi
