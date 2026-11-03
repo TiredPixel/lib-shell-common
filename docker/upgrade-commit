@@ -7,8 +7,10 @@
 # the body. It stages exactly the paths RECORD lists and each PATH, such as a
 # library submodule taken forwards beside the upgrade, and refuses, listing
 # them, where any other path is already staged, since the commit would carry
-# it. Where nothing moved, it commits nothing. It never pushes. RECORD is
-# removed once used, so a second run cannot commit it again.
+# it. A submodule PATH that moved adds a line as PATH OLD -> NEW, each commit
+# cut to 7 hex digits, so a PATH that changed is committed even where no pin
+# moved. Where neither a pin nor a PATH moved, it commits nothing. It never
+# pushes. RECORD is removed once used, so a second run cannot commit it again.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -28,33 +30,41 @@ fi
 # unknown option rather than say so.
 git rev-parse --git-dir >/dev/null
 
-mapfile -t lines <"$record"
-if [ ${#lines[@]} -eq 0 ]; then
+nothing() {
     echo "${0##*/}: $record: nothing moved, so there is nothing to commit" >&2
     rm -- "$record"
     exit 0
-fi
+}
 
-# The paths written, then a blank line, then the moves.
-blank=""
-for i in "${!lines[@]}"; do
-    if [ -z "${lines[$i]}" ]; then
-        blank=$i
-        break
-    fi
-done
-paths=("${lines[@]:0:${blank:-0}}")
-moves=("${lines[@]:${blank:-0}+1}")
-if [ -z "$blank" ] || [ ${#paths[@]} -eq 0 ] || [ ${#moves[@]} -eq 0 ]; then
-    echo "${0##*/}: $record: not a record docker/upgrade --record writes" >&2
-    exit 1
-fi
-for i in "${!moves[@]}"; do
-    if [ -z "${moves[$i]}" ]; then
-        echo "$record:$((blank + i + 2)): a second blank line" >&2
+# Empty where no pin moved; else the paths written, then a blank line, then the
+# moves.
+mapfile -t lines <"$record"
+paths=()
+moves=()
+if [ ${#lines[@]} -gt 0 ]; then
+    blank=""
+    for i in "${!lines[@]}"; do
+        if [ -z "${lines[$i]}" ]; then
+            blank=$i
+            break
+        fi
+    done
+    paths=("${lines[@]:0:${blank:-0}}")
+    moves=("${lines[@]:${blank:-0}+1}")
+    if [ -z "$blank" ] || [ ${#paths[@]} -eq 0 ] || [ ${#moves[@]} -eq 0 ]; then
+        echo "${0##*/}: $record: not a record docker/upgrade --record writes" >&2
         exit 1
     fi
-done
+    for i in "${!moves[@]}"; do
+        if [ -z "${moves[$i]}" ]; then
+            echo "$record:$((blank + i + 2)): a second blank line" >&2
+            exit 1
+        fi
+    done
+fi
+if [ ${#paths[@]} -eq 0 ] && [ ${#extra[@]} -eq 0 ]; then
+    nothing
+fi
 
 # :(literal) so a path is never read as a pattern; --no-renames so a staged
 # rename lists the path it leaves as well as the one it makes.
@@ -73,5 +83,29 @@ if [ -n "$others" ]; then
 fi
 
 git add -- "${specs[@]}"
-git commit -m "Upgrade pins" -m "$(printf '%s\n' "${moves[@]}")"
+
+# Each raw entry is ":OLDMODE NEWMODE OLD NEW STATUS" then the path, both ended
+# by NUL under -z; 160000 on both sides is a submodule that moved. Through a
+# file rather than a process substitution, whose failure errexit would miss.
+if [ ${#extra[@]} -gt 0 ]; then
+    raw=$(mktemp)
+    trap 'rm -f -- "$raw"' EXIT
+    git diff --cached --raw -z --no-renames --no-abbrev -- \
+        "${specs[@]:${#paths[@]}}" >"$raw"
+    while IFS= read -r -d '' meta <&3 && IFS= read -r -d '' name <&3; do
+        read -r old_mode new_mode old new _ <<<"${meta#:}"
+        if [ "$old_mode" = 160000 ] && [ "$new_mode" = 160000 ]; then
+            moves+=("$name ${old:0:7} -> ${new:0:7}")
+        fi
+    done 3<"$raw"
+fi
+
+if git diff --cached --quiet; then
+    nothing
+fi
+if [ ${#moves[@]} -gt 0 ]; then
+    git commit -m "Upgrade pins" -m "$(printf '%s\n' "${moves[@]}")"
+else
+    git commit -m "Upgrade pins"
+fi
 rm -- "$record"

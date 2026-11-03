@@ -75,7 +75,7 @@ A named workflow names the tag each action follows on a comment line at its top,
 
 The `# TRACK FROM`, `# TRACK ARG` and `# TRACK USES` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and how to hold a version back, are described at the top of `docker/upgrade`. A `FROMFREEZE`, `ARGFREEZE` or `USESFREEZE` line left from before is refused: grep lists every one, as `FILE:LINE:TEXT`, to be renamed.
 
-With `--record`, `docker/upgrade` notes each file it wrote and each pin that moved. `docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with a line for each move as the body. It refuses where anything else is staged, commits nothing where nothing moved, and never pushes. `docker/upgrade` refuses to start while an earlier record is still there, or while the `Dockerfile` has changes not committed, since the commit takes each recorded file whole. Where the build or tests fail, fix them, then finish:
+With `--record`, `docker/upgrade` notes each file it wrote and each pin that moved. `docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with a line for each move as the body, a submodule's included, so a library bump is committed even where no pin moved. It refuses where anything else is staged, commits nothing where neither a pin nor a path given moved, and never pushes. `docker/upgrade` refuses to start while an earlier record is still there, or while the `Dockerfile` has changes not committed, since the commit takes each recorded file whole. Where the build or tests fail, fix them, then finish:
 
 ```sh
 make upgrade-post
