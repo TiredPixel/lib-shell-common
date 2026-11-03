@@ -1,6 +1,8 @@
 # FROMFREEZE docker.io/library/debian:13
 # ARGFREEZE ACTIONLINT_VERSION github:rhysd/actionlint
+# ARGFREEZE CHECKMAKE_VERSION github:checkmake/checkmake
 # ARGFREEZE DOCKERFMT_VERSION github:reteps/dockerfmt
+# ARGFREEZE DOTENV_LINTER_VERSION github:dotenv-linter/dotenv-linter
 # ARGFREEZE HADOLINT_VERSION github:hadolint/hadolint
 # ARGFREEZE MDFORMAT_FRONTMATTER_VERSION pypi:mdformat-frontmatter
 # ARGFREEZE MDFORMAT_GFM_VERSION pypi:mdformat-gfm
@@ -57,26 +59,44 @@ RUN case $(dpkg --print-architecture) in \
     amd64) arch=x86_64 ;; \
     arm64) arch=arm64 ;; \
     *) exit 1 ;; \
-    esac && \
-    curl -fsL "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-${arch}" -o /usr/local/bin/hadolint && \
-    chmod +x /usr/local/bin/hadolint && \
-    hadolint --version | grep -qF " ${HADOLINT_VERSION}"
+    esac \
+    && curl -fsL "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-${arch}" -o /usr/local/bin/hadolint \
+    && chmod +x /usr/local/bin/hadolint \
+    && hadolint --version | grep -qF " ${HADOLINT_VERSION}"
 
-# dockerfmt, which bin/format runs on this file: Debian 13 does not package it.
+# dockerfmt, which bin/format and bin/lint run on this file: Debian 13 does not
+# package it.
 ARG DOCKERFMT_VERSION=0.5.4
 RUN curl -fsL "https://github.com/reteps/dockerfmt/releases/download/v${DOCKERFMT_VERSION}/dockerfmt-v${DOCKERFMT_VERSION}-linux-$(dpkg --print-architecture).tar.gz" \
     | tar -xz -C /usr/local/bin dockerfmt \
     && dockerfmt version | grep -qF "${DOCKERFMT_VERSION}"
 
-# mdformat, which bin/format runs on Markdown, from pipx with its gfm and
-# frontmatter plugins injected: Debian 13's mdformat package carries neither.
+# checkmake, which bin/lint runs on the Makefile, and dotenv-linter, which
+# bin/lint and bin/format run on .env.example: Debian 13 packages neither.
+ARG CHECKMAKE_VERSION=0.3.2
+RUN curl -fsL "https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checkmake-v${CHECKMAKE_VERSION}.linux.$(dpkg --print-architecture)" -o /usr/local/bin/checkmake \
+    && chmod +x /usr/local/bin/checkmake \
+    && checkmake --version | grep -qF "${CHECKMAKE_VERSION}"
+
+ARG DOTENV_LINTER_VERSION=4.0.0
+RUN case $(dpkg --print-architecture) in \
+    amd64) arch=x86_64 ;; \
+    arm64) arch=aarch64 ;; \
+    *) exit 1 ;; \
+    esac \
+    && curl -fsL "https://github.com/dotenv-linter/dotenv-linter/releases/download/v${DOTENV_LINTER_VERSION}/dotenv-linter-linux-${arch}.tar.gz" \
+    | tar -xz -C /usr/local/bin dotenv-linter \
+    && dotenv-linter --version | grep -qF " ${DOTENV_LINTER_VERSION}"
+
+# mdformat, which bin/format and bin/lint run on Markdown, from pipx with its
+# gfm and frontmatter plugins injected: Debian 13's mdformat package carries
+# neither.
 ARG MDFORMAT_VERSION=1.0.0
 ARG MDFORMAT_GFM_VERSION=1.0.0
 ARG MDFORMAT_FRONTMATTER_VERSION=2.2.0
-RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
-    pipx install "mdformat==${MDFORMAT_VERSION}" \
-    && PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
-        pipx inject mdformat "mdformat-gfm==${MDFORMAT_GFM_VERSION}" \
+RUN export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
+    && pipx install "mdformat==${MDFORMAT_VERSION}" \
+    && pipx inject mdformat "mdformat-gfm==${MDFORMAT_GFM_VERSION}" \
         "mdformat-frontmatter==${MDFORMAT_FRONTMATTER_VERSION}" \
     && mdformat --version | grep -qF "mdformat ${MDFORMAT_VERSION}"
 

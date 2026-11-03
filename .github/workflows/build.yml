@@ -42,9 +42,12 @@ jobs:
   # Pushes the dev image that the build job takes as its layer cache; nothing
   # deploys it.
   # Only on a person's push, never an app's, whose tree would otherwise run here
-  # with this write.
+  # with this write; and only to a branch, since a tag's dev image is never read
+  # as layer cache.
   cache:
-    if: github.event_name == 'push' && github.event.sender.type == 'User'
+    if: |-
+      github.event_name == 'push' && github.ref_type == 'branch' &&
+      github.event.sender.type == 'User'
     permissions:
       contents: read
       packages: write

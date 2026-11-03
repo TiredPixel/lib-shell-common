@@ -19,12 +19,12 @@ git pull --ff-only --no-recurse-submodules
 export PROJECT_SUBMODULE_INIT=$dir/submodule-init
 "$PROJECT_SUBMODULE_INIT"
 
-# One sweep, from here, whose submodules are the projects .projects names -- and
-# --recursive reaches theirs in turn. Run from inside each project instead, the
-# recursion would start one level too low: it would bring each project's own
-# submodules current but never the project, so a stage that reports having
-# pulled everything would leave every project on whatever commit its working
-# tree happened to sit on.
+# One sweep, from here, over every submodule of this repository, whether
+# .projects names it or not -- and --recursive reaches theirs in turn. Run from
+# inside each project instead, the recursion would start one level too low: it
+# would bring each project's own submodules current but never the project, so a
+# stage that reports having pulled everything would leave every project on
+# whatever commit its working tree happened to sit on.
 #
 # checkout before pull, because a submodule is checked out at a recorded commit
 # and a detached HEAD has nothing to pull into. The branch comes from
@@ -32,8 +32,8 @@ export PROJECT_SUBMODULE_INIT=$dir/submodule-init
 # the usual one still follows its own. git submodule update --remote is not
 # used: it also defaults to the remote HEAD, but under --rebase or --merge acts
 # on whatever branch the submodule already has checked out. Only the remote's
-# name is stripped, since a branch name may itself hold a slash.
-# The string is for the sh foreach runs in each submodule, which expands it.
+# name is stripped, since a branch name may itself hold a slash. The string is
+# for the sh foreach runs in each submodule, which expands it.
 # shellcheck disable=SC2016
 git submodule foreach --recursive '
     set -eu

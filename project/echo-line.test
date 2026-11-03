@@ -2,7 +2,7 @@
 #
 # Tests project/echo-line, sourced in a shell with no options set and in one
 # under the strict mode its callers run, with tput faked on PATH: it prints
-# FAKE_COLS, or fails as with no terminal where that is empty. Sourcing must set
+# FAKE_COLS, or fails as with $TERM unset where that is empty. Sourcing must set
 # none of the shell's options, and the rule must come out the same in both.
 #
 # Run: project/echo-line.test. Exits 1 naming each case that failed.
@@ -27,8 +27,6 @@ EOF
 chmod +x "$work/path/tput"
 export PATH=$work/path:$PATH
 
-# The shells that source the helper are scripts in files rather than -c strings,
-# as its callers are, so BASH_SOURCE is set in them as it is in a caller.
 cat >"$work/draw" <<'EOF'
 if [ "$1" = strict ]; then
     set -Eeuo pipefail
@@ -64,7 +62,7 @@ check() {
 for mode in plain strict; do
     FAKE_COLS=5 check "$mode-equals" "$mode" = "====="
     FAKE_COLS=3 check "$mode-dash" "$mode" - "---"
-    # No terminal: tput fails and the rule is 80 wide.
+    # $TERM unset: tput fails and the rule is 80 wide.
     FAKE_COLS='' check "$mode-no-tty" "$mode" = "$(printf '=%.0s' {1..80})"
 done
 

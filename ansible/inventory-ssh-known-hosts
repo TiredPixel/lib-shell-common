@@ -13,6 +13,7 @@ cmd_host() {
 }
 
 cmd_list() {
+    local hosts
     hosts=$(cut -d' ' -f1 "$f" |
         cut -d',' -f1 |
         grep -E "\.$domain$" |

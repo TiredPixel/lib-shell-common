@@ -9,21 +9,26 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 # any directory inside it, so dropping the file test would let a project
 # carrying none adopt an ancestor's. The second catches services that all sit
 # behind a profile, which selects nothing and which compose calls an error
-# rather than nothing to do.
+# rather than nothing to do. The file test takes every name compose looks for,
+# so a project is not skipped for which of them it uses.
 #
 # --wait, so a service that dies on start or never turns healthy fails the
 # project it belongs to. A daemon-wide health poll would not do: filtering on
 # health status misses an exited container, which has none, so a crash on start
 # would pass, and it would stall on an unhealthy container from an unrelated
-# project.
-# A one-shot service exiting 0 fails --wait too, unless it is a
-# service_completed_successfully dependency of a service that stays up.
-# Override the bound with DC_WAIT_TIMEOUT.
-# The string is for sh, which expands it in each project.
+# project. A one-shot service exiting 0 fails --wait too, unless it is a
+# service_completed_successfully dependency of a service that stays up (observed
+# with Compose 5.6.1, checked 2026-11; Compose's up reference does not say).
+# Override the bound with DC_WAIT_TIMEOUT. The string is for sh, which expands
+# it in each project.
 # shellcheck disable=SC2016
 "$dir/each" sh -c '
     set -eu
-    test ! -f docker-compose.yml ||
+    found=
+    for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+        test ! -f "$f" || found=1
+    done
+    test -z "$found" ||
         test -z "$(docker compose config --services)" ||
         docker compose up -d --pull always --wait --wait-timeout "${DC_WAIT_TIMEOUT:-300}"'
 

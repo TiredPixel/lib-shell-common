@@ -7,9 +7,7 @@
 # this repository. They are the submodules that belong to this project: they
 # share its version number and are tagged with it. A submodule that is
 # third-party, or versioned on its own, is deliberately absent, which is why the
-# list is curated rather than derived from .gitmodules -- and why
-# project/release-assert reports the submodules it omits instead of refusing
-# them.
+# list is curated rather than derived from .gitmodules.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -29,6 +27,9 @@ f_projects=.projects
 # The child keeps the terminal on stdin rather than /dev/null, which `script`
 # needs to forward keystrokes and a git credential or passphrase prompt needs to
 # be answerable at all.
+#
+# A missing list is tolerated, because project/start and project/stop reach the
+# current project through project/each and remain meaningful without one.
 if [ -f "$f_projects" ]; then
     while IFS= read -r project <&3 || [ -n "$project" ]; do
         [ -z "$project" ] && continue
@@ -37,8 +38,8 @@ if [ -f "$f_projects" ]; then
         # discovers this repository from inside any plain directory, so
         # `git tag -l` there answers about this one and the sweep reports having
         # visited a project it never entered. Assigned rather than piped, so the
-        # status errexit sees is git's own and not a filter's.
-        # :(literal) because a path is a literal, not a pattern.
+        # status errexit sees is git's own and not a filter's. :(literal)
+        # because a path is a literal, not a pattern.
         entry=$(git ls-files --stage -- ":(literal)$project")
 
         case $entry in

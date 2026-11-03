@@ -30,8 +30,6 @@ EOF
 done
 export FAKE_LOG=$work/log
 
-# The shells that source the helper are scripts in files rather than -c strings,
-# as its callers are, so BASH_SOURCE is set in them as it is in a caller.
 cat >"$work/release" <<'EOF'
 if [ "$1" = strict ]; then
     set -Eeuo pipefail

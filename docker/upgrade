@@ -24,8 +24,8 @@
 #
 # A pin that names nothing in the file fails the run, as does an ARGFREEZE whose
 # ARG has no default or more than one value, or a lookup that fails: each would
-# otherwise leave a pin where it was with no sign that it had not moved.
-# Nothing is written until every pin has been resolved.
+# otherwise leave a pin where it was with no sign that it had not moved. Nothing
+# is written until every pin has been resolved.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -141,7 +141,9 @@ for data in "${args[@]}"; do
         project=${source#github:}
         # GitHub answers /releases/latest with a redirect to the latest
         # release's tag, without the API or a token. A project with no release
-        # redirects elsewhere, which the match refuses.
+        # redirects elsewhere, which the match refuses. GitHub's docs (Linking
+        # to releases, docs.github.com, checked 2026-11) document the link, not
+        # the redirect or what a project with no release gets.
         echo "Looking up $project's latest release"
         url=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
             "https://github.com/$project/releases/latest")

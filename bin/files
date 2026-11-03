@@ -64,24 +64,39 @@ for files_dir in ansible docker lint project terraform bin; do
 done
 unset files_dir
 # Carry no shebang, since they are sourced.
-shell_files+=(bin/files docker/init project/echo-line project/release-onto)
+shell_files+=(ansible/lint-args bin/files docker/init project/echo-line project/release-onto)
 
+compose_files=(docker-compose.yml)
 # A proposed workflow waits in .github/workflows.new/ until it is moved into
 # .github/workflows/, so either directory may be absent.
-yaml_files=(docker-compose.yml .hadolint.yaml)
+workflow_files=()
 if [ -d .github ]; then
-    files_workflows=()
-    files_find files_workflows .github .github -mindepth 2 -maxdepth 2 -type f \
-        \( -path '.github/workflows*/*.yml' -o -path '.github/workflows*/*.yaml' \)
-    yaml_files+=("${files_workflows[@]}")
-    unset files_workflows
+    files_find workflow_files .github .github -mindepth 2 -maxdepth 2 -type f \
+        \( -path '.github/workflows/*' -o -path '.github/workflows.new/*' \) \
+        \( -name '*.yml' -o -name '*.yaml' \)
 fi
+yaml_files=("${compose_files[@]}" .hadolint.yaml "${workflow_files[@]}")
 
-# Read only by the runners that source this file, so they look unused here.
+# Read only by the runners that source this file, so it looks unused here.
 # shellcheck disable=SC2034
 docker_files=(Dockerfile)
+# Read only by the runners that source this file, so it looks unused here.
 # shellcheck disable=SC2034
 markdown_files=(README.md)
+# Read only by the runners that source this file, so it looks unused here.
+# shellcheck disable=SC2034
+make_files=(Makefile)
+# Read only by the runners that source this file, so it looks unused here.
+# shellcheck disable=SC2034
+dotenv_files=(.env.example)
+# --newline, so each keeps its final newline. Read only by the runners that
+# source this file, so it looks unused here.
+# shellcheck disable=SC2034
+dockerfmt_args=(--newline)
+# --wrap no, so each paragraph is one line, which renderers reflow. Read only by
+# the runners that source this file, so it looks unused here.
+# shellcheck disable=SC2034
+mdformat_args=(--wrap no)
 
-# No formatter or linter exists for what else is tracked: the Makefile, the
-# .dockerignore, .gitignore and .env.example, .dockerrepo and the LICENSE.
+# No formatter or linter exists for what else is tracked: the .dockerignore,
+# .gitignore, .dockerrepo, checkmake.ini and the LICENSE.

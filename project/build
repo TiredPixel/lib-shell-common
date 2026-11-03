@@ -11,9 +11,6 @@ source "$dir/echo-line"
 # The sweep is defined by this list, so its absence is a broken checkout rather
 # than an empty one: the per-project make stages below would find no project to
 # run in, and the run would still reach COMPLETED having run them nowhere.
-# project/each-without-project stays tolerant of a missing list, because
-# project/start and project/stop reach the current project through project/each
-# and remain meaningful without one.
 if [ ! -f "$f_projects" ]; then
     echo "$PWD: no $f_projects, so $(basename "$0") has nothing to sweep" >&2
     exit 1
@@ -30,12 +27,12 @@ echo -e "BUILD\n"
 "$dir/each-without-project" "$dir/make-if-declared" build
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "BUILD START\n"
+echo -e "START\n"
 
 "$dir/start"
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "BUILD STOP\n"
+echo -e "STOP\n"
 
 "$dir/stop"
 #-------------------------------------------------------------------------------

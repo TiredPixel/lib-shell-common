@@ -4,9 +4,9 @@
 # project/upgrade for the rule each draws between stages. Sets no shell options,
 # since it runs under its caller's.
 
-# tput exits 2 with no terminal -- CI, cron, a make that is not on a tty -- and
-# a command substitution used as an argument cannot fail the command it is an
-# argument to, so the width would silently be empty and the rule vanish.
+# tput exits 2 where $TERM is unset -- cron, a container run without a tty --
+# and a command substitution used as an argument cannot fail the command it is
+# an argument to, so the width would silently be empty and the rule vanish.
 # Resolved into a variable first, with a fallback, so the failure is caught
 # rather than lost in an argument.
 #

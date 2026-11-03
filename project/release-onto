@@ -4,6 +4,26 @@
 # which release onto a branch by the same steps. Sets no shell options, since it
 # runs under its caller's.
 
+# Checks out branch $2 in every project, through project/each in directory $1,
+# and fast-forwards it to its upstream.
+release_checkout() {
+    local dir=$1 branch=$2
+
+    "$dir/each" git checkout "$branch" --no-recurse-submodules
+
+    "$dir/each" git pull --ff-only --no-recurse-submodules
+}
+
+# Pushes branch $2 in every project, through project/each in directory $1.
+# Remote and refspec named, whatever the caller's push.default,
+# remote.pushDefault or push.followTags.
+release_push() {
+    local dir=$1 branch=$2
+
+    "$dir/each" git push --no-follow-tags --recurse-submodules=check origin \
+        "$branch:$branch"
+}
+
 # Releases tag $3 from branch $2 in every project, through the project/ scripts
 # in directory $1: refuses a tree in no state to release, brings each project's
 # $2 current, commits the submodule pointers, tags, and pushes $2.
@@ -12,16 +32,11 @@ release_onto() {
 
     "$dir/release-assert"
 
-    "$dir/each" git checkout "$branch" --no-recurse-submodules
-
-    "$dir/each" git pull --ff-only --no-recurse-submodules
+    release_checkout "$dir" "$branch"
 
     "$dir/release-commit-submodules"
 
     "$dir/tag-create" "$tag"
 
-    # Remote and refspec named, whatever the caller's push.default,
-    # remote.pushDefault or push.followTags.
-    "$dir/each" git push --no-follow-tags --recurse-submodules=check origin \
-        "$branch:$branch"
+    release_push "$dir" "$branch"
 }

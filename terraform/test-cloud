@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-terraform fmt -recursive -check
+# -diff, so a failure shows what would change rather than only naming the file.
+terraform fmt -recursive -check -diff
 
 terraform init
 

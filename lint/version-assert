@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Fail unless VERSION names a release a mobile client could actually publish.
-# A server-side build may legitimately carry a version like 14.654.4-gdd8f39ac,
+# Fail unless VERSION names a release a mobile client could actually publish. A
+# server-side build may legitimately carry a version like 14.654.4-gdd8f39ac,
 # describing a commit that is not exactly on a tag; a store field may not. Play
 # accepts any string as a versionName, but the number shown there is the same
 # one iOS puts in CFBundleShortVersionString, which takes at most three
@@ -18,17 +18,16 @@
 # the one value that must never reach a store. Nothing else here would catch it,
 # because it is a perfectly legal version string.
 #
-# Callers decide whether an absent VERSION is an error. The stamping paths call
-# this only once they have one, so a dev build skips both the stamp and the
-# check; a publishing path calls it unconditionally and gets the presence check
+# Callers decide whether an absent VERSION is an error. A stamping path that
+# calls this only once it has one lets a dev build skip both the stamp and the
+# check; a publishing path that calls it unconditionally gets the presence check
 # with it.
-
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# :? rather than ?, because the risk here is empty rather than unset: a
-# workflow that resolves no version still exports the variable, holding
-# nothing, and set -u does not catch that.
+# :? rather than ?, because the risk here is empty rather than unset: a workflow
+# that resolves no version still exports the variable, holding nothing, and set
+# -u does not catch that.
 : "${VERSION:?must be set to the version to stamp}"
 
 if [ "$VERSION" = "0.0" ]; then
@@ -42,17 +41,16 @@ if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+$'; then
     exit 1
 fi
 
-# The multiplier is this library's convention rather than either store's, and a
-# caller adopting it has to compute the same expression at the point that
-# stamps.
-# Both clients derive their store build number as major * 10000 + minor, so a
-# minor that reached the multiplier would carry into the next major's .0 and
-# collide with a number Play may already have accepted -- which it then refuses,
-# having no way to tell the two apart (Android's "Version your app", as above).
-# Checked here rather than in either expression, so one rule covers both clients
-# and neither restates it. The test builtin reads a leading zero as decimal,
-# unlike arithmetic evaluation, so a minor written 0659 compares as 659 rather
-# than failing as bad octal.
+# A client adopting this library's build number derives it as major * 10000 +
+# minor, so a minor that reached the multiplier would carry into the next
+# major's .0 and collide with a number Play may already have accepted -- which
+# it then refuses, having no way to tell the two apart (Android's "Version your
+# app", as above). The multiplier is this library's convention rather than
+# either store's, and a caller adopting it has to compute the same expression at
+# the point that stamps. Checked here rather than in either expression, so one
+# rule covers both clients and neither restates it. The test builtin reads a
+# leading zero as decimal, unlike arithmetic evaluation, so a minor written 0659
+# compares as 659 rather than failing as bad octal.
 if [ "${VERSION##*.}" -ge 10000 ]; then
     echo "VERSION minor is ${VERSION##*.}; the build number needs under 10000." >&2
     exit 1
@@ -61,11 +59,11 @@ fi
 # The other end of the same expression, and the reason the multiplier is not
 # wider: Play refuses a versionCode above 2,100,000,000 (Android's "Version your
 # app", as above), so the two halves share one budget and every digit given to
-# the minor comes out of the major.
-# 209,999 is the largest major for which every minor fits: with the largest
-# minor above it gives 2,099,999,999, while 210,000 overflows with any minor
-# above 0. Stated as a bound on the major rather than on the computed number, so
-# the formula lives in the two places that use it and not in a third.
+# the minor comes out of the major. 209,999 is the largest major for which every
+# minor fits: with the largest minor the check above allows it gives
+# 2,099,999,999, while 210,000 overflows with any minor above 0. Stated as a
+# bound on the major rather than on the computed number, so the formula lives in
+# the two places that use it and not in a third.
 if [ "${VERSION%%.*}" -gt 209999 ]; then
     echo "VERSION major is ${VERSION%%.*}; the build number needs 209999 or under." >&2
     exit 1

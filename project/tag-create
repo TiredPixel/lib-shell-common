@@ -6,10 +6,10 @@ tag=${1:?must be set to the tag to create}
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 # The sweep's status is checked rather than discarded: as the left operand of an
-# && list it would be exempt from errexit, so a sweep that failed, on an
-# uninitialised submodule or a directory that is not a repository, would read as
-# "the tag exists nowhere" and the script would go on to sign and push it
-# everywhere.
+# && list it would be exempt from errexit, so a sweep that failed, on a
+# .projects entry that is not a submodule or a directory missing from the tree,
+# would read as "the tag exists nowhere" and the script would go on to sign and
+# push it everywhere.
 #
 # --no-column because column.ui=always would put several tags on a line, which
 # the exact-line match below would never find.
