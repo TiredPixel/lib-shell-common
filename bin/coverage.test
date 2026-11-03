@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+#
+# Tests bin/coverage in a scratch tree, with kcov faked on PATH. The fake logs
+# its arguments, each shell-quoted, then the entries of the report directory it
+# was given, as "out:" and their names, and exits with FAKE_KCOV's status.
+#
+# Run: bin/coverage.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+coverage=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/coverage
+# Resolved, since bin/coverage names the tree by $PWD and its own bin/ by
+# readlink -f, and the log is compared against both.
+work=$(readlink -f "$(mktemp -d)")
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/path"
+cat >"$work/path/kcov" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+{
+    printf kcov
+    printf ' %q' "$@"
+    echo
+    printf out:
+    find "$2" -mindepth 1 -printf ' %P' | LC_ALL=C sort
+    echo
+} >>"$FAKE_LOG"
+exit "${FAKE_KCOV:-0}"
+EOF
+chmod +x "$work/path/kcov"
+export FAKE_LOG=$work/log
+export PATH=$work/path:$PATH
+
+failed=()
+
+# Makes a tree at $work/$1 holding bin/coverage, and prints its path.
+tree() {
+    local t=$work/$1
+    mkdir -p "$t/bin"
+    cp -- "$coverage" "$t/bin/coverage"
+    echo "$t"
+}
+
+# Runs bin/coverage with the remaining arguments in tree $2, and checks its
+# status is $3, its log is kcov's run for those arguments with an empty report
+# directory, and its stderr is $4.
+check() {
+    local name=$1 t=$2 status=$3 said=$4 rc=0 log
+    shift 4
+    : >"$FAKE_LOG"
+    (cd "$t" && bin/coverage "$@") >"$work/out" 2>"$work/err" || rc=$?
+    log=$(
+        printf kcov
+        printf ' %q' "--include-path=$t" "$t/tmp/coverage" "$t/bin/test" "$@"
+        printf '\nout:'
+    )
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+    elif [ "$(<"$FAKE_LOG")" != "$log" ]; then
+        failed+=("$name: the log is: $(<"$FAKE_LOG")")
+    elif [ "$(<"$work/err")" != "$said" ]; then
+        failed+=("$name: stderr is: $(<"$work/err")")
+    fi
+}
+
+report="coverage report: tmp/coverage/index.html"
+
+# With no report yet, tmp/coverage/ is made, along with tmp/.
+t=$(tree fresh)
+check fresh "$t" 0 "$report" a/one.test b/two.test
+
+# The last report is removed rather than merged into, and nothing beside it is.
+t=$(tree replaced)
+mkdir -p "$t/tmp/coverage/sub"
+: >"$t/tmp/coverage/index.html"
+: >"$t/tmp/coverage/sub/f"
+: >"$t/tmp/keep"
+check replaced "$t" 0 "removing $t/tmp/coverage"$'\n'"$report"
+if ! [ -e "$t/tmp/keep" ]; then
+    failed+=("replaced: tmp/keep was removed")
+fi
+
+# kcov's failure is bin/coverage's, with no report named.
+t=$(tree kcov-fails)
+FAKE_KCOV=3 check kcov-fails "$t" 3 ""
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+#
+# Tests bin/format in a scratch tree beside a stub bin/files, so the case
+# decides which files it lists, independent of the real list, with every tool
+# it runs faked on PATH. Each fake logs its name and arguments, each
+# shell-quoted, and exits 7 where FAKE_FAIL names it, or on the one call whose
+# log line FAKE_FAIL holds whole. A case checks the whole log, so a tool given
+# any argument other than those expected fails it.
+#
+# Run: bin/format.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+format=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/format
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+tools=(shfmt yq dockerfmt mdformat dotenv-linter)
+
+mkdir "$work/path"
+cat >"$work/path/fake" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+l=$(
+    printf %s "${0##*/}"
+    printf ' %q' "$@"
+)
+echo "$l" >>"$FAKE_LOG"
+if [ "${0##*/}" = "${FAKE_FAIL-}" ] || [ "$l" = "${FAKE_FAIL-}" ]; then
+    exit 7
+fi
+EOF
+chmod +x "$work/path/fake"
+for tool in "${tools[@]}"; do
+    ln -s fake "$work/path/$tool"
+done
+export FAKE_LOG=$work/log
+export PATH=$work/path:$PATH
+
+t=$work/tree
+mkdir -p "$t/bin"
+cp -- "$format" "$t/bin/format"
+cat >"$t/bin/files" <<'EOF'
+# shellcheck shell=bash
+shfmt_args=(--fake-shfmt)
+shell_files=('s/a b' s/c)
+yaml_files=(a.yml 'b c.yml')
+docker_files=(Dockerfile)
+dockerfmt_args=(--fake-dockerfmt)
+markdown_files=(README.md)
+mdformat_args=(--fake-mdformat)
+dotenv_files=(.env.example)
+EOF
+
+# A log line as a fake writes it, for command $1 with the rest as arguments.
+line() {
+    printf %s "$1"
+    shift
+    printf ' %q' "$@"
+    echo
+}
+
+# The whole log of a run that fails nowhere.
+all=$(
+    line shfmt --fake-shfmt -w 's/a b' s/c
+    line yq -i -P 'sort_keys(..)' a.yml
+    line yq -i -P 'sort_keys(..)' 'b c.yml'
+    line dockerfmt --fake-dockerfmt --write Dockerfile
+    line mdformat --fake-mdformat README.md
+    line dotenv-linter fix --no-backup .env.example
+)
+
+# The lines of $2 up to and including the first for command $1, or the line $1.
+upto() {
+    local l
+    while IFS= read -r l <&3; do
+        echo "$l"
+        if [[ $l == "$1 "* || $l == "$1" ]]; then
+            return
+        fi
+    done 3<<<"$2"
+    echo "upto: no line for $1" >&2
+    exit 1
+}
+
+failed=()
+
+# Runs bin/format in the tree and checks its status is $2, its log is $3, and
+# its stderr holds $4.
+check() {
+    local name=$1 status=$2 log=$3 said=$4 rc=0
+    : >"$FAKE_LOG"
+    (cd "$t" && bin/format) >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+    elif [ "$(<"$FAKE_LOG")" != "$log" ]; then
+        failed+=("$name: the log is: $(<"$FAKE_LOG")")
+    elif ! grep -qxF -- "$said" "$work/err"; then
+        failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+    fi
+}
+
+check all 0 "$all" "formatting 2 YAML file(s)"
+
+# Any failing pass ends the run with its status, running nothing after it; yq
+# fails on the first file, so the second is not reached.
+for tool in "${tools[@]}"; do
+    want=$(upto "$tool" "$all")
+    FAKE_FAIL=$tool check "fails-$tool" 7 "$want" "formatting 2 shell file(s)"
+done
+
+# A failure on a later YAML file ends the run too.
+yq2=$(line yq -i -P 'sort_keys(..)' 'b c.yml')
+FAKE_FAIL=$yq2 check fails-yq-second 7 "$(upto "$yq2" "$all")" \
+    "formatting 2 YAML file(s)"
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

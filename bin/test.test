@@ -3,9 +3,9 @@
 # Tests bin/test in scratch trees, with bin/lint and nproc faked. The fake
 # bin/lint logs "lint" and exits with FAKE_LINT's status; the fake nproc prints
 # FAKE_NPROC. Each fake test logs "start" and "end" with its name, prints its
-# name, and exits with the status in its own name, as in a/fail3.test. Between
-# start and end it sleeps, or, where FAKE_GATES is set, reads a line from the
-# FIFO there named after its file, so the case decides when it ends.
+# name, and exits with the status in its own name, as in a/fail3.test. Where
+# FAKE_GATES is set, between start and end it reads a line from the FIFO there
+# named after its file, so the case decides when it ends.
 #
 # Run: bin/test.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -52,8 +52,6 @@ shopt -s inherit_errexit failglob
 echo "start $0" >>"$FAKE_LOG"
 if [ -n "${FAKE_GATES-}" ]; then
     read -r _ <"$FAKE_GATES/${0##*/}"
-else
-    sleep 0.1
 fi
 echo "end $0" >>"$FAKE_LOG"
 echo "said $0"
@@ -176,70 +174,108 @@ if check no-tests "$t" 1 "bin/test: no */*.test found"; then
     logged no-tests ""
 fi
 
-# One at a time, each test ends before the next starts, in glob order.
+# The gated cases hold each test until released, so once bin/test has started
+# some and the kernel shows it blocked waiting for a child, it has started every
+# test it will before one ends, and its children are exactly those, whatever the
+# timing. Each gate is held open read-write on the fd gate_fd names, so a
+# release is buffered for a test not yet started rather than blocking.
+declare -A gate_fd=([one.test]=4 [two.test]=5 [three.test]=6)
+
+# Runs bin/test in the background in tree $2, with nproc faked as $3 and its
+# tests held at gates in $work/gates-$1, and sets pid.
+gated() {
+    local gates=$work/gates-$1 f
+    mkdir "$gates"
+    for f in "${!gate_fd[@]}"; do
+        mkfifo "$gates/$f"
+    done
+    exec 4<>"$gates/one.test" 5<>"$gates/two.test" 6<>"$gates/three.test"
+    : >"$FAKE_LOG"
+    (cd "$2" && FAKE_NPROC=$3 FAKE_GATES=$gates exec bin/test 4>&- 5>&- 6>&-) \
+        >"$work/out" 2>&1 &
+    pid=$!
+}
+
+# Waits until $2 tests have started and bin/test is blocked waiting for a child,
+# or else records that case $1 never got there and returns 1. Bounded so a
+# bin/test that never settles fails the case rather than hanging; the sleep only
+# paces the polling, and no result depends on it.
+settled() {
+    local _
+    for _ in {1..3000}; do
+        if [ "$(grep -c '^start ' "$FAKE_LOG" || :)" -ge "$2" ] &&
+            [ -r "/proc/$pid/wchan" ] &&
+            [ "$(<"/proc/$pid/wchan")" = do_wait ]; then
+            return 0
+        fi
+        sleep 0.01
+    done
+    failed+=("$1: never waited with $2 test(s) started: $(<"$FAKE_LOG")")
+    return 1
+}
+
+# Checks, for case $1, that bin/test has $2 children. Counted from the parent
+# field of each process's /proc/<pid>/stat, which every Linux kernel provides,
+# where /proc/<pid>/task/<pid>/children needs CONFIG_PROC_CHILDREN. The fields
+# after the last ) are state, then parent. A process that exits mid-scan is
+# skipped.
+children() {
+    local n=0 stat line fields
+    for stat in /proc/[0-9]*/stat; do
+        read -r line 2>/dev/null <"$stat" || continue
+        read -r -a fields <<<"${line##*) }"
+        if [ "${fields[1]}" = "$pid" ]; then
+            n=$((n + 1))
+        fi
+    done
+    if [ "$n" -ne "$2" ]; then
+        failed+=("$1: $n tests ran at once, not $2")
+    fi
+}
+
+# Releases every gate, waits for bin/test and closes the gates. Returns 1,
+# recording case $1's failure, unless bin/test passed all three tests.
+ungated() {
+    local rc=0
+    echo >&4
+    echo >&5
+    echo >&6
+    wait "$pid" || rc=$?
+    exec 4>&- 5>&- 6>&-
+    if [ "$rc" -ne 0 ] || ! grep -qxF "3 test(s) passed" "$work/out"; then
+        failed+=("$1: exit $rc: $(<"$work/out")")
+        return 1
+    fi
+}
+
+# One at a time, each test ends before the next starts, in glob order: at each
+# point, the test started last is bin/test's only child.
 t=$(tree serial b/two.test a/one.test c/three.test)
-if FAKE_NPROC=1 check serial "$t" 0 "3 test(s) passed"; then
+gated serial "$t" 1
+n=0
+for f in a/one.test b/two.test c/three.test; do
+    n=$((n + 1))
+    settled serial "$n" || break
+    last=$(grep '^start ' "$FAKE_LOG" | tail -n 1)
+    if [ "$last" != "start ./$f" ]; then
+        failed+=("serial: $f did not start next: $(<"$FAKE_LOG")")
+        break
+    fi
+    children serial 1
+    echo >&"${gate_fd[${f##*/}]}"
+done
+if ungated serial; then
     logged serial "lint"$'\n'"$(printf 'start ./%s\nend ./%s\n' \
         a/one.test a/one.test b/two.test b/two.test c/three.test c/three.test)"
 fi
 
-# Two at a time, no third test starts before one ends, whatever the timing. The
-# tests hold until released, so once two have started and the kernel shows
-# bin/test blocked waiting for a child, it has started every test it will before
-# one ends, and its children are exactly those. The case holds each gate open
-# read-write, so a release is buffered for a test not yet started rather than
-# blocking.
+# Two at a time, no third test starts before one ends.
 t=$(tree capped a/one.test b/two.test c/three.test)
-gates=$work/gates
-mkdir "$gates"
-for f in one.test two.test three.test; do
-    mkfifo "$gates/$f"
-done
-exec 4<>"$gates/one.test" 5<>"$gates/two.test" 6<>"$gates/three.test"
-: >"$FAKE_LOG"
-(cd "$t" && FAKE_NPROC=2 FAKE_GATES=$gates exec bin/test 4>&- 5>&- 6>&-) \
-    >"$work/out" 2>&1 &
-pid=$!
-settled=
-# Bounded so a bin/test that never settles fails the case rather than hanging;
-# the sleep only paces the polling, and no result depends on it.
-for _ in {1..3000}; do
-    if [ "$(grep -c '^start ' "$FAKE_LOG" || :)" -ge 2 ] &&
-        [ -r "/proc/$pid/wchan" ] &&
-        [ "$(<"/proc/$pid/wchan")" = do_wait ]; then
-        settled=1
-        break
-    fi
-    sleep 0.01
-done
-if [ -z "$settled" ]; then
-    failed+=("capped: never waited with two tests started: $(<"$FAKE_LOG")")
-else
-    # Counted from the parent field of each process's /proc/<pid>/stat, which
-    # every Linux kernel provides, where /proc/<pid>/task/<pid>/children needs
-    # CONFIG_PROC_CHILDREN. The fields after the last ) are state, then parent.
-    # A process that exits mid-scan is skipped.
-    children=0
-    for stat in /proc/[0-9]*/stat; do
-        read -r line <"$stat" 2>/dev/null || continue
-        read -r -a fields <<<"${line##*) }"
-        if [ "${fields[1]}" = "$pid" ]; then
-            children=$((children + 1))
-        fi
-    done
-    if [ "$children" -ne 2 ]; then
-        failed+=("capped: $children tests ran at once, not 2")
-    fi
+gated capped "$t" 2
+if settled capped 2; then
+    children capped 2
 fi
-echo >&4
-echo >&5
-echo >&6
-rc=0
-wait "$pid" || rc=$?
-exec 4>&- 5>&- 6>&-
-if [ "$rc" -ne 0 ] || ! grep -qxF "3 test(s) passed" "$work/out"; then
-    failed+=("capped: exit $rc: $(<"$work/out")")
-else
+if ungated capped; then
     linted_then_ran capped a/one.test b/two.test c/three.test
 fi
 
