@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# Usage: docker/upgrade-commit RECORD [PATH...]
+#
+# Commits what docker/upgrade --record RECORD wrote, once the build and tests
+# after it have passed, as "Upgrade pins" with a line for each pin that moved as
+# the body. It stages exactly the paths RECORD lists and each PATH, such as a
+# library submodule taken forwards beside the upgrade, and refuses, listing
+# them, where any other path is already staged, since the commit would carry
+# it. Where nothing moved, it commits nothing. It never pushes. RECORD is
+# removed once used, so a second run cannot commit it again.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+if [ -z "${1:-}" ]; then
+    echo "Usage: ${0##*/} RECORD [PATH...]" >&2
+    exit 2
+fi
+record=$1
+extra=("${@:2}")
+
+if [ ! -f "$record" ]; then
+    echo "${0##*/}: $record: no such file" >&2
+    exit 1
+fi
+
+# Outside a repository, git diff would take --cached as a file comparison's
+# unknown option rather than say so.
+git rev-parse --git-dir >/dev/null
+
+mapfile -t lines <"$record"
+if [ ${#lines[@]} -eq 0 ]; then
+    echo "${0##*/}: $record: nothing moved, so there is nothing to commit" >&2
+    rm -- "$record"
+    exit 0
+fi
+
+# The paths written, then a blank line, then the moves.
+blank=""
+for i in "${!lines[@]}"; do
+    if [ -z "${lines[$i]}" ]; then
+        blank=$i
+        break
+    fi
+done
+paths=("${lines[@]:0:${blank:-0}}")
+moves=("${lines[@]:${blank:-0}+1}")
+if [ -z "$blank" ] || [ ${#paths[@]} -eq 0 ] || [ ${#moves[@]} -eq 0 ]; then
+    echo "${0##*/}: $record: not a record docker/upgrade --record writes" >&2
+    exit 1
+fi
+for i in "${!moves[@]}"; do
+    if [ -z "${moves[$i]}" ]; then
+        echo "$record:$((blank + i + 2)): a second blank line" >&2
+        exit 1
+    fi
+done
+
+# :(literal) so a path is never read as a pattern; --no-renames so a staged
+# rename lists the path it leaves as well as the one it makes.
+specs=()
+excludes=()
+for path in "${paths[@]}" "${extra[@]}"; do
+    specs+=(":(literal)$path")
+    excludes+=(":(exclude,literal)$path")
+done
+others=$(git diff --cached --no-renames --name-only -- ':/' "${excludes[@]}")
+if [ -n "$others" ]; then
+    printf '%s\n' "$others" >&2
+    echo "${0##*/}: already staged beside the upgrade; commit or unstage it" \
+        "first" >&2
+    exit 1
+fi
+
+git add -- "${specs[@]}"
+git commit -m "Upgrade pins" -m "$(printf '%s\n' "${moves[@]}")"
+rm -- "$record"

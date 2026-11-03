@@ -18,22 +18,34 @@ shopt -s inherit_errexit failglob
 
 named=("$@")
 
-# Built rather than globbed inline, because failglob turns an absent bin/ into a
-# bash "no match" and ends the run on a layout that is merely different.
+# Globbed with nullglob in place of failglob, because an empty directory or an
+# empty bin/ is a layout with nothing in it, not an error, and failglob would
+# end the run there. An empty result is the nothing-found case below.
+shopt -u failglob
+shopt -s nullglob
 roots=(./*)
 
 if [ -d bin ]; then
     roots+=(bin/*)
 fi
+shopt -u nullglob
+shopt -s failglob
 
-# file(1) is run on its own so its status is checked. Folded into the pipeline
-# it could not be: a broken file(1) and a clean no-match both arrive as an empty
-# result, and the pass then skips in silence, indistinguishable from one that
-# checked everything. grep exiting 1 on no match stays tolerated, because no
-# shell scripts at all is a legitimate answer.
-typed=$(file --mime-type "${roots[@]}")
+# file(1) is run once per file, with -b so its output is the type alone: a name
+# holding a colon or a newline then cannot be misparsed as its own type. Its
+# status is checked, by assigning rather than testing the substitution, because
+# a broken file(1) and a file that is not a script would otherwise look alike,
+# and the pass would skip in silence, indistinguishable from one that checked
+# everything.
+found=()
 
-mapfile -t found < <(grep 'text/x-shellscript' <<<"$typed" | cut -d':' -f1 || true)
+for f in "${roots[@]}"; do
+    type=$(file -b --mime-type -- "$f")
+
+    if [ "$type" = text/x-shellscript ]; then
+        found+=("$f")
+    fi
+done
 
 scripts=()
 
@@ -58,7 +70,7 @@ fi
 
 # Named rather than counted, so the log records what the pass actually covered
 # and an absence is visible without anyone having to ask for it.
-printf '%s\n' "${named[@]}" "${scripts[@]}" | sed 's/^/  /' >&2
+printf '%s\n' "${named[@]}" "${scripts[@]}" >&2
 
 # -P SCRIPTDIR, so a source of a file beside the script is followed rather than
 # reported as unresolved.

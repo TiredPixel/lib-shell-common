@@ -23,18 +23,19 @@ shopt -s inherit_errexit failglob
 # the array arrive empty.
 shopt -s lastpipe
 
+prog=${0##*/}
 f_projects=.projects
 
 top=$(git rev-parse --show-toplevel)
 
+# .projects is read from the current directory and only the submodules under it
+# are checked, so below the top level the checks would cover only part of the
+# repository, every submodule would read as missing from .projects and the
+# sweep would reach no project, yet the release commit records pointers across
+# the whole repository.
 if [[ ! $PWD -ef $top ]]; then
-    echo "$PWD: refusing to release from below the top level, $top:" >&2
-    echo "$f_projects is read from the current directory and only the" >&2
-    echo "submodules under it are checked, so the checks would cover only part" >&2
-    echo "of the repository, every submodule would read as missing from" >&2
-    echo "$f_projects and the sweep would reach no project, yet the release" >&2
-    echo "commit records pointers across the whole repository. Run it from" >&2
-    echo "$top." >&2
+    echo "$prog: $PWD: refusing to release from below the top level" >&2
+    echo "$prog: run it from $top" >&2
 
     exit 1
 fi
@@ -49,13 +50,15 @@ fi
 # for.
 dirty=$(git status --porcelain --ignore-submodules=all --untracked-files=normal)
 
+# git's own lines pass through unaltered between the program's.
 if [ -n "$dirty" ]; then
-    echo "$PWD: refusing to release, the tree carries work outside its submodules:" >&2
+    echo "$prog: $PWD: refusing to release, the tree carries work outside" \
+        "its submodules:" >&2
     printf '%s\n' "$dirty" >&2
-    echo >&2
-    echo "A release commit records submodule pointers and nothing else, so commit or" >&2
-    echo "discard the above first. docker/upgrade is one way to arrive here: it rewrites" >&2
-    echo "Dockerfile in place, and the digest re-pin is a tracked change like any other." >&2
+    echo "$prog: a release commit records submodule pointers and nothing else," \
+        "so commit or discard these first" >&2
+    echo "$prog: docker/upgrade is one way to arrive here: its digest re-pin" \
+        "of Dockerfile is a tracked change like any other" >&2
 
     exit 1
 fi
@@ -70,22 +73,12 @@ git_dir=$(git rev-parse --git-dir)
 
 for f in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
     if [ -e "$git_dir/$f" ]; then
-        echo "$PWD: $f: an operation is in progress, so this is no state to release from" >&2
+        echo "$prog: $PWD: $f: an operation is in progress," \
+            "so this is no state to release from" >&2
 
         exit 1
     fi
 done
-
-# The status check above already refuses an unmerged path, a submodule's
-# included, which it lists as UU; this is a second guard for the same case.
-unmerged=$(git ls-files --unmerged)
-
-if [ -n "$unmerged" ]; then
-    echo "$PWD: refusing to release, the index has unmerged paths:" >&2
-    printf '%s\n' "$unmerged" >&2
-
-    exit 1
-fi
 
 # The submodules this release will not tag. .projects is a curated list -- see
 # project/each-without-project -- so an omission is usually deliberate, and this
@@ -115,7 +108,8 @@ for module in "${modules[@]}"; do
     # nobody initialised, so its pointer cannot move, and for a submodule
     # .projects does not name, that is the normal state.
     if [ ! -d "$module" ]; then
-        echo "$PWD: $module: not checked out, so a release cannot record it" >&2
+        echo "$prog: $PWD: $module: not checked out," \
+            "so a release cannot record it" >&2
 
         exit 1
     fi
@@ -128,9 +122,10 @@ for module in "${modules[@]}"; do
     top=$(git -C "$module" rev-parse --show-toplevel 2>/dev/null) || top=
 
     if [[ ! $top -ef $module ]]; then
-        echo "$PWD: $module: has content but is not a repository of its own," >&2
-        echo "so git reads its pointer as unchanged and a release would record" >&2
-        echo "the commit already held rather than what is in the tree." >&2
+        echo "$prog: $PWD: $module: has content but is not a repository" \
+            "of its own" >&2
+        echo "$prog: git reads its pointer as unchanged, so a release would" \
+            "record the commit already held rather than what is in the tree" >&2
 
         exit 1
     fi
@@ -151,6 +146,7 @@ for module in "${modules[@]}"; do
 done
 
 if [ "${#unlisted[@]}" -gt 0 ]; then
-    echo "$PWD: not named in $f_projects, so this release will not tag:" >&2
-    printf '  %s\n' "${unlisted[@]}" >&2
+    echo "$prog: $PWD: not named in $f_projects," \
+        "so this release will not tag:" >&2
+    printf '%s\n' "${unlisted[@]}" >&2
 fi

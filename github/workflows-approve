@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+#
+# Approves the workflows proposed in .github/workflows.new/ of the repository
+# holding the current directory. Shows each one as a diff against its live
+# counterpart in .github/workflows/, or as a whole file if it is new, and asks
+# on the terminal whether to approve it. The diff is shown without colour and
+# through cat -v, so a byte outside printable ASCII in either file, which could
+# hide or redraw what the terminal shows, is shown escaped instead. Moves each
+# approved file into place, removes .github/workflows.new/ once it is empty,
+# commits only that move as "Approve workflow" or "Approve workflows", and
+# pushes the current branch to origin.
+#
+# Refuses before changing anything when nothing is pending, when a proposal's
+# name is not letters, digits, dots, dashes and underscores ending .yml or
+# .yaml, which keeps the prompt and paths free of control bytes, when anything
+# is already staged, when a proposal is the same as its live workflow, when a
+# live workflow has local changes or is untracked, on a detached HEAD, with no
+# origin, or with no terminal to ask on. Needs only bash and git, so it runs
+# from a fresh clone of a pushed branch whether the proposal is committed or
+# only in the working tree.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+me=${0##*/}
+new=.github/workflows.new
+live=.github/workflows
+
+die() {
+    echo "$me: $*" >&2
+    exit 1
+}
+
+# Sets entries to every entry in $new, dot files included. failglob would end
+# the run on an empty directory, and it takes precedence over nullglob.
+entries_of_new() {
+    shopt -u failglob
+    shopt -s dotglob nullglob
+    entries=("$new"/*)
+    shopt -u dotglob nullglob
+    shopt -s failglob
+}
+
+if [ $# -ne 0 ]; then
+    echo "Usage: $me" >&2
+    exit 2
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! [ -d "$new" ]; then
+    die "nothing to approve: $new/ is absent"
+fi
+entries_of_new
+if [ ${#entries[@]} -eq 0 ]; then
+    die "nothing to approve: $new/ is empty"
+fi
+# In the C locale, so the ranges mean ASCII alone and %q escapes every byte
+# outside printable ASCII.
+safe_name() {
+    local LC_ALL=C
+    [[ $1 =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*\.ya?ml$ ]]
+}
+quote() {
+    local LC_ALL=C
+    printf %q "$1"
+}
+
+for f in "${entries[@]}"; do
+    if ! safe_name "${f##*/}"; then
+        die "refusing, since $(quote "$f") is not named" \
+            "[A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml"
+    fi
+    if [ -L "$f" ] || ! [ -f "$f" ]; then
+        die "$f is not a regular file"
+    fi
+done
+
+staged=$(git diff --cached --name-only)
+if [ -n "$staged" ]; then
+    echo "$staged" >&2
+    die "refusing, since the paths above are already staged and would be" \
+        "committed with the approval"
+fi
+
+# With nothing staged, the index matches HEAD, so a live workflow that differs
+# from the index has local changes the move would overwrite unreviewed.
+for f in "${entries[@]}"; do
+    target=$live/${f##*/}
+    if [ -n "$(git ls-files -- ":(literal)$target")" ]; then
+        if ! git diff --quiet -- ":(literal)$target"; then
+            die "refusing, since $target has local changes the approval" \
+                "would overwrite"
+        fi
+    elif [ -e "$target" ]; then
+        die "refusing, since $target is untracked"
+    fi
+    if [ -e "$target" ]; then
+        # 1 means the files differ, anything above it an error.
+        rc=0
+        git diff --no-index --quiet -- "$target" "$f" || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            die "refusing, since $f is the same as $target; remove it"
+        elif [ "$rc" -gt 1 ]; then
+            exit "$rc"
+        fi
+    fi
+done
+
+branch=$(git symbolic-ref -q --short HEAD) ||
+    die "refusing on a detached HEAD, since there is no branch to push"
+
+git remote get-url origin >/dev/null 2>&1 ||
+    die "refusing, since there is no origin to push to"
+
+# Answers come on a file descriptor of their own, so they never pass through
+# stdin, which may be redirected.
+if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+    die "refusing, since there is no terminal to ask on"
+fi
+
+approved=()
+for f in "${entries[@]}"; do
+    target=$live/${f##*/}
+    if [ -e "$target" ]; then
+        from=$target
+    else
+        from=/dev/null
+    fi
+    # For git diff, 1 means the files differ and anything above it an error;
+    # cat exits 1 on an error, so the two statuses are read apart, cat's first,
+    # since its failure can kill git by SIGPIPE.
+    if git --no-pager diff --no-index --no-color -- "$from" "$f" |
+        LC_ALL=C cat -v; then
+        statuses=("${PIPESTATUS[@]}")
+    else
+        statuses=("${PIPESTATUS[@]}")
+    fi
+    if [ "${statuses[1]}" -ne 0 ]; then
+        exit "${statuses[1]}"
+    fi
+    if [ "${statuses[0]}" -gt 1 ]; then
+        exit "${statuses[0]}"
+    fi
+    while :; do
+        printf 'Approve %s? [y/n] ' "$f" >&2
+        read -r answer <&3 || die "no answer read from the terminal"
+        case $answer in
+        y)
+            approved+=("$f")
+            break
+            ;;
+        n) break ;;
+        esac
+    done
+done
+
+if [ ${#approved[@]} -eq 0 ]; then
+    echo "$me: nothing approved, so nothing is changed" >&2
+    exit 0
+fi
+
+mkdir -p "$live"
+lines=()
+for f in "${approved[@]}"; do
+    target=$live/${f##*/}
+    if [ -e "$target" ]; then
+        lines+=("$target (changed)")
+    else
+        lines+=("$target (new)")
+    fi
+    tracked=$(git ls-files -- ":(literal)$f")
+    mv -f -- "$f" "$target"
+    if [ -n "$tracked" ]; then
+        git rm -q --cached -- ":(literal)$f"
+    fi
+    git add -- ":(literal)$target"
+done
+
+entries_of_new
+if [ ${#entries[@]} -eq 0 ]; then
+    rmdir -- "$new"
+fi
+
+subject="Approve workflow"
+if [ ${#approved[@]} -gt 1 ]; then
+    subject+=s
+fi
+body=$(printf '%s\n' "${lines[@]}")
+if ! git commit -q -m "$subject" -m "$body"; then
+    die "commit failed; the approval stays staged, so commit it by hand:" \
+        "git commit -m $(printf %q "$subject") -m $(printf %q "$body")"
+fi
+
+# Remote and refspec named, whatever the caller's push.default,
+# remote.pushDefault or push.followTags, as the release scripts do.
+if ! git push --no-follow-tags origin "HEAD:refs/heads/$branch"; then
+    die "push failed; the commit stays, so push it by hand:" \
+        "git push --no-follow-tags origin HEAD:refs/heads/$branch"
+fi

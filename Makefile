@@ -17,10 +17,19 @@ lint:
 test:
 	docker compose --profile test run --rm --build shell_test test $(TESTS)
 upgrade-pre:
-	docker/upgrade
+	docker/upgrade --record tmp/upgrade.record Dockerfile .github/workflows/*.yml
 # One step at a time even under -j, since each needs the one before it done.
 upgrade:
 	$(MAKE) upgrade-pre
+	$(MAKE) upgrade-post
+# Alone, it finishes an upgrade whose build or tests failed, once fixed.
+upgrade-post:
 	$(MAKE) build
 	$(MAKE) test
-.PHONY: build coverage format lint test upgrade-pre upgrade
+	docker/upgrade-commit tmp/upgrade.record
+# On the host rather than in the image, since it asks on the terminal and
+# pushes.
+workflows-approve:
+	github/workflows-approve
+.PHONY: build coverage format lint test upgrade-pre upgrade upgrade-post \
+	workflows-approve

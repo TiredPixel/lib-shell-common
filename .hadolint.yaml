@@ -1,6 +1,6 @@
 ---
 # DL3008 asks for each apt package pinned to an exact version. The base image is
-# pinned by digest through FROMFREEZE instead, and packages come from Debian
+# pinned by digest through TRACK FROM instead, and packages come from Debian
 # unpinned so that each upgrade reaches them.
 ignored:
   - DL3008

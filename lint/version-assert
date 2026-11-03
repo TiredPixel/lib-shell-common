@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 #
+# Usage: version-assert [--parts 2|3]
+#
 # Fail unless VERSION names a release a mobile client could actually publish. A
 # server-side build may legitimately carry a version like 14.654.4-gdd8f39ac,
 # describing a commit that is not exactly on a tag; a store field may not. Play
@@ -13,10 +15,15 @@
 # stores showing the same version, and it lives here so an iOS and an Android
 # client cannot compute different numbers from one tag.
 #
-# 0.0 is rejected by name. It is what project.pbxproj and app/build.gradle.kts
-# each hold for a build nobody gave a version to -- correct for a dev build, and
-# the one value that must never reach a store. Nothing else here would catch it,
-# because it is a perfectly legal version string.
+# --parts sets that rule's shape: 2, the default, for major.minor, or 3 for
+# major.minor.patch. Each shape has its own build number, below, so a project
+# picks one and every client of it passes the same setting.
+#
+# 0.0 and 0.0.0 are rejected by name, under either setting. 0.0 is what
+# project.pbxproj and app/build.gradle.kts each hold for a build nobody gave a
+# version to, and 0.0.0 is the same in three parts -- correct for a dev build,
+# and the one value that must never reach a store. Nothing else here would catch
+# it, because it is a perfectly legal version string.
 #
 # Callers decide whether an absent VERSION is an error. A stamping path that
 # calls this only once it has one lets a dev build skip both the stamp and the
@@ -25,46 +32,114 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# :? rather than ?, because the risk here is empty rather than unset: a workflow
-# that resolves no version still exports the variable, holding nothing, and set
-# -u does not catch that.
-: "${VERSION:?must be set to the version to stamp}"
+prog=$(basename "$0")
 
-if [ "$VERSION" = "0.0" ]; then
-    echo "VERSION is 0.0, which is the unstamped placeholder, not a release." >&2
+usage() {
+    echo "Usage: $prog [--parts 2|3]" >&2
+    exit 2
+}
+
+parts=2
+
+while [ $# -gt 0 ]; do
+    case $1 in
+    --parts)
+        [ $# -ge 2 ] || usage
+        parts=$2
+        shift 2
+        ;;
+    *) usage ;;
+    esac
+done
+
+case $parts in
+2 | 3) ;;
+*) usage ;;
+esac
+
+# Empty is refused with unset, because the risk here is empty rather than unset:
+# a workflow that resolves no version still exports the variable, holding
+# nothing. Exit 1 rather than 2, because VERSION is input to check, not usage.
+if [ -z "${VERSION:-}" ]; then
+    echo "$prog: VERSION must be set to the version to stamp" >&2
     exit 1
 fi
 
-if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+$'; then
-    echo "VERSION is '$VERSION'; a release is major.minor and nothing else." >&2
-    echo "A build that is not exactly on a tag has no release number to claim." >&2
+if [ "$VERSION" = 0.0 ] || [ "$VERSION" = 0.0.0 ]; then
+    echo "$prog: VERSION is $VERSION, which is the unstamped placeholder, not a release" >&2
     exit 1
 fi
+
+# Matched against the whole value, so a VERSION holding a release on one line
+# and anything else on another is refused. The digits are listed rather than
+# written 0-9, which in a UTF-8 locale also matches other scripts' digits, such
+# as Arabic-Indic or fullwidth ones, that the test builtin cannot compare.
+if [ "$parts" = 2 ]; then
+    shape=major.minor
+    pattern='^([0123456789]+)\.([0123456789]+)$'
+else
+    shape=major.minor.patch
+    pattern='^([0123456789]+)\.([0123456789]+)\.([0123456789]+)$'
+fi
+
+if ! [[ $VERSION =~ $pattern ]]; then
+    # Quoted with %q, so a value holding a newline stays on one line.
+    printf '%s: VERSION is %q; a release is %s and nothing else\n' \
+        "$prog" "$VERSION" "$shape" >&2
+    echo "$prog: a build that is not exactly on a tag has no release number to claim" >&2
+    exit 1
+fi
+
+major=${BASH_REMATCH[1]}
+minor=${BASH_REMATCH[2]}
+patch=${BASH_REMATCH[3]:-}
+
+# Whether part $1 is above $2. Leading zeros are dropped so they do not count
+# towards the length; a part of more than 18 digits is above every bound here,
+# and is said so without comparing it, since the test builtin cannot read a
+# number past 64 bits and would fail with an error rather than answer.
+above() {
+    local n=${1#"${1%%[!0]*}"}
+    [ ${#n} -gt 18 ] || [ "${n:-0}" -gt "$2" ]
+}
 
 # A client adopting this library's build number derives it as major * 10000 +
-# minor, so a minor that reached the multiplier would carry into the next
-# major's .0 and collide with a number Play may already have accepted -- which
-# it then refuses, having no way to tell the two apart (Android's "Version your
-# app", as above). The multiplier is this library's convention rather than
-# either store's, and a caller adopting it has to compute the same expression at
-# the point that stamps. Checked here rather than in either expression, so one
-# rule covers both clients and neither restates it. The test builtin reads a
-# leading zero as decimal, unlike arithmetic evaluation, so a minor written 0659
-# compares as 659 rather than failing as bad octal.
-if [ "${VERSION##*.}" -ge 10000 ]; then
-    echo "VERSION minor is ${VERSION##*.}; the build number needs under 10000." >&2
+# minor from two parts, or major * 1000000 + minor * 1000 + patch from three, so
+# a lower part that reached its multiplier would carry into the next higher
+# part's 0 and collide with a number Play may already have accepted -- which it
+# then refuses, having no way to tell the two apart (Android's "Version your
+# app", as above). The multipliers are this library's convention rather than
+# either store's, and a caller adopting them has to compute the same expression
+# at the point that stamps. Checked here rather than in either expression, so
+# one rule covers both clients and neither restates it.
+if [ "$parts" = 2 ]; then
+    lower=10000
+    major_max=209999
+else
+    lower=1000
+    major_max=2099
+fi
+
+if above "$minor" $((lower - 1)); then
+    echo "$prog: VERSION minor is $minor; the build number needs under $lower" >&2
     exit 1
 fi
 
-# The other end of the same expression, and the reason the multiplier is not
+if [ -n "$patch" ] && above "$patch" $((lower - 1)); then
+    echo "$prog: VERSION patch is $patch; the build number needs under $lower" >&2
+    exit 1
+fi
+
+# The other end of the same expression, and the reason the multipliers are not
 # wider: Play refuses a versionCode above 2,100,000,000 (Android's "Version your
-# app", as above), so the two halves share one budget and every digit given to
-# the minor comes out of the major. 209,999 is the largest major for which every
-# minor fits: with the largest minor the check above allows it gives
-# 2,099,999,999, while 210,000 overflows with any minor above 0. Stated as a
-# bound on the major rather than on the computed number, so the formula lives in
-# the two places that use it and not in a third.
-if [ "${VERSION%%.*}" -gt 209999 ]; then
-    echo "VERSION major is ${VERSION%%.*}; the build number needs 209999 or under." >&2
+# app", as above), so the parts share one budget and every digit given to a
+# lower part comes out of the major. The major bound is the largest for which
+# every lower part fits: with the largest lower parts the checks above allow,
+# 209,999 in two parts and 2,099 in three each give 2,099,999,999, while one
+# more overflows with any lower part above 0. Stated as a bound on the major
+# rather than on the computed number, so the formula lives in the two places
+# that use it and not in a third.
+if above "$major" "$major_max"; then
+    echo "$prog: VERSION major is $major; the build number needs $major_max or under" >&2
     exit 1
 fi

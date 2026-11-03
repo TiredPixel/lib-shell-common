@@ -3,27 +3,22 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+prog=${0##*/}
 
 f_projects=.projects
 
-source "$dir/echo-line"
-
 # The sweep is defined by this list, so its absence is a broken checkout rather
 # than an empty one: the per-project make stages below would find no project to
-# run in, and the run would still reach COMPLETED having run them nowhere.
+# run in, and the run would still complete having run them nowhere.
 if [ ! -f "$f_projects" ]; then
-    echo "$PWD: no $f_projects, so $(basename "$0") has nothing to sweep" >&2
+    echo "$prog: $PWD: no $f_projects, so there is nothing to sweep" >&2
     exit 1
 fi
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "PULL\n"
 
+echo "$prog: pull" >&2
 "$dir/pull"
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "UPGRADE\n"
 
+echo "$prog: upgrade" >&2
 # make runs under `script` so the tools it drives still see a tty; -e so the
 # status carried back out is make's own rather than script's, which is what
 # tells the sweep an upgrade failed. Which project declares the target is
@@ -35,21 +30,14 @@ echo -e "UPGRADE\n"
     else
         script -e /dev/null make upgrade
     fi'
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "REBUILD\n"
 
+echo "$prog: rebuild" >&2
 "$dir/each-without-project" "$dir/make-if-declared" build
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "START\n"
 
+echo "$prog: start" >&2
 "$dir/start"
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "STOP\n"
 
+echo "$prog: stop" >&2
 "$dir/stop"
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "COMPLETED\n"
+
+echo "$prog: completed" >&2

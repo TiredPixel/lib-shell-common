@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+#
+# Tests project/make-if-declared with real GNU make in scratch projects, each
+# holding the Makefile its case writes, and then with make faked on PATH for the
+# wording this make never prints: older GNU make's `build' quoting, and BSD
+# make's, which is assumed, not checked against a BSD make. The fake requires
+# LC_ALL=C and exactly -q and one target, prints FAKE_ERR on stderr and exits 2.
+#
+# Run: project/make-if-declared.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+declared=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/make-if-declared
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/fake"
+cat >"$work/fake/make" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ "${LC_ALL:-}" != C ] || [ $# -ne 2 ] || [ "$1" != -q ]; then
+    echo "fake make: unexpected call, LC_ALL=${LC_ALL:-} $*" >&2
+    exit 99
+fi
+printf '%s\n' "$FAKE_ERR" >&2
+exit 2
+EOF
+chmod +x "$work/fake/make"
+
+# A locale make would translate its diagnostics in, were it installed.
+export LC_ALL=C.UTF-8
+
+failed=()
+n=0
+
+# A fresh project in $w, with the Makefile named $1 holding $2, unless $1 is
+# empty.
+project() {
+    n=$((n + 1))
+    w=$work/$n
+    mkdir "$w"
+    if [ -n "$1" ]; then
+        printf '%b' "$2" >"$w/$1"
+    fi
+    export FAKE_LOG=$w/log
+    : >"$FAKE_LOG"
+}
+
+# Runs make-if-declared with arguments $3... in the project, and records a
+# failure of case $1 unless its status is $2. Its stderr is kept in $w/err.
+run() {
+    local name=$1 status=$2 rc=0
+    shift 2
+    (cd "$w" && "$declared" "$@") >/dev/null 2>"$w/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$w/err")")
+    fi
+}
+
+# Records a failure of case $1 unless the log is $2.
+expect_log() {
+    if [ "$(<"$FAKE_LOG")" != "$2" ]; then
+        failed+=("$1: the log is: $(<"$FAKE_LOG")")
+    fi
+}
+
+# Records a failure of case $1 unless stderr holds $2.
+expect_err() {
+    if ! grep -qF -- "$2" "$w/err"; then
+        failed+=("$1: stderr lacks $2: $(<"$w/err")")
+    fi
+}
+
+# The recipe logs the target and the project's directory. The string is for
+# make, which expands it.
+# shellcheck disable=SC2016
+recipe='\t@echo "$@ $(notdir $(CURDIR))" >>"$$FAKE_LOG"\n'
+
+# A declared target needing remaking is made, by default with make itself.
+project Makefile "build:\n$recipe"
+run declared 0 build
+expect_log declared "build $n"
+
+# Each name make reads is taken.
+for f in makefile GNUmakefile; do
+    project "$f" "build:\n$recipe"
+    run "$f" 0 build
+    expect_log "$f" "build $n"
+done
+
+# A declared target already up to date runs the command given instead. The
+# string is for sh, which expands it.
+project Makefile 'build:\n'
+touch "$w/build"
+# shellcheck disable=SC2016
+run up-to-date 0 build sh -c 'echo ran >>"$FAKE_LOG"'
+expect_log up-to-date ran
+
+# The command's status is the sweep's.
+project Makefile "build:\n$recipe"
+run command-fails 4 build sh -c 'exit 4'
+
+# An undeclared target is nothing to do here.
+project Makefile "other:\n$recipe"
+run undeclared 0 build
+expect_log undeclared ""
+
+# A declared target whose prerequisite has no rule is a broken project.
+project Makefile "build: missing\n$recipe"
+run missing-prerequisite 1 build
+expect_log missing-prerequisite ""
+expect_err missing-prerequisite "No rule to make target 'missing', needed by"
+
+# As is a Makefile including one that does not exist.
+project Makefile "include other.mk\nbuild:\n$recipe"
+run missing-include 1 build
+expect_log missing-include ""
+expect_err missing-include "No rule to make target 'other.mk'"
+
+# As is a Makefile make cannot parse.
+project Makefile 'build:\n    echo spaces\n'
+run unparsable 1 build
+expect_err unparsable "missing separator"
+
+# Under -k, which a calling make passes down in MAKEFLAGS, GNU make ends its
+# diagnostics without "  Stop.", and each case above decides the same way.
+project Makefile "other:\n$recipe"
+MAKEFLAGS=k run keep-going-undeclared 0 build
+expect_log keep-going-undeclared ""
+project Makefile "build: missing\n$recipe"
+MAKEFLAGS=k run keep-going-missing-prerequisite 1 build
+expect_log keep-going-missing-prerequisite ""
+expect_err keep-going-missing-prerequisite \
+    "No rule to make target 'missing', needed by"
+project Makefile "include other.mk\nbuild:\n$recipe"
+MAKEFLAGS=k run keep-going-missing-include 1 build
+expect_log keep-going-missing-include ""
+expect_err keep-going-missing-include "No rule to make target 'other.mk'"
+
+# A directory with no Makefile is not one with nothing to do.
+project "" ""
+run no-makefile 1 build
+expect_err no-makefile \
+    "make-if-declared: $w: no Makefile, so make build cannot be swept here"
+
+# A missing or empty target is refused with the usage before make is asked.
+for args in no-target empty-target; do
+    project Makefile "build:\n$recipe"
+    target=()
+    [ "$args" = no-target ] || target=('')
+    run "$args" 2 "${target[@]}"
+    if [ "$(<"$w/err")" != "Usage: make-if-declared TARGET [COMMAND...]" ]; then
+        failed+=("$args: stderr is: $(<"$w/err")")
+    fi
+    expect_log "$args" ""
+done
+
+export PATH=$work/fake:$PATH
+
+# The wording make never prints here is matched as exactly.
+for err in \
+    "make: *** No rule to make target \`build'.  Stop." \
+    "make: *** No rule to make target \`build'." \
+    "make: don't know how to make build. Stop"; do
+    project Makefile "build:\n"
+    FAKE_ERR=$err run "fake-undeclared: $err" 0 build
+done
+for err in \
+    "make: *** No rule to make target \`missing', needed by \`build'.  Stop." \
+    "make: don't know how to make missing. Stop"; do
+    project Makefile "build:\n"
+    FAKE_ERR=$err run "fake-missing: $err" 1 build
+    expect_err "fake-missing: $err" "$err"
+done
+
+# The name is matched to the end of the line, not as the start of more.
+project Makefile "build:\n"
+FAKE_ERR="make: *** No rule to make target 'build'. Something else." \
+    run line-end 1 build
+
+# The target is matched as a literal, not as a pattern.
+project Makefile "build:\n"
+FAKE_ERR="make: *** No rule to make target 'build'.  Stop." \
+    run literal-target 1 'b*'
+
+# Every line of a failure carries the program and the case, captured output
+# included.
+if [ ${#failed[@]} -gt 0 ]; then
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
+    exit 1
+fi

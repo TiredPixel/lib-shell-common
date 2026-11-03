@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+#
+# Tests project/release-create-latest in place against real repositories in a
+# scratch dir: a parent, app, whose .projects names its submodule lib, each with
+# a bare origin, $w/app.git and $w/lib.git, whose default branch is latest, and
+# an upstream clone, $w/app.up and $w/lib.up. app is a clone of app.git
+# recording lib at its first commit, one, and lib.up has since pushed a second,
+# two, so a release has a pointer to pull and commit. Signing goes through a
+# fake gpg.program in a scratch GNUPGHOME, so no real key or pinentry is
+# reached. Every case builds its fixture afresh and runs
+# project/release-create-latest in app.
+#
+# Run: project/release-create-latest.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+release=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/release-create-latest
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/gnupg"
+chmod 700 "$work/gnupg"
+# Answers only the call git makes to sign, with the status line git looks for
+# after a newline.
+cat >"$work/bin/gpg" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ "$*" != "--status-fd=2 -bsau test-key" ]; then
+    echo "fake gpg: unexpected arguments: $*" >&2
+    exit 2
+fi
+cat >/dev/null
+printf '[GNUPG:] KEY_CONSIDERED FAKE 0\n[GNUPG:] SIG_CREATED D 1 8 00 0 FAKE\n' >&2
+printf -- '-----BEGIN PGP SIGNATURE-----\n\nfake\n-----END PGP SIGNATURE-----\n'
+EOF
+chmod +x "$work/bin/gpg"
+
+# Nothing from the caller's configuration reaches the fixtures, and nothing
+# above the scratch dir is taken for a repository. File URLs are refused to
+# submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$work GNUPGHOME=$work/gnupg
+export GIT_CONFIG_COUNT=6
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+export GIT_CONFIG_KEY_4=gpg.program GIT_CONFIG_VALUE_4=$work/bin/gpg
+export GIT_CONFIG_KEY_5=user.signingKey GIT_CONFIG_VALUE_5=test-key
+
+failed=()
+n=0
+
+# Creates bare remote $w/$1.git, its default branch latest, and $w/$1.up, a
+# repository on latest pushing to it.
+mkrepo() {
+    git init -q --bare "$w/$1.git"
+    git -C "$w/$1.git" symbolic-ref HEAD refs/heads/latest
+    git init -q -b latest "$w/$1.up"
+    git -C "$w/$1.up" remote add origin "$w/$1.git"
+}
+
+# A fresh fixture in $w, as the header describes, with one and two naming lib's
+# commits and init app's.
+fixture() {
+    n=$((n + 1))
+    w=$work/$n
+    mkdir "$w"
+    mkrepo lib
+    git -C "$w/lib.up" commit -q --allow-empty -m one
+    git -C "$w/lib.up" push -q origin latest
+    mkrepo app
+    git -C "$w/app.up" submodule add -q "$w/lib.git" lib
+    echo lib >"$w/app.up/.projects"
+    git -C "$w/app.up" add .projects
+    git -C "$w/app.up" commit -q -m init
+    git -C "$w/app.up" push -q origin latest
+    git clone -q --recurse-submodules "$w/app.git" "$w/app"
+    git -C "$w/lib.up" commit -q --allow-empty -m two
+    git -C "$w/lib.up" push -q origin latest
+    one=$(git -C "$w/lib.up" rev-parse HEAD~)
+    two=$(git -C "$w/lib.up" rev-parse HEAD)
+    init=$(git -C "$w/app" rev-parse HEAD)
+}
+
+# Runs project/release-create-latest in app with the arguments given, keeping
+# its status in rc and its stderr in $w/err.
+run() {
+    rc=0
+    (cd "$w/app" && "$release" "$@") >"$w/out" 2>"$w/err" || rc=$?
+}
+
+# Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
+expect() {
+    if [ "$3" != "$4" ]; then
+        failed+=("$1: $2 is $3, not $4: $(<"$w/err")")
+    fi
+}
+
+# The commit $2 names in repository $1, or "none".
+commit_of() {
+    git -C "$1" rev-parse -q --verify "$2^{commit}" || echo none
+}
+
+# A whole release: lib's latest pulled to two, its pointer committed in app as
+# "Release 1.2", both tagged and signed there, and tag and latest pushed to each
+# origin.
+fixture
+run 1.2
+expect release status "$rc" 0
+expect release "lib's 1.2" "$(commit_of "$w/app/lib" 1.2)" "$two"
+expect release "app's 1.2:lib" \
+    "$(git -C "$w/app" rev-parse -q --verify 1.2:lib || echo none)" "$two"
+expect release "app's 1.2 parent" "$(commit_of "$w/app" 1.2~)" "$init"
+expect release "app's 1.2 message" \
+    "$(git -C "$w/app" log --no-show-signature -1 --format=%s 1.2)" \
+    "Release 1.2"
+for r in app app/lib; do
+    if ! git -C "$w/$r" cat-file tag 1.2 |
+        grep -qFx -- '-----BEGIN PGP SIGNATURE-----'; then
+        failed+=("release: $r's 1.2 is not signed: $(<"$w/err")")
+    fi
+    expect release "$r's origin's 1.2" \
+        "$(git -C "$w/${r##*/}.git" rev-parse -q --verify refs/tags/1.2)" \
+        "$(git -C "$w/$r" rev-parse refs/tags/1.2)"
+    expect release "$r's origin's latest" \
+        "$(commit_of "$w/${r##*/}.git" latest)" "$(commit_of "$w/$r" 1.2)"
+done
+
+# push.followTags sends no other tag with latest or 1.2: an annotated tag on
+# each project's latest that was never pushed stays local.
+fixture
+git -C "$w/app" tag -a -m local local
+git -C "$w/app/lib" tag -a -m local local
+GIT_CONFIG_COUNT=7 GIT_CONFIG_KEY_6=push.followTags GIT_CONFIG_VALUE_6=true \
+    run 1.2
+expect follow-tags status "$rc" 0
+for r in app lib; do
+    expect follow-tags "$r's origin's local" \
+        "$(git -C "$w/$r.git" rev-parse -q --verify refs/tags/local ||
+            echo none)" none
+done
+
+# A tag that cannot be created stops the release after the commit and before
+# latest is pushed.
+fixture
+git -C "$w/app/lib" tag 1.2 "$one"
+run 1.2
+expect tag-fails status "$rc" 1
+expect tag-fails "app's message" \
+    "$(git -C "$w/app" log --no-show-signature -1 --format=%s)" "Release 1.2"
+expect tag-fails "app's 1.2" "$(commit_of "$w/app" 1.2)" none
+expect tag-fails "app's origin's latest" "$(commit_of "$w/app.git" latest)" \
+    "$init"
+
+# A missing, empty or extra argument is refused with the usage before anything
+# runs: lib is not checked out on latest and app commits nothing.
+for args in no-tag empty-tag extra; do
+    fixture
+    case $args in
+    no-tag) run ;;
+    empty-tag) run "" ;;
+    extra) run 1.2 1.3 ;;
+    esac
+    expect "$args" status "$rc" 2
+    expect "$args" stderr "$(<"$w/err")" "Usage: release-create-latest TAG"
+    expect "$args" stdout "$(<"$w/out")" ""
+    expect "$args" "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$init"
+    expect "$args" "lib's HEAD" "$(git -C "$w/app/lib" rev-parse HEAD)" "$one"
+    if git -C "$w/app/lib" symbolic-ref -q HEAD >/dev/null; then
+        failed+=("$args: lib was checked out on a branch")
+    fi
+done
+
+# Every line of a failure carries the program and the case, captured output
+# included.
+if [ ${#failed[@]} -gt 0 ]; then
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
+    exit 1
+fi

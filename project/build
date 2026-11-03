@@ -3,38 +3,28 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+prog=${0##*/}
 
 f_projects=.projects
 
-source "$dir/echo-line"
-
 # The sweep is defined by this list, so its absence is a broken checkout rather
 # than an empty one: the per-project make stages below would find no project to
-# run in, and the run would still reach COMPLETED having run them nowhere.
+# run in, and the run would still complete having run them nowhere.
 if [ ! -f "$f_projects" ]; then
-    echo "$PWD: no $f_projects, so $(basename "$0") has nothing to sweep" >&2
+    echo "$prog: $PWD: no $f_projects, so there is nothing to sweep" >&2
     exit 1
 fi
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "PULL\n"
 
+echo "$prog: pull" >&2
 "$dir/pull"
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "BUILD\n"
 
+echo "$prog: build" >&2
 "$dir/each-without-project" "$dir/make-if-declared" build
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "START\n"
 
+echo "$prog: start" >&2
 "$dir/start"
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "STOP\n"
 
+echo "$prog: stop" >&2
 "$dir/stop"
-#-------------------------------------------------------------------------------
-echo_line '='
-echo -e "COMPLETED\n"
+
+echo "$prog: completed" >&2

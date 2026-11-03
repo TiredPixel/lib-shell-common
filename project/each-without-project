@@ -11,22 +11,31 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-
-source "$dir/echo-line"
+prog=${0##*/}
 
 f_projects=.projects
 
-# The list is read on fd 3, not stdin, and fd 3 is closed to the child. On stdin
-# the sweep hands its own input to every command it runs: anything that reads
-# stdin drains the remaining projects, the next read sees EOF, and the loop ends
-# early having reported nothing wrong. `script`, which project/upgrade wraps
-# make in to keep a tty, does exactly that -- it forwards stdin to the pty it
-# creates, so an upgrade would sweep one project and silently skip the rest.
-#
-# The child keeps the terminal on stdin rather than /dev/null, which `script`
-# needs to forward keystrokes and a git credential or passphrase prompt needs to
-# be answerable at all.
+if [ $# -eq 0 ]; then
+    echo "Usage: $prog COMMAND [ARG...]" >&2
+    exit 2
+fi
+
+# .projects and the paths in it are relative to the top level, so the sweep is
+# the same from any directory in the repository. Assigned on its own, so that
+# errexit sees git fail outside a repository.
+toplevel=$(git rev-parse --show-toplevel)
+cd "$toplevel"
+
+projects=()
+
+# The whole list is read and checked before any command runs, so a bad entry
+# stops the sweep before it has changed anything. That also keeps the list from
+# a command reading stdin, which would drain the projects not yet visited and
+# end the sweep early with nothing reported wrong: `script`, which
+# project/upgrade wraps make in to keep a tty, forwards stdin to the pty it
+# creates. Each command keeps the terminal on stdin rather than /dev/null, which
+# `script` needs to forward keystrokes and a git credential or passphrase prompt
+# needs to be answerable at all.
 #
 # A missing list is tolerated, because project/start and project/stop reach the
 # current project through project/each and remain meaningful without one.
@@ -45,19 +54,34 @@ if [ -f "$f_projects" ]; then
         case $entry in
         '160000 '*) ;;
         *)
-            echo "$project: not a submodule of $PWD, so it cannot be swept" >&2
+            echo "$prog: $project: not a submodule of $PWD," \
+                "so it cannot be swept" >&2
 
             exit 1
             ;;
         esac
 
-        pushd "$project" >/dev/null
+        # A submodule not checked out is an empty directory, and answers the
+        # same way, so it is refused rather than visited: for the reason
+        # project/release-assert gives, its top level is this repository's.
+        top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || top=
+        if [[ ! $top -ef $project ]]; then
+            echo "$prog: $project: submodule of $PWD not checked out," \
+                "so it cannot be swept; project/submodule-init checks it out" >&2
 
-        # To stderr, for the reason project/each gives.
-        echo_line '-' >&2
-        echo -e "$project\n" >&2
-        "$@" 3<&-
+            exit 1
+        fi
 
-        popd >/dev/null
+        projects+=("$project")
     done 3<"$f_projects"
 fi
+
+for project in "${projects[@]}"; do
+    pushd "$project" >/dev/null
+
+    # To stderr, for the reason project/each gives.
+    echo "$prog: $project" >&2
+    "$@"
+
+    popd >/dev/null
+done

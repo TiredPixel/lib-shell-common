@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+#
+# Tests project/each-without-project against real repositories in a scratch dir:
+# app, whose submodules lib1 and lib2 are listed in its .projects, and whose
+# plain directory sub is not a submodule. The command swept is a recorder that
+# logs its directory and arguments, a line to a call, and exits 3 where the
+# directory holds a file named fail. Every case builds its fixture afresh.
+#
+# Run: project/each-without-project.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+each=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/each-without-project
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+# Nothing from the caller's configuration reaches the fixtures. File URLs are
+# refused to submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+p="each-without-project"
+
+cat >"$work/record" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ -n "${FAKE_READ:-}" ]; then
+    cat >/dev/null
+fi
+echo "$PWD $*" >>"$FAKE_LOG"
+[ ! -f fail ] || exit 3
+EOF
+chmod +x "$work/record"
+
+failed=()
+n=0
+
+# A fresh fixture in $w, with app's submodules named $@ (lib1 and lib2 if none)
+# checked out, sub created, and .projects listing lib1 and lib2.
+fixture() {
+    local sub
+    n=$((n + 1))
+    w=$work/$n
+    mkdir "$w"
+    git init -q "$w/app"
+    if [ $# -eq 0 ]; then
+        set -- lib1 lib2
+    fi
+    for sub in "$@"; do
+        git init -q "$w/$sub"
+        git -C "$w/$sub" commit -q --allow-empty -m init
+        git -C "$w/app" submodule add -q "$w/$sub" "$sub"
+    done
+    mkdir "$w/app/sub"
+    printf 'lib1\nlib2\n' >"$w/app/.projects"
+    export FAKE_LOG=$w/log
+    : >"$FAKE_LOG"
+}
+
+# Runs the sweep of the recorder with arguments a b from directory $1 of app,
+# keeping its status in rc, its stdout in $w/out and its stderr in $w/err.
+run() {
+    rc=0
+    (cd "$w/app/$1" && "$each" "$work/record" a b) >"$w/out" 2>"$w/err" ||
+        rc=$?
+}
+
+# Records a failure of case $1 unless the status is $2 and the recorder was
+# called as $3 has it.
+expect() {
+    if [ "$rc" != "$2" ]; then
+        failed+=("$1: exit $rc, not $2: $(<"$w/err")")
+    elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
+        failed+=("$1: the calls were: $(<"$FAKE_LOG")")
+    fi
+}
+
+# Records a failure of case $1 unless stderr holds the line $2.
+expect_err() {
+    if ! grep -qxF -- "$2" "$w/err"; then
+        failed+=("$1: stderr lacks $2: $(<"$w/err")")
+    fi
+}
+
+swept=$(printf '%s\n' "WORK/app/lib1 a b" "WORK/app/lib2 a b")
+
+# Each listed project, in order, and not app itself.
+fixture
+run .
+expect top 0 "${swept//WORK/$w}"
+if [ "$(<"$w/err")" != "$(printf '%s\n' "$p: lib1" "$p: lib2")" ]; then
+    failed+=("top: stderr is: $(<"$w/err")")
+fi
+if [ -s "$w/out" ]; then
+    failed+=("top: stdout is: $(<"$w/out")")
+fi
+
+# With no command, the usage is printed and nothing runs.
+fixture
+rc=0
+(cd "$w/app" && "$each") >"$w/out" 2>"$w/err" || rc=$?
+expect usage 2 ""
+if [ "$(<"$w/err")" != "Usage: $p COMMAND [ARG...]" ]; then
+    failed+=("usage: stderr is: $(<"$w/err")")
+fi
+
+# From a subdirectory, the list and its paths are read from the top level.
+fixture
+run sub
+expect subdirectory 0 "${swept//WORK/$w}"
+
+# From inside a listed project, that project's own list is swept, and it has
+# none.
+fixture
+run lib1
+expect inside-project 0 ""
+
+# Blank lines are skipped and a last line without a newline is read.
+fixture
+printf '\nlib1\n\nlib2' >"$w/app/.projects"
+run .
+expect blank-lines 0 "${swept//WORK/$w}"
+
+# A missing list sweeps nothing, for project/each's sake.
+fixture
+rm -- "$w/app/.projects"
+run .
+expect no-list 0 ""
+
+# An entry that is not a submodule is refused before any command runs, even in
+# the projects listed before it.
+fixture
+printf 'lib1\nsub\n' >"$w/app/.projects"
+run .
+expect not-submodule 1 ""
+expect_err not-submodule \
+    "$p: sub: not a submodule of $w/app, so it cannot be swept"
+
+# A submodule not checked out is refused before any command runs, rather than
+# visited as an empty directory where git answers about app.
+fixture
+git -C "$w/app" submodule deinit -q -f lib2
+run .
+expect not-checked-out 1 ""
+expect_err not-checked-out "$p: lib2: submodule of $w/app not checked out, so \
+it cannot be swept; project/submodule-init checks it out"
+
+# As above, for a submodule whose directory is gone.
+fixture
+rm -rf -- "$w/app/lib2"
+run .
+expect missing-directory 1 ""
+
+# A failing command stops the sweep there, with its status.
+fixture
+touch "$w/app/lib1/fail"
+run .
+expect command-fails 3 "$w/app/lib1 a b"
+
+# A command reading stdin does not drain the list.
+fixture
+FAKE_READ=1 run . <<<"input"
+expect reads-stdin 0 "${swept//WORK/$w}"
+
+# Outside a repository, git's failure stops the sweep before any command runs.
+# The ceiling keeps git from finding a repository above the scratch dir.
+fixture
+mkdir "$w/plain"
+printf 'lib1\n' >"$w/plain/.projects"
+rc=0
+(cd "$w/plain" && GIT_CEILING_DIRECTORIES=$work "$each" "$work/record" a b) \
+    >/dev/null 2>"$w/err" || rc=$?
+expect outside-repository 128 ""
+expect_err outside-repository "fatal: not a git repository (or any of the \
+parent directories): .git"
+
+# A name is printed as it is, backslash and all.
+fixture 'lib\n1' lib2
+printf '%s\n' 'lib\n1' lib2 >"$w/app/.projects"
+run .
+expect backslash 0 "$w/app/lib\\n1 a b
+$w/app/lib2 a b"
+expect_err backslash "$p: lib\\n1"
+
+# Every line of a failure carries the program and the case, captured output
+# included.
+if [ ${#failed[@]} -gt 0 ]; then
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
+    exit 1
+fi

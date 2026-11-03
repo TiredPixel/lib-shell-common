@@ -16,7 +16,7 @@ export DOCKER_BUILDKIT=1
 REPO=$(cat -- .dockerrepo) || REPO=""
 
 if [ -z "$REPO" ]; then
-    echo "${BASH_SOURCE[0]}: REPO: .dockerrepo missing or empty;" \
+    echo "${0##*/}: REPO: .dockerrepo missing or empty;" \
         "write the image repository, such as ghcr.io/OWNER/NAME, to it" >&2
     exit 1
 fi
@@ -25,15 +25,16 @@ fi
 # checkout, which is what a pull request and a tag push both produce -- so the
 # registry collects :HEAD images unless something names the branch first, and
 # every consumer otherwise grows its own `git checkout -B` step ahead of the
-# build. Resolved here instead, from CircleCI's or GitHub Actions' branch
-# variable.
+# build. Resolved here instead, from CircleCI's branch or tag variable, of which
+# a build sets one, or from GitHub Actions' pull request branch or ref name,
+# which names a pushed tag too.
 TAG=$(git rev-parse --abbrev-ref HEAD)
 
 if [ "$TAG" = HEAD ]; then
-    TAG=${CIRCLE_BRANCH:-${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}}
+    TAG=${CIRCLE_BRANCH:-${CIRCLE_TAG:-${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}}}
 fi
 
-# Empty rather than unset is the risk here: a CI that exports its branch
+# Empty rather than unset is the risk here: a CI that exports its branch or tag
 # variable holding nothing satisfies set -u and leaves the tag empty, which
 # pushes $REPO:.dev or $REPO:.prd rather than failing.
 #
@@ -41,8 +42,8 @@ fi
 # to do and the status is 1 even where init is sourced from a bash -c string
 # without errexit, where ${TAG:?} exits 127.
 if [ -z "$TAG" ]; then
-    echo "${BASH_SOURCE[0]}: TAG: detached HEAD and no CI branch variable set;" \
-        "check out a branch" >&2
+    echo "${0##*/}: TAG: detached HEAD and no CI branch or tag" \
+        "variable set; check out a branch" >&2
     exit 1
 fi
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Commits the submodule pointers a release moved, and nothing else.
+# Commits the submodule pointers a release of tag $1 moved, and nothing else, as
+# "Release <tag>" with a line for each pointer move as the body.
 #
 # It stages only pointer moves, since `git add -A` would commit any unrelated
 # work beside the release and any build output the repository does not ignore.
@@ -17,8 +18,17 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=${0##*/}
+
+# An empty argument is refused too, since it would commit as "Release ".
+if [ $# -ne 1 ] || [ -z "$1" ]; then
+    echo "Usage: $prog TAG" >&2
+    exit 2
+fi
+tag=$1
+
 # A pipeline rather than a process substitution, so pipefail sees git's status,
-# and lastpipe so the loop below runs in this shell and keeps what it reads, for
+# and lastpipe so the loops below run in this shell and keep what they read, for
 # the reasons project/release-assert gives. Hidden, git's failure would read as
 # "nothing to commit" -- and the release would go on to sign and push a tag
 # without the bump.
@@ -32,6 +42,23 @@ cd "$(git rev-parse --show-toplevel)"
 bumped=()
 recorded=()
 refused=()
+
+# An unmerged path is asked about on its own, since the comparison below never
+# reports one as such: against the working tree, a conflicted gitlink whose
+# submodule is checked out reads as an ordinary pointer move, and one whose
+# directory is empty does not appear at all. ls-files lists a line per stage,
+# and the stages of a path are adjacent.
+last=
+
+git ls-files -z --unmerged |
+    while IFS= read -r -d '' entry; do
+        path=${entry#*$'\t'}
+
+        if [ "$path" != "$last" ]; then
+            refused+=("U $path")
+            last=$path
+        fi
+    done
 
 # One plumbing call answers every question: which paths are gitlinks, what
 # changed, and the commit HEAD records. That last is srcsha, so
@@ -55,7 +82,7 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
         # A pointer move is M with a gitlink either side. A is a submodule added
         # and not committed; D a directory that is not checked out, which git
         # commit --only would record as the submodule's removal; T one replaced
-        # by a regular file; U an unmerged path.
+        # by a regular file.
         if [ "$status" != M ] ||
             [ "$srcmode" != 160000 ] || [ "$dstmode" != 160000 ]; then
             refused+=("$status $path")
@@ -68,18 +95,20 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
     done
 
 if [ "${#refused[@]}" -gt 0 ]; then
-    echo "$PWD: refusing to commit, these are not pointer moves:" >&2
-    printf '  %s\n' "${refused[@]}" >&2
-    echo "In a release run the sweep has already checked out and pulled every" >&2
-    echo "project by this point; nothing is tagged or pushed either way." >&2
+    echo "$prog: $PWD: refusing to commit, these are not pointer moves:" >&2
+    printf '%s\n' "${refused[@]}" >&2
+    echo "$prog: in a release run the sweep has already checked out and" \
+        "pulled every project by this point; nothing is tagged or pushed" \
+        "either way" >&2
 
     exit 1
 fi
 
 if [ "${#bumped[@]}" -gt 0 ]; then
-    echo "$PWD: committing submodule pointers:" >&2
+    echo "$prog: $PWD: committing submodule pointers:" >&2
 
     paths=()
+    moves=()
 
     for i in "${!bumped[@]}"; do
         path=${bumped[i]}
@@ -92,8 +121,9 @@ if [ "${#bumped[@]}" -gt 0 ]; then
         top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=
 
         if [[ ! $top -ef $path ]]; then
-            echo "$PWD: $path: not a repository of its own, resolving to ${top:-nothing}" >&2
-            echo "Nothing is tagged or pushed." >&2
+            echo "$prog: $PWD: $path: not a repository of its own," \
+                "resolving to ${top:-nothing}" >&2
+            echo "$prog: nothing is tagged or pushed" >&2
 
             exit 1
         fi
@@ -116,13 +146,13 @@ if [ "${#bumped[@]}" -gt 0 ]; then
 
         case "$forwards$backwards" in
         01) direction=forwards ;;
-        10) direction="moves back" ;;
+        10) direction=backwards ;;
         11) direction=diverged ;;
         *) direction="direction unknown" ;;
         esac
 
-        printf '  %s  %s -> %s  (%s)\n' \
-            "$path" "${was:0:9}" "${now:0:9}" "$direction" >&2
+        moves+=("$path ${was:0:9}..${now:0:9} ($direction)")
+        printf '%s\n' "${moves[-1]}" >&2
 
         # :(literal) as pathspec magic rather than the global
         # --literal-pathspecs, which exports GIT_LITERAL_PATHSPECS=1 into every
@@ -138,7 +168,8 @@ if [ "${#bumped[@]}" -gt 0 ]; then
     # already arranged is neither committed nor disturbed. For these paths it
     # does replace what was staged, which project/release-assert has already
     # refused most of the ways to arrive at.
-    git commit --only -q -m update -- "${paths[@]}"
+    git commit --only -q -m "Release $tag" -m "$(printf '%s\n' "${moves[@]}")" \
+        -- "${paths[@]}"
 fi
 
 # Whatever the tree still holds is outside this release. When a release script
@@ -150,6 +181,6 @@ fi
 remaining=$(git status --short --untracked-files=normal)
 
 if [ -n "$remaining" ]; then
-    echo "$PWD: left uncommitted, so this release does not carry it:" >&2
+    echo "$prog: $PWD: left uncommitted, so this release does not carry it:" >&2
     printf '%s\n' "$remaining" >&2
 fi

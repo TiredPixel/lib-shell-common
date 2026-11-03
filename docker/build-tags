@@ -11,21 +11,27 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
 release=$(git describe --abbrev=0)
 version=$(git describe)
 
-tags=("$TAG")
+# Each tag is taken once, since the branch tag can be the release itself, as on
+# a tag push, where init takes the tag's name.
+tags=()
+declare -A seen=()
+
+add_tag() {
+    if [ -z "${seen[$1]:-}" ]; then
+        seen[$1]=1
+        tags+=("$1")
+    fi
+}
+
+add_tag "$TAG"
 
 if [ "$version" = "$release" ]; then
     prefix=$release
-    previous=""
+    add_tag "$prefix"
 
-    while true; do
-        tags+=("$prefix")
+    while [ "${prefix%.*}" != "$prefix" ]; do
         prefix=${prefix%.*}
-
-        if [ "$prefix" = "$previous" ]; then
-            break
-        else
-            previous=$prefix
-        fi
+        add_tag "$prefix"
     done
 fi
 
@@ -47,9 +53,5 @@ docker build \
 
 for tag in "${tags[@]}"; do
     docker push "$REPO:$tag"
+    echo "${0##*/}: pushed $REPO:$tag" >&2
 done
-
-echo
-echo "version: $version"
-echo "repo:    $REPO"
-echo "tags:    ${tags[*]}"

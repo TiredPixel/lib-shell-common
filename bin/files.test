@@ -52,7 +52,7 @@ EOF
 chmod +x "$work/path/find"
 export PATH=$work/path:$PATH
 
-dirs=(ansible docker lint project terraform bin)
+dirs=(ansible docker github lint project terraform bin)
 
 # Makes a tree at $work/$1 with one bash script in each listed directory, a copy
 # of bin/files and an empty docker-compose.yml, and prints its path.
@@ -80,8 +80,8 @@ shells() {
     done
     echo "shell ansible/lint-args"
     echo "shell bin/files"
+    echo "shell docker/describe"
     echo "shell docker/init"
-    echo "shell project/echo-line"
     echo "shell project/release-onto"
 }
 
@@ -142,7 +142,7 @@ for d in "${dirs[@]}"; do
     FILES=$files check "missing-$d" "$t" 1 "" "bin/files: $d/ is missing"
 done
 
-for d in ansible docker lint project terraform; do
+for d in ansible docker github lint project terraform; do
     t=$(tree "no-scripts-$d")
     printf '#!/bin/sh\n' >"$t/$d/a"
     check "no-scripts-$d" "$t" 1 "" "bin/files: $d/ holds no bash script"
@@ -179,8 +179,15 @@ if [ -n "$(ls -A -- "$work/term-tmp")" ]; then
     failed+=("term: TMPDIR holds: $(ls -A -- "$work/term-tmp")")
 fi
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
 echo "ok"
