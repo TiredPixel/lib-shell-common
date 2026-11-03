@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# :? rather than a bare ${1}, as project/tag-create already writes it. An empty
+# :? rather than a bare ${1}, as in project/tag-create, because an empty
 # argument passes a bare expansion untouched and would be caught only by
 # tag-create -- after the sweep has run and the release commit has been made.
 tag=${1:?must be set to the tag to create}

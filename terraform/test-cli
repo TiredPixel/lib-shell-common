@@ -9,4 +9,6 @@ terraform fmt -recursive -check -diff
 
 terraform init
 
+# Saved for terraform/deploy-cli, run later in the same directory, so the change
+# applied is the one this run showed rather than a fresh plan.
 terraform plan -out $f_plan

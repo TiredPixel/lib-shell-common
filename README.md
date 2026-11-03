@@ -10,7 +10,7 @@ The scripts also run these, which a repository needs wherever it runs them:
 
 - `docker/`: git, and the docker CLI with BuildKit and Compose v2; `docker/upgrade` also runs `curl`, `sha256sum` and `timeout`
 - `lint/`: ShellCheck and `file` for `lint/shell`; mikefarah's `yq` and `diff` for `lint/yaml-keys`
-- `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run; `script` for `project/upgrade`; `tput`, where present, for the width of `project/echo-line`'s rule
+- `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--wait` and `--wait-timeout` for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-create`; `tput`, where present, for the width of `project/echo-line`'s rule
 - `ansible/`: ansible-lint, and `jq` for `ansible/inventory-ssh-known-hosts`
 - `terraform/`: Terraform
 
@@ -69,9 +69,60 @@ The `FROMFREEZE` and `ARGFREEZE` lines `docker/upgrade` reads, including the `sh
 
 The `docker/` scripts that build or push tagged images, or log in, such as `docker/build-dev-latest` and `docker/login`, read the image repository, such as `ghcr.io/OWNER/NAME`, from a `.dockerrepo` file at the calling repository's root.
 
+## Working across projects
+
+The `project/` scripts work on a repository that holds several projects as submodules, released together under one version. The repository lists the projects they sweep in a `.projects` file at its root, one submodule path per line. A submodule that is third-party, or versioned on its own, is left out of the list, so it is neither built nor tagged.
+
+`.projects`:
+
+```text
+api
+web
+```
+
+`project/each` runs a command in every listed project, then in the repository itself, and `project/each-without-project` runs it in the listed projects alone. Both run from the repository's top level whichever directory they are called from, and fail outside a git repository. Every entry is checked before any command runs: one that is not a submodule, or a submodule that is not checked out, stops the sweep with nothing run. Without `.projects`, `project/each` runs the command in the repository alone.
+
+```sh
+lib/shell-common/project/each git status --short
+```
+
+`project/submodule-init` checks out each submodule not yet checked out, at the commit the repository records, and brings the URL of each initialised submodule in line with `.gitmodules`.
+
+```sh
+lib/shell-common/project/submodule-init
+```
+
+`project/pull` fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged stops it.
+
+```sh
+lib/shell-common/project/pull
+```
+
+`project/start` brings up the Compose services of the repository and of each listed project that has a Compose file and a service to start, waiting for each to run or turn healthy, and `project/stop` stops them. A Compose file Compose cannot read stops the sweep. `DC_WAIT_TIMEOUT` sets, in seconds, how long `project/start` waits on each project; its default is set in `project/start`.
+
+```sh
+DC_WAIT_TIMEOUT=600 lib/shell-common/project/start
+```
+
+`project/build` pulls, runs `make build` in each listed project that declares a `build` target, then starts and stops the services. `project/upgrade` does the same with `make upgrade` before `make build`, running make under `script` so the tools it drives see a terminal. A project whose `Makefile` lacks the target is passed over; any other make failure, or a project with no `Makefile`, stops the sweep. Both must be called from the top level, where they read `.projects`, and refuse to run without it.
+
+```sh
+lib/shell-common/project/upgrade
+```
+
 ## Releasing
 
-`project/release-create-latest TAG` releases onto `latest`, and `project/release-create-stable TAG` releases onto `testing` before fast-forwarding `stable` to the tag. Both sign the tag with `git tag -s` in every project after making the release commit, so a signing key must be available before either runs.
+`project/release-create-latest TAG` releases onto `latest`, and `project/release-create-stable TAG` releases onto `testing` before fast-forwarding `stable` to the tag. Both must be called from the repository's top level, and refuse a tree carrying anything but submodule pointers; each commits the pointers the sweep moved, then signs the tag with `git tag -s` in every project, so a signing key must be available before either runs.
+
+```sh
+lib/shell-common/project/release-create-latest v1.2
+```
+
+A tag that already exists in any project, locally or on its origin, is refused before anything is signed, so every origin must be reachable; one that does not answer within the limit `project/tag-create` sets stops the release. `project/tag-list` lists the latest tags across every project.
+
+```sh
+lib/shell-common/project/tag-list
+```
 
 ## Testing
 

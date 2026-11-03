@@ -34,8 +34,8 @@ git ls-files -s -z |
         [ "${entry%% *}" = 160000 ] || continue
         path=${entry#*$'\t'}
 
-        # Repository discovery walks up, so an empty directory answers with this
-        # repository's top level, which is what marks it missing.
+        # For the reason project/release-assert gives, an empty directory
+        # answers with this repository's top level, which marks it missing.
         top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=
         if [[ ! $top -ef $path ]]; then
             missing+=(":(literal)$path")
