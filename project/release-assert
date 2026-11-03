@@ -60,11 +60,12 @@ if [ -n "$dirty" ]; then
     exit 1
 fi
 
-# git status reports none of these. During a merge or cherry-pick git commit
-# --only refuses to run, failing after the sweep as
-# `fatal: cannot do a partial commit during a merge` (or `a cherry-pick`);
-# during a revert, rebase or am it runs, and the release commit lands inside
-# that operation. Either way it is caught here, saying what it is about.
+# git status reports none of these. During a merge, a cherry-pick or a rebase
+# stopped on a conflicting pick, git commit --only refuses to run, failing after
+# the sweep as `fatal: cannot do a partial commit during a merge` (or
+# `a cherry-pick`, `a rebase`); during a revert, an am or any other rebase stop
+# it runs, and the release commit lands inside that operation. Either way it is
+# caught here, saying what it is about.
 git_dir=$(git rev-parse --git-dir)
 
 for f in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do

@@ -8,28 +8,25 @@
 # about the index, so content already staged would read as nothing to do, and
 # which turns git's 128 on error into the "there are changes" branch.
 #
-# project/release-assert has already refused a tree carrying anything but
-# submodule pointers, so what is left here is a pointer or a fault.
+# When a release script calls this one, after project/release-assert has refused
+# a tree carrying anything but submodule pointers, what is left here is a
+# pointer or a fault.
 #
 # Running it again is safe: a second pass finds nothing bumped and skips the
 # commit, because an empty result is a skip and not a failure.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# lastpipe so the loop below runs in this shell and keeps what it reads, and so
-# pipefail sees git's status. A process substitution hides it entirely:
-# `mapfile -d "" -t x < <(false)` succeeds, leaving an empty array that reads as
+# A pipeline rather than a process substitution, so pipefail sees git's status,
+# and lastpipe so the loop below runs in this shell and keeps what it reads, for
+# the reasons project/release-assert gives. Hidden, git's failure would read as
 # "nothing to commit" -- and the release would go on to sign and push a tag
 # without the bump.
-#
-# lastpipe needs job control off, which holds here for the reason
-# project/release-assert gives.
 shopt -s lastpipe
 
 # Every path question settled in one place. Pathspecs handed to git commit are
-# resolved against the current directory, git diff-index prints from the root,
-# and diff.relative would drop a submodule outside the current directory from
-# the answer altogether. At the root the three agree.
+# resolved against the current directory, and git diff-index prints from the
+# root. At the root the two agree.
 cd "$(git rev-parse --show-toplevel)"
 
 bumped=()
@@ -88,11 +85,10 @@ if [ "${#bumped[@]}" -gt 0 ]; then
         path=${bumped[i]}
         was=${recorded[i]}
 
-        # Repository discovery walks up, so `git -C <path> rev-parse HEAD` in a
-        # directory that is not its own repository answers with this
-        # repository's HEAD, and every question below would be about the wrong
-        # pair of commits. -ef is an inode test, so ./ and a symlink compare
-        # equal.
+        # For the reason project/release-assert gives, in a directory that is
+        # not its own repository `git -C <path> rev-parse HEAD` answers with
+        # this repository's HEAD, and every question below would be about the
+        # wrong pair of commits.
         top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=
 
         if [[ ! $top -ef $path ]]; then
@@ -145,13 +141,12 @@ if [ "${#bumped[@]}" -gt 0 ]; then
     git commit --only -q -m update -- "${paths[@]}"
 fi
 
-# Whatever the tree still holds is outside this release. Called from a release
-# script it can only be a submodule carrying its own uncommitted work, which no
-# commit here can record, because project/release-assert refused everything else
-# before the sweep began. The heading does not say that, though: this script
-# does not check it, and run on its own the claim would be false.
-# To stderr, as project/each's echo_line comment insists -- project/tag-create
-# captures a sweep's stdout.
+# Whatever the tree still holds is outside this release. When a release script
+# calls this one, what remains can only be a submodule carrying its own
+# uncommitted work, which no commit here can record, because
+# project/release-assert refused everything else before the sweep began. The
+# heading does not say that, though: this script does not check it, and the
+# claim does not hold when this script runs on its own.
 remaining=$(git status --short --untracked-files=normal)
 
 if [ -n "$remaining" ]; then

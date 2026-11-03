@@ -64,7 +64,8 @@ RUN case $(dpkg --print-architecture) in \
     && chmod +x /usr/local/bin/hadolint \
     && hadolint --version | grep -qF " ${HADOLINT_VERSION}"
 
-# dockerfmt, which bin/format runs on this file: Debian 13 does not package it.
+# dockerfmt, which bin/format and bin/lint run on this file: Debian 13 does not
+# package it.
 ARG DOCKERFMT_VERSION=0.5.4
 RUN curl -fsL "https://github.com/reteps/dockerfmt/releases/download/v${DOCKERFMT_VERSION}/dockerfmt-v${DOCKERFMT_VERSION}-linux-$(dpkg --print-architecture).tar.gz" \
     | tar -xz -C /usr/local/bin dockerfmt \
@@ -87,8 +88,9 @@ RUN case $(dpkg --print-architecture) in \
     | tar -xz -C /usr/local/bin dotenv-linter \
     && dotenv-linter --version | grep -qF " ${DOTENV_LINTER_VERSION}"
 
-# mdformat, which bin/format runs on Markdown, from pipx with its gfm and
-# frontmatter plugins injected: Debian 13's mdformat package carries neither.
+# mdformat, which bin/format and bin/lint run on Markdown, from pipx with its
+# gfm and frontmatter plugins injected: Debian 13's mdformat package carries
+# neither.
 ARG MDFORMAT_VERSION=1.0.0
 ARG MDFORMAT_GFM_VERSION=1.0.0
 ARG MDFORMAT_FRONTMATTER_VERSION=2.2.0

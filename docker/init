@@ -1,16 +1,18 @@
 # shellcheck shell=bash
 #
 # Sourced by the docker/ scripts that build or push $REPO:$TAG images, or log
-# in, to export REPO, from .dockerrepo, and TAG, from the branch. Sets no shell
-# options, since it runs under its caller's.
+# in, to export REPO, from .dockerrepo, TAG, from the branch, and
+# DOCKER_BUILDKIT=1. Sets no shell options, since it runs under its caller's.
 
 export DOCKER_BUILDKIT=1
 
 # Checked and exited explicitly, as TAG is below, so a missing or empty
 # .dockerrepo says what to do and exits 1 with or without errexit. Read with cat
 # rather than $(<...), whose failure Bash before 5.3 treats as fatal under
-# errexit even beside ||. cat's error is left on stderr, since it says why
-# (missing, denied, a directory) where the check below cannot.
+# errexit even beside || (Bash's CHANGES, bash-5.3-alpha item 1rrr,
+# tiswww.case.edu/php/chet/bash/CHANGES, checked 2026-11). cat's error is left
+# on stderr, since it says why (missing, denied, a directory) where the check
+# below cannot.
 REPO=$(cat -- .dockerrepo) || REPO=""
 
 if [ -z "$REPO" ]; then
@@ -23,7 +25,8 @@ fi
 # checkout, which is what a pull request and a tag push both produce -- so the
 # registry collects :HEAD images unless something names the branch first, and
 # every consumer otherwise grows its own `git checkout -B` step ahead of the
-# build. Resolved here instead, from whichever CI names the branch.
+# build. Resolved here instead, from CircleCI's or GitHub Actions' branch
+# variable.
 TAG=$(git rev-parse --abbrev-ref HEAD)
 
 if [ "$TAG" = HEAD ]; then
@@ -32,7 +35,7 @@ fi
 
 # Empty rather than unset is the risk here: a CI that exports its branch
 # variable holding nothing satisfies set -u and leaves the tag empty, which
-# pushes $REPO:.dev rather than failing.
+# pushes $REPO:.dev or $REPO:.prd rather than failing.
 #
 # Checked and exited explicitly rather than by ${TAG:?}, so the error says what
 # to do and the status is 1 even where init is sourced from a bash -c string

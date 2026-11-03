@@ -93,8 +93,8 @@ dotenv_files=(.env.example)
 # source this file, so it looks unused here.
 # shellcheck disable=SC2034
 dockerfmt_args=(--newline)
-# --wrap no, so each paragraph is one line, which renderers reflow. Read only
-# by the runners that source this file, so it looks unused here.
+# --wrap no, so each paragraph is one line, which renderers reflow. Read only by
+# the runners that source this file, so it looks unused here.
 # shellcheck disable=SC2034
 mdformat_args=(--wrap no)
 

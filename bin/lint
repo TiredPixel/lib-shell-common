@@ -26,6 +26,8 @@ yamllint --strict "${yaml_files[@]}"
 
 echo -e "\n=== LINT COMPOSE\n"
 
+# The image installs Debian's docker-compose package and no docker CLI, so
+# Compose runs as docker-compose here rather than as docker compose.
 for f in "${compose_files[@]}"; do
     echo "checking $f" >&2
     docker-compose -f "$f" config -q

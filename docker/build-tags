@@ -2,10 +2,12 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-# REPO and TAG come from init rather than a second derivation here, since init
-# resolves a detached HEAD from whichever CI names the branch.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
 
+# git describe fails with no reachable annotated tag, stopping the build before
+# any push: these images carry a release, unlike build-compose's, so an untagged
+# copy has none to give. Only a HEAD exactly on an annotated tag adds the
+# release and its shorter prefixes as tags.
 release=$(git describe --abbrev=0)
 version=$(git describe)
 
