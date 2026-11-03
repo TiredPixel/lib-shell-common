@@ -6,7 +6,8 @@
 # docker logs each call's arguments, a line to a call, and exits with
 # FAKE_BUILD's status from a build and FAKE_PUSH's from a push. The fake git
 # puts HEAD on branch a/b and describes it as FAKE_DESCRIBE, failing as an
-# untagged repository does where that is empty.
+# untagged repository does where that is empty, or as a broken one does where
+# it is "broken".
 #
 # Run: docker/build-dev.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -43,11 +44,17 @@ shopt -s inherit_errexit failglob
 case $* in
 "rev-parse --abbrev-ref HEAD") echo a/b ;;
 describe)
-    if [ -z "${FAKE_DESCRIBE:-}" ]; then
+    case ${FAKE_DESCRIBE:-} in
+    "")
         echo "fatal: No names found, cannot describe anything." >&2
         exit 128
-    fi
-    echo "$FAKE_DESCRIBE"
+        ;;
+    broken)
+        echo "fatal: bad object HEAD" >&2
+        exit 128
+        ;;
+    *) echo "$FAKE_DESCRIBE" ;;
+    esac
     ;;
 *) exit 2 ;;
 esac
@@ -87,6 +94,7 @@ build() {
 
 push="push r/x:a-b.dev"
 pushed="fake docker: pushed r/x:a-b.dev"
+broken="fatal: bad object HEAD"$'\n'"$dir/describe: git describe failed"
 
 for model in latest stable; do
     caches="--cache-from r/x:a-b.dev --cache-from r/x:latest.dev"
@@ -105,6 +113,12 @@ for model in latest stable; do
     # Stamped with nothing, and git's fatal: kept off the console.
     FAKE_DESCRIBE='' check "$model-nopush-untagged" "build-dev-$model-nopush" \
         0 "$unstamped" "fake docker: built" "fake docker: building"
+
+    # Any other failure of git's stops the build before docker is called.
+    for script in "build-dev-$model-nopush" "build-dev-$model"; do
+        FAKE_DESCRIBE=broken check "$script-describe-fails" "$script" 1 "" "" \
+            "$broken"
+    done
 
     check "$model" "build-dev-$model" 0 "$built"$'\n'"$push" \
         "fake docker: built"$'\n'"$pushed" "fake docker: building"

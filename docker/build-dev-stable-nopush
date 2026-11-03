@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
-# Resolved here rather than inline, for the reason docker/build-compose states.
-describe=$(git describe 2>/dev/null || true)
+source "$dir/init"
+source "$dir/describe"
 
 docker build \
     --target dev \

@@ -1,0 +1,33 @@
+# shellcheck shell=bash
+#
+# Sourced by the docker/ scripts that stamp an image with GIT_DESCRIBE, to set
+# describe to what git describe prints. Sets no shell options, since it runs
+# under its caller's.
+#
+# Empty is the right stamp for a working copy with no tag to describe HEAD by,
+# so git's three no-tag failures leave describe empty. Any other failure, such
+# as no repository, has its message passed on and exits 1, with or without
+# errexit, so a build never goes ahead with an accidental empty stamp. A
+# consumer that stamps this value should refuse an empty one at the point that
+# actually stamps. git runs under LC_ALL=C, so its messages are the English ones
+# matched here.
+
+describe_err=$(mktemp) || exit 1
+
+# Read only by the scripts that source this file, so it looks unused here.
+# shellcheck disable=SC2034
+if describe=$(LC_ALL=C git describe 2>"$describe_err"); then
+    cat -- "$describe_err" >&2
+elif grep -q -e '^fatal: No names found, cannot describe anything\.$' \
+    -e "^fatal: No annotated tags can describe '" \
+    -e "^fatal: No tags can describe '" -- "$describe_err"; then
+    describe=""
+else
+    cat -- "$describe_err" >&2
+    rm -f -- "$describe_err"
+    echo "${BASH_SOURCE[0]}: git describe failed" >&2
+    exit 1
+fi
+
+rm -f -- "$describe_err"
+unset describe_err

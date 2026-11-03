@@ -68,6 +68,7 @@ shells() {
     done
     echo "shell ansible/lint-args"
     echo "shell bin/files"
+    echo "shell docker/describe"
     echo "shell docker/init"
     echo "shell project/echo-line"
     echo "shell project/release-onto"
