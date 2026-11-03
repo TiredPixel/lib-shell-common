@@ -60,9 +60,10 @@ project=project
 check() {
     local name=$1 mode=$2 status=$3 want=$4 rc=0
     shift 4
-    (cd "$work/$project" && env -u CIRCLE_BRANCH -u GITHUB_HEAD_REF \
-        -u GITHUB_REF_NAME "$@" bash --norc --noprofile "$work/source" \
-        "$mode" "$init" "$work/show") >"$work/out" 2>"$work/err" || rc=$?
+    (cd "$work/$project" && env -u CIRCLE_BRANCH -u CIRCLE_TAG \
+        -u GITHUB_HEAD_REF -u GITHUB_REF_NAME "$@" bash --norc --noprofile \
+        "$work/source" "$mode" "$init" "$work/show") >"$work/out" \
+        2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         failed+=("$name: exit $rc, not $status: $(<"$work/err")")
     elif [ "$status" = 0 ] && [ "$(<"$work/out")" != "$want" ]; then
@@ -75,17 +76,20 @@ check() {
 for mode in plain strict; do
     check "$mode-branch" "$mode" 0 "r/x a-b 1" FAKE_BRANCH=a/b
     check "$mode-circle" "$mode" 0 "r/x c-d 1" FAKE_BRANCH=HEAD \
-        CIRCLE_BRANCH=c/d GITHUB_HEAD_REF=e GITHUB_REF_NAME=f
+        CIRCLE_BRANCH=c/d CIRCLE_TAG=x GITHUB_HEAD_REF=e GITHUB_REF_NAME=f
+    check "$mode-circle-tag" "$mode" 0 "r/x 1.2 1" FAKE_BRANCH=HEAD \
+        CIRCLE_TAG=1.2 GITHUB_HEAD_REF=e GITHUB_REF_NAME=f
     check "$mode-pull-request" "$mode" 0 "r/x e-f 1" FAKE_BRANCH=HEAD \
         GITHUB_HEAD_REF=e/f GITHUB_REF_NAME=g
     check "$mode-push" "$mode" 0 "r/x 1.2 1" FAKE_BRANCH=HEAD \
         GITHUB_REF_NAME=1.2
     check "$mode-detached" "$mode" 1 \
-        "detached HEAD and no CI branch variable set" FAKE_BRANCH=HEAD
-    # A CI that exports its branch variable empty is refused all the same.
+        "detached HEAD and no CI branch or tag variable set" FAKE_BRANCH=HEAD
+    # A CI that exports its branch or tag variable empty is refused all the
+    # same.
     check "$mode-empty-variable" "$mode" 1 \
-        "detached HEAD and no CI branch variable set" FAKE_BRANCH=HEAD \
-        GITHUB_HEAD_REF= GITHUB_REF_NAME=
+        "detached HEAD and no CI branch or tag variable set" FAKE_BRANCH=HEAD \
+        CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=
 done
 
 # A project with no .dockerrepo, or an empty one, is refused on a branch.
