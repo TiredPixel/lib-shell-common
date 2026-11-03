@@ -17,14 +17,18 @@ cat >"$work/show" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
+# The fake find signals this shell, not its own parent, which is the background
+# job bin/files runs it in.
+export SHOW_PID=$$
 source "${FILES:-bin/files}"
 printf 'shell %s\n' "${shell_files[@]}"
 printf 'yaml %s\n' "${yaml_files[@]}"
 EOF
 chmod +x "$work/show"
 
-# Fails as a broken find would where its first argument is FAKE_FIND_FAIL, and
-# is the real find otherwise.
+# Fails as a broken find would where its first argument is FAKE_FIND_FAIL, or
+# where FAKE_FIND_TMP_EMPTY is set and TMPDIR holds anything; sends TERM to show
+# where FAKE_FIND_TERM is set; and is the real find otherwise.
 mkdir "$work/path"
 real_find=$(command -v find)
 cat >"$work/path/find" <<EOF
@@ -33,6 +37,14 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 if [ "\$1" = "\${FAKE_FIND_FAIL:-}" ]; then
     echo "fake find: failed" >&2
+    exit 1
+fi
+if [ -n "\${FAKE_FIND_TMP_EMPTY:-}" ] && [ -n "\$(ls -A -- "\$TMPDIR")" ]; then
+    echo "fake find: TMPDIR holds a file" >&2
+    exit 1
+fi
+if [ -n "\${FAKE_FIND_TERM:-}" ]; then
+    kill -TERM "\$SHOW_PID"
     exit 1
 fi
 exec $(printf %q "$real_find") "\$@"
@@ -151,6 +163,21 @@ for d in docker .github; do
     FAKE_FIND_FAIL=$d check "find-fails-$d" "$t" 1 "" \
         "bin/files: listing $d/ failed"
 done
+
+# The output file is gone from TMPDIR while find still writes to it.
+t=$(tree tmp-unlinked)
+mkdir "$work/tmp-unlinked-tmp"
+TMPDIR=$work/tmp-unlinked-tmp FAKE_FIND_TMP_EMPTY=1 check tmp-unlinked "$t" 0 \
+    "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+
+# A signal while find runs leaves nothing in TMPDIR. check records any failure
+# itself, so its stderr carries only bash's report of the signal.
+t=$(tree term)
+mkdir "$work/term-tmp"
+TMPDIR=$work/term-tmp FAKE_FIND_TERM=1 check term "$t" 143 "" "" 2>/dev/null
+if [ -n "$(ls -A -- "$work/term-tmp")" ]; then
+    failed+=("term: TMPDIR holds: $(ls -A -- "$work/term-tmp")")
+fi
 
 if [ ${#failed[@]} -gt 0 ]; then
     printf 'FAILED %s\n' "${failed[@]}" >&2
