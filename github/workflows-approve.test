@@ -221,15 +221,34 @@ for kind in dir link; do
     fixture
     propose build.yml 'name: new'
     if [ "$kind" = dir ]; then
-        mkdir "$r/.github/workflows.new/x"
+        mkdir "$r/.github/workflows.new/x.yml"
     else
-        ln -s build.yml "$r/.github/workflows.new/x"
+        ln -s build.yml "$r/.github/workflows.new/x.yml"
     fi
     before=$(state)
     run . ""
     expect_refused "irregular-$kind" \
-        "workflows-approve: .github/workflows.new/x is not a regular file"
+        "workflows-approve: .github/workflows.new/x.yml is not a regular file"
     expect_unchanged "irregular-$kind" "$before"
+done
+
+# A name outside [A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml is refused before
+# anything is shown, quoted so that no byte outside printable ASCII reaches the
+# terminal: ESC with a newline, a right-to-left override, a space, another
+# suffix, an upper-case one, and a leading dot or dash.
+names=($'x\e[2J\nbuild.yml' $'evil\xe2\x80\xaelmy.yml' 'a b.yml' build.txt build.YML
+    .build.yml -build.yml)
+for name in "${names[@]}"; do
+    fixture
+    propose "$name" 'name: new'
+    before=$(state)
+    LC_ALL=C.UTF-8 run . ""
+    quoted=$(LC_ALL=C printf %q ".github/workflows.new/$name")
+    expect_refused "name $quoted" "workflows-approve: refusing, since $quoted is not named [A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml"
+    if LC_ALL=C grep -q '[^[:print:]]' "$w/err"; then
+        failed+=("name $quoted: stderr holds a byte outside printable ASCII: $(said)")
+    fi
+    expect_unchanged "name $quoted" "$before"
 done
 
 # Anything already staged is refused, naming it.
@@ -356,13 +375,52 @@ expect eof status "$rc" 1
 expect eof stderr "$(<"$w/err")" "Approve .github/workflows.new/build.yml? [y/n] workflows-approve: no answer read from the terminal"
 expect_unchanged eof "$before"
 
-# stdout on a terminal: the diff is coloured.
+# stdout on a terminal: the diff is still shown without colour.
 fixture
 propose build.yml 'name: new'
 RUN_TTY=1 run . 'y\n'
 expect colour status "$rc" 0
-expect_in colour tty $'\e['
+expect_not_in colour tty $'\e'
 expect_in colour tty "name: new"
+
+# Bytes outside printable ASCII on either side, ESC, U+2028, which YAML reads as
+# a line break, and an accented letter, are shown escaped by cat -v, and the
+# proposal can still be approved byte for byte.
+fixture
+printf 'name: old\e[2J\n' >"$r/.github/workflows/build.yml"
+git -C "$r" commit -q -am escape
+git -C "$r" push -q
+proposal=$'name: n\xc3\xa9w # note\xe2\x80\xa8  - run: evil'
+propose build.yml "$proposal"
+run . 'y\n'
+expect escaped status "$rc" 0
+expect_in escaped out '-name: old^[[2J'
+expect_in escaped out '+name: nM-CM-)w # noteM-bM-^@M-(  - run: evil'
+if LC_ALL=C grep -q '[^[:print:]]' "$w/out"; then
+    failed+=("escaped: stdout holds a byte outside printable ASCII: $(said)")
+fi
+expect escaped content "$(content build.yml)" "$proposal"
+expect_committed escaped "Approve workflow"$'\n\n'".github/workflows/build.yml (changed)"
+
+# cat failing while showing the diff ends the run before anything is asked or
+# changed.
+mkdir "$work/fakecat"
+cat >"$work/fakecat/cat" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = -v ]; then
+    echo "fake cat: failed" >&2
+    exit 3
+fi
+exec $(printf %q "$(command -v cat)") "\$@"
+EOF
+chmod +x "$work/fakecat/cat"
+fixture
+propose build.yml 'name: new'
+before=$(state)
+PATH=$work/fakecat:$PATH run . 'y\n'
+expect cat-fails status "$rc" 3
+expect cat-fails stderr "$(<"$w/err")" "fake cat: failed"
+expect_unchanged cat-fails "$before"
 
 # git's diff failing, whether checking for a proposal that changes nothing or
 # showing one, ends the run before anything changes.

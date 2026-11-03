@@ -3,14 +3,18 @@
 # Approves the workflows proposed in .github/workflows.new/ of the repository
 # holding the current directory. Shows each one as a diff against its live
 # counterpart in .github/workflows/, or as a whole file if it is new, and asks
-# on the terminal whether to approve it. Moves each approved file into place,
-# removes .github/workflows.new/ once it is empty, commits only that move as
-# "Approve workflow" or "Approve workflows", and pushes the current branch to
-# origin.
+# on the terminal whether to approve it. The diff is shown without colour and
+# through cat -v, so a byte outside printable ASCII in either file, which could
+# hide or redraw what the terminal shows, is shown escaped instead. Moves each
+# approved file into place, removes .github/workflows.new/ once it is empty,
+# commits only that move as "Approve workflow" or "Approve workflows", and
+# pushes the current branch to origin.
 #
-# Refuses before changing anything when nothing is pending, when anything is
-# already staged, when a proposal is the same as its live workflow, when a live
-# workflow has local changes or is untracked, on a detached HEAD, with no
+# Refuses before changing anything when nothing is pending, when a proposal's
+# name is not letters, digits, dots, dashes and underscores ending .yml or
+# .yaml, which keeps the prompt and paths free of control bytes, when anything
+# is already staged, when a proposal is the same as its live workflow, when a
+# live workflow has local changes or is untracked, on a detached HEAD, with no
 # origin, or with no terminal to ask on. Needs only bash and git, so it runs
 # from a fresh clone of a pushed branch whether the proposal is committed or
 # only in the working tree.
@@ -50,7 +54,22 @@ entries_of_new
 if [ ${#entries[@]} -eq 0 ]; then
     die "nothing to approve: $new/ is empty"
 fi
+# In the C locale, so the ranges mean ASCII alone and %q escapes every byte
+# outside printable ASCII.
+safe_name() {
+    local LC_ALL=C
+    [[ $1 =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*\.ya?ml$ ]]
+}
+quote() {
+    local LC_ALL=C
+    printf %q "$1"
+}
+
 for f in "${entries[@]}"; do
+    if ! safe_name "${f##*/}"; then
+        die "refusing, since $(quote "$f") is not named" \
+            "[A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml"
+    fi
     if [ -L "$f" ] || ! [ -f "$f" ]; then
         die "$f is not a regular file"
     fi
@@ -99,12 +118,6 @@ if ! { exec 3<>/dev/tty; } 2>/dev/null; then
     die "refusing, since there is no terminal to ask on"
 fi
 
-if [ -t 1 ]; then
-    color=always
-else
-    color=never
-fi
-
 approved=()
 for f in "${entries[@]}"; do
     target=$live/${f##*/}
@@ -113,11 +126,20 @@ for f in "${entries[@]}"; do
     else
         from=/dev/null
     fi
-    # 1 means the files differ, anything above it an error.
-    rc=0
-    git --no-pager diff --no-index --color="$color" -- "$from" "$f" || rc=$?
-    if [ "$rc" -gt 1 ]; then
-        exit "$rc"
+    # For git diff, 1 means the files differ and anything above it an error;
+    # cat exits 1 on an error, so the two statuses are read apart, cat's first,
+    # since its failure can kill git by SIGPIPE.
+    if git --no-pager diff --no-index --no-color -- "$from" "$f" |
+        LC_ALL=C cat -v; then
+        statuses=("${PIPESTATUS[@]}")
+    else
+        statuses=("${PIPESTATUS[@]}")
+    fi
+    if [ "${statuses[1]}" -ne 0 ]; then
+        exit "${statuses[1]}"
+    fi
+    if [ "${statuses[0]}" -gt 1 ]; then
+        exit "${statuses[0]}"
     fi
     while :; do
         printf 'Approve %s? [y/n] ' "$f" >&2
