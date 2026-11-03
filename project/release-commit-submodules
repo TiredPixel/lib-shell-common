@@ -18,7 +18,7 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 # A pipeline rather than a process substitution, so pipefail sees git's status,
-# and lastpipe so the loop below runs in this shell and keeps what it reads, for
+# and lastpipe so the loops below run in this shell and keep what they read, for
 # the reasons project/release-assert gives. Hidden, git's failure would read as
 # "nothing to commit" -- and the release would go on to sign and push a tag
 # without the bump.
@@ -32,6 +32,23 @@ cd "$(git rev-parse --show-toplevel)"
 bumped=()
 recorded=()
 refused=()
+
+# An unmerged path is asked about on its own, since the comparison below never
+# reports one as such: against the working tree, a conflicted gitlink whose
+# submodule is checked out reads as an ordinary pointer move, and one whose
+# directory is empty does not appear at all. ls-files lists a line per stage,
+# and the stages of a path are adjacent.
+last=
+
+git ls-files -z --unmerged |
+    while IFS= read -r -d '' entry; do
+        path=${entry#*$'\t'}
+
+        if [ "$path" != "$last" ]; then
+            refused+=("U $path")
+            last=$path
+        fi
+    done
 
 # One plumbing call answers every question: which paths are gitlinks, what
 # changed, and the commit HEAD records. That last is srcsha, so
@@ -55,7 +72,7 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
         # A pointer move is M with a gitlink either side. A is a submodule added
         # and not committed; D a directory that is not checked out, which git
         # commit --only would record as the submodule's removal; T one replaced
-        # by a regular file; U an unmerged path.
+        # by a regular file.
         if [ "$status" != M ] ||
             [ "$srcmode" != 160000 ] || [ "$dstmode" != 160000 ]; then
             refused+=("$status $path")

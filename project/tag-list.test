@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+#
+# Tests project/tag-list in place against real repositories in a scratch dir: a
+# parent, app, whose .projects names its submodule lib, so the real
+# project/each sweeps lib, then app. Every case builds its fixture afresh and
+# runs project/tag-list in app.
+#
+# Run: project/tag-list.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+tag_list=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/tag-list
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+# Nothing from the caller's configuration reaches the fixtures, and nothing
+# above the scratch dir is taken for a repository. File URLs are refused to
+# submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$work
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+failed=()
+n=0
+
+# A fresh fixture in $w, as the header describes, lib's remote being
+# $w/lib.git.
+fixture() {
+    n=$((n + 1))
+    w=$work/$n
+    mkdir "$w"
+    git init -q --bare "$w/lib.git"
+    git init -q "$w/lib.up"
+    git -C "$w/lib.up" commit -q --allow-empty -m init
+    git -C "$w/lib.up" push -q "$w/lib.git" main
+    git init -q "$w/app"
+    git -C "$w/app" submodule add -q "$w/lib.git" lib
+    echo lib >"$w/app/.projects"
+    git -C "$w/app" add .projects
+    git -C "$w/app" commit -q -m init
+}
+
+# Tags repository $w/$1 with each tag after it.
+tag() {
+    local r=$1 t
+    shift
+    for t in "$@"; do
+        git -C "$w/$r" tag "$t"
+    done
+}
+
+# Runs project/tag-list in app, and checks its status is $2 and, where it
+# passes, its output is $3.
+check() {
+    local name=$1 status=$2 want=$3 rc=0
+    (cd "$w/app" && "$tag_list") >"$w/out" 2>"$w/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$w/err")")
+    elif [ "$status" = 0 ] && [ "$(<"$w/out")" != "$want" ]; then
+        failed+=("$name: listed: $(<"$w/out")")
+    fi
+}
+
+# Tags from every project, once each, in version order. 1.01 and 1.1 are one
+# version to sort -V but distinct tags, and both are listed.
+fixture
+tag app v1.01 v1.2 v1.10
+tag app/lib v1.1 v1.2
+check distinct 0 "$(printf '%s\n' v1.01 v1.1 v1.2 v1.10)"
+
+# column.ui=always would lay out several tags on a line; they are still listed
+# one per line.
+fixture
+tag app/lib 1.1 1.2 1.3
+GIT_CONFIG_COUNT=5 GIT_CONFIG_KEY_4=column.ui GIT_CONFIG_VALUE_4=always \
+    check column 0 "$(printf '%s\n' 1.1 1.2 1.3)"
+
+# Only the last ten are listed.
+fixture
+tag app 1 2 3 4 5 6
+tag app/lib 7 8 9 10 11 12
+check last-ten 0 "$(seq 3 12)"
+
+# A sweep that fails fails the listing: here .projects names a plain directory,
+# which project/each refuses.
+fixture
+mkdir "$w/app/plain"
+echo plain >>"$w/app/.projects"
+check sweep-fails 1 ""
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

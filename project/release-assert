@@ -76,17 +76,6 @@ for f in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
     fi
 done
 
-# The status check above already refuses an unmerged path, a submodule's
-# included, which it lists as UU; this is a second guard for the same case.
-unmerged=$(git ls-files --unmerged)
-
-if [ -n "$unmerged" ]; then
-    echo "$PWD: refusing to release, the index has unmerged paths:" >&2
-    printf '%s\n' "$unmerged" >&2
-
-    exit 1
-fi
-
 # The submodules this release will not tag. .projects is a curated list -- see
 # project/each-without-project -- so an omission is usually deliberate, and this
 # reports rather than refuses. It is the only place the other kind of omission

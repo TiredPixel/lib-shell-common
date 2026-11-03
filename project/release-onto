@@ -3,15 +3,20 @@
 # Sourced by project/release-create-latest and project/release-create-stable,
 # which release onto a branch by the same steps. Sets no shell options, since it
 # runs under its caller's.
+#
+# Every step returns its status on failure, because errexit cannot be relied on
+# to: it is off in a caller that sets no options, and bash ignores it throughout
+# a function called under if, while, ! or before && or ||, even in a caller that
+# sets it.
 
 # Checks out branch $2 in every project, through project/each in directory $1,
 # and fast-forwards it to its upstream.
 release_checkout() {
     local dir=$1 branch=$2
 
-    "$dir/each" git checkout "$branch" --no-recurse-submodules
+    "$dir/each" git checkout "$branch" --no-recurse-submodules || return
 
-    "$dir/each" git pull --ff-only --no-recurse-submodules
+    "$dir/each" git pull --ff-only --no-recurse-submodules || return
 }
 
 # Pushes branch $2 in every project, through project/each in directory $1.
@@ -21,7 +26,7 @@ release_push() {
     local dir=$1 branch=$2
 
     "$dir/each" git push --no-follow-tags --recurse-submodules=check origin \
-        "$branch:$branch"
+        "$branch:$branch" || return
 }
 
 # Releases tag $3 from branch $2 in every project, through the project/ scripts
@@ -30,13 +35,13 @@ release_push() {
 release_onto() {
     local dir=$1 branch=$2 tag=$3
 
-    "$dir/release-assert"
+    "$dir/release-assert" || return
 
-    release_checkout "$dir" "$branch"
+    release_checkout "$dir" "$branch" || return
 
-    "$dir/release-commit-submodules"
+    "$dir/release-commit-submodules" || return
 
-    "$dir/tag-create" "$tag"
+    "$dir/tag-create" "$tag" || return
 
-    release_push "$dir" "$branch"
+    release_push "$dir" "$branch" || return
 }

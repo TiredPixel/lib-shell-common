@@ -5,20 +5,34 @@ shopt -s inherit_errexit failglob
 tag=${1:?must be set to the tag to create}
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
-# The sweep's status is checked rather than discarded: as the left operand of an
+# The sweeps' status is checked rather than discarded: as the left operand of an
 # && list it would be exempt from errexit, so a sweep that failed, on a
 # .projects entry that is not a submodule or a directory missing from the tree,
 # would read as "the tag exists nowhere" and the script would go on to sign and
 # push it everywhere.
 #
+# Unsorted, because sort -V counts 1.01 and 1.1 as one version, so -u would keep
+# whichever came first and the match below would miss the other.
+#
 # --no-column because column.ui=always would put several tags on a line, which
 # the exact-line match below would never find.
-existing=$("$dir/each" git tag -l --no-column | sort -Vu)
+existing=$("$dir/each" git tag -l --no-column)
 
 # -F because a tag is a literal, not a pattern -- as a regex 14.655 also matches
-# 14X655 -- and -x because 14.6 is not 14.655.
+# 14X655 -- and -x because 14.6 is not 14.655. Asked before any origin, so a tag
+# that exists here is refused without needing the network.
 if grep -qFx -- "$tag" <<<"$existing"; then
     echo "$tag: already exists" >&2
+    exit 1
+fi
+
+# Every origin is asked too, since a tag pushed from another clone and never
+# fetched here is absent locally, and its push would be refused only after every
+# project had been tagged and those before it pushed.
+remote=$("$dir/each" "$dir/tag-list-origin" | cut -f2)
+
+if grep -qFx -- "refs/tags/$tag" <<<"$remote"; then
+    echo "$tag: already exists on an origin" >&2
     exit 1
 fi
 

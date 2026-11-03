@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+#
+# Tests project/release-commit-submodules against real repositories in a
+# scratch dir: a parent, app, with submodules lib and ext, each with a bare
+# remote. lib's remote holds two commits and app records the first, which a
+# case can move lib forwards from, back to, or away from. Every case builds its
+# fixture afresh and runs project/release-commit-submodules in app.
+#
+# Run: project/release-commit-submodules.test. Exits 1 naming each case that
+# failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+commit=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/release-commit-submodules
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+# Nothing from the caller's configuration reaches the fixtures, and nothing
+# above the scratch dir is taken for a repository. File URLs are refused to
+# submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$work
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+failed=()
+n=0
+
+# Creates bare remote $w/$1.git holding one empty commit for each message after
+# it, on main.
+mkrepo() {
+    local r=$1 m
+    shift
+    git init -q --bare "$w/$r.git"
+    git init -q "$w/$r.up"
+    for m in "$@"; do
+        git -C "$w/$r.up" commit -q --allow-empty -m "$m"
+    done
+    git -C "$w/$r.up" push -q "$w/$r.git" main
+}
+
+# A fresh fixture in $w, as the header describes, with first and second naming
+# lib's two commits.
+fixture() {
+    n=$((n + 1))
+    w=$work/$n
+    mkdir "$w"
+    mkrepo lib one two
+    mkrepo ext one
+    git init -q "$w/app"
+    git -C "$w/app" submodule add -q "$w/lib.git" lib
+    git -C "$w/app" submodule add -q "$w/ext.git" ext
+    second=$(git -C "$w/app/lib" rev-parse HEAD)
+    first=$(git -C "$w/app/lib" rev-parse HEAD~)
+    git -C "$w/app/lib" checkout -q --detach "$first"
+    git -C "$w/app" add lib
+    git -C "$w/app" commit -q -m init
+    head=$(git -C "$w/app" rev-parse HEAD)
+}
+
+# Runs project/release-commit-submodules in app, or in its subdirectory $1,
+# keeping its status in rc and its output in $w/out.
+run() {
+    rc=0
+    (cd "$w/app/${1:-}" && "$commit") >"$w/out" 2>&1 || rc=$?
+}
+
+# Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
+expect() {
+    if [ "$3" != "$4" ]; then
+        failed+=("$1: $2 is $3, not $4: $(<"$w/out")")
+    fi
+}
+
+# Records a failure of case $1 unless the output holds each line after it,
+# matched whole.
+expect_out() {
+    local name=$1 line
+    shift
+    for line in "$@"; do
+        grep -qFx -- "$line" "$w/out" ||
+            failed+=("$name: output lacks '$line': $(<"$w/out")")
+    done
+}
+
+# Records a failure of case $1 unless app's HEAD is one commit on from the
+# fixture's, message update, recording lib at $2 and changing only lib.
+expect_committed() {
+    expect "$1" "the commit's parent" "$(git -C "$w/app" rev-parse HEAD~)" \
+        "$head"
+    expect "$1" "the commit's message" \
+        "$(git -C "$w/app" log --no-show-signature -1 --format=%s)" update
+    expect "$1" "the paths committed" \
+        "$(git -C "$w/app" diff --name-only HEAD~ HEAD)" lib
+    expect "$1" "lib's recorded commit" "$(git -C "$w/app" rev-parse HEAD:lib)" \
+        "$2"
+}
+
+# The heading over each pointer committed, and the line reporting lib moved
+# from $1 to $2 in direction $3.
+committing() {
+    printf '%s\n' "$w/app: committing submodule pointers:" \
+        "  lib  ${1:0:9} -> ${2:0:9}  ($3)"
+}
+
+# Nothing moved, nothing is committed.
+fixture
+run
+expect unmoved status "$rc" 0
+expect unmoved "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
+[ -s "$w/out" ] && failed+=("unmoved: output: $(<"$w/out")")
+
+# A pointer moved forwards is committed alone: what else is staged stays staged
+# and is reported as left out. A second run finds nothing to commit.
+fixture
+git -C "$w/app/lib" checkout -q --detach "$second"
+echo x >"$w/app/staged"
+git -C "$w/app" add staged
+run
+expect forwards status "$rc" 0
+mapfile -t want < <(committing "$first" "$second" forwards)
+expect_out forwards "${want[@]}" \
+    "$w/app: left uncommitted, so this release does not carry it:" "A  staged"
+expect_committed forwards "$second"
+expect forwards "what is staged" "$(git -C "$w/app" diff --cached --name-only)" \
+    staged
+committed=$(git -C "$w/app" rev-parse HEAD)
+run
+expect rerun status "$rc" 0
+expect rerun "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$committed"
+
+# From a subdirectory, the pointer is found and committed all the same.
+fixture
+mkdir "$w/app/sub"
+git -C "$w/app/lib" checkout -q --detach "$second"
+run sub
+expect subdir status "$rc" 0
+expect_committed subdir "$second"
+
+# A pointer moved back, or onto a commit that shares none of the recorded one's
+# history since their fork, is committed and reported as such.
+fixture
+git -C "$w/app/lib" checkout -q --detach "$second"
+git -C "$w/app" commit -q -am second
+head=$(git -C "$w/app" rev-parse HEAD)
+git -C "$w/app/lib" checkout -q --detach "$first"
+run
+expect back status "$rc" 0
+mapfile -t want < <(committing "$second" "$first" "moves back")
+expect_out back "${want[@]}"
+expect_committed back "$first"
+
+fixture
+git -C "$w/app/lib" checkout -q --detach "$first"
+git -C "$w/app/lib" commit -q --allow-empty -m side
+side=$(git -C "$w/app/lib" rev-parse HEAD)
+git -C "$w/app/lib" checkout -q --detach "$second"
+git -C "$w/app" commit -q -am second
+head=$(git -C "$w/app" rev-parse HEAD)
+git -C "$w/app/lib" checkout -q --detach "$side"
+run
+expect diverged status "$rc" 0
+mapfile -t want < <(committing "$second" "$side" diverged)
+expect_out diverged "${want[@]}"
+expect_committed diverged "$side"
+
+# A recorded commit the submodule does not hold leaves the direction unknown,
+# and the pointer is still committed.
+fixture
+missing=1111111111111111111111111111111111111111
+git -C "$w/app" update-index --cacheinfo "160000,$missing,lib"
+git -C "$w/app" commit -q -m missing
+head=$(git -C "$w/app" rev-parse HEAD)
+run
+expect unknown status "$rc" 0
+mapfile -t want < <(committing "$missing" "$first" "direction unknown")
+expect_out unknown "${want[@]}"
+expect_committed unknown "$first"
+
+# What is not a pointer move is refused, and nothing is committed: a submodule
+# whose directory is gone (D), one added but not committed (A), and one
+# replaced by a regular file (T).
+fixture
+git -C "$w/app/lib" checkout -q --detach "$second"
+rm -rf -- "$w/app/ext"
+run
+expect gone status "$rc" 1
+expect_out gone "$w/app: refusing to commit, these are not pointer moves:" \
+    "  D ext"
+expect gone "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
+
+fixture
+mkrepo new one
+git -C "$w/app" submodule add -q "$w/new.git" new
+run
+expect added status "$rc" 1
+expect_out added "  A new"
+expect added "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
+
+fixture
+rm -rf -- "$w/app/ext"
+echo x >"$w/app/ext"
+git -C "$w/app" add ext
+run
+expect replaced status "$rc" 1
+expect_out replaced "  T ext"
+expect replaced "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
+
+# A conflicted pointer (U) is refused, listed once though it has three stages,
+# both with the submodule checked out, where the comparison against the tree
+# reads it as a pointer move, and with its directory empty, where that
+# comparison does not show it at all.
+unmerge_lib() {
+    printf '%s\t%s\n' "0 0000000000000000000000000000000000000000" lib \
+        "160000 $first 1" lib "160000 $first 2" lib "160000 $second 3" lib |
+        git -C "$w/app" update-index --index-info
+}
+
+fixture
+git -C "$w/app/lib" checkout -q --detach "$second"
+unmerge_lib
+run
+expect unmerged status "$rc" 1
+expect_out unmerged "$w/app: refusing to commit, these are not pointer moves:" \
+    "  U lib"
+expect unmerged "U lines" "$(grep -c '^  U ' "$w/out")" 1
+expect unmerged "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
+
+fixture
+git -C "$w/app" submodule deinit -q lib
+unmerge_lib
+run
+expect unmerged-empty status "$rc" 1
+expect_out unmerged-empty "  U lib"
+expect unmerged-empty "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
+
+# A pointer move staged for a submodule whose directory is empty is refused
+# rather than compared, since git in that directory answers for app.
+fixture
+git -C "$w/app" submodule deinit -q lib
+git -C "$w/app" update-index --cacheinfo "160000,$second,lib"
+run
+expect not-own status "$rc" 1
+expect_out not-own \
+    "$w/app: lib: not a repository of its own, resolving to $w/app" \
+    "Nothing is tagged or pushed."
+expect not-own "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

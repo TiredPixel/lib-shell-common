@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# Lists the tags on this repository's origin, as git ls-remote prints them, one
+# refs/tags/ line each: --refs drops the peeled ^{} lines. project/tag-create
+# runs it in every project through project/each.
+#
+# timeout because a remote that hangs would hold the release forever.
+# --foreground because timeout otherwise runs git in a background process
+# group, where an ssh or credential prompt is stopped by SIGTTIN and the run
+# stalls until expiry; tag-create runs after the release commit, so a prompt
+# answered at the pull must be answerable here too. On expiry it signals git
+# alone, which ends the query.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+status=0
+timeout --foreground 60 git ls-remote --tags --refs origin || status=$?
+
+if [ "$status" -eq 124 ]; then
+    echo "$PWD: origin did not answer within 60 s" >&2
+fi
+
+exit "$status"

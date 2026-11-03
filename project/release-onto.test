@@ -3,9 +3,8 @@
 # Tests project/release-onto, sourced in a shell with no options set and in one
 # under the strict mode its callers run, with every project/ script it calls
 # faked in a scratch dir: each fake logs its name and arguments, a line to a
-# call, and exits with the status in FAKE_RC_<name>, hyphens in the name made
-# underscores (FAKE_RC_tag_create). Sourcing must set none of the shell's
-# options.
+# call, and exits 3 where that line is FAKE_FAIL. Sourcing must set none of the
+# shell's options.
 #
 # Run: project/release-onto.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -21,22 +20,34 @@ for f in release-assert each release-commit-submodules tag-create; do
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
-printf '%s' $f >>"\$FAKE_LOG"
-[ \$# -eq 0 ] || printf ' %s' "\$@" >>"\$FAKE_LOG"
-echo >>"\$FAKE_LOG"
-exit "\${FAKE_RC_${f//-/_}:-0}"
+line=$f
+[ \$# -eq 0 ] || line+=" \$*"
+echo "\$line" >>"\$FAKE_LOG"
+[ "\$line" != "\${FAKE_FAIL:-}" ] || exit 3
 EOF
     chmod +x "$work/project/$f"
 done
 export FAKE_LOG=$work/log
 
+# plain sets no options; strict calls release_onto where errexit applies, and
+# strict-if and strict-or where bash ignores it, under if and before ||.
 cat >"$work/release" <<'EOF'
-if [ "$1" = strict ]; then
+if [ "$1" != plain ]; then
     set -Eeuo pipefail
     shopt -s inherit_errexit failglob
 fi
 source "$2"
-release_onto "$3" "$4" "$5"
+case $1 in
+strict-if)
+    if release_onto "$3" "$4" "$5"; then
+        exit 0
+    else
+        exit
+    fi
+    ;;
+strict-or) release_onto "$3" "$4" "$5" || exit ;;
+*) release_onto "$3" "$4" "$5" ;;
+esac
 EOF
 cat >"$work/options" <<'EOF'
 before=$SHELLOPTS:$BASHOPTS
@@ -57,9 +68,8 @@ calls() {
         "each git push --no-follow-tags --recurse-submodules=check origin $1:$1"
 }
 
-# Runs release_onto $3 $4 in a bash with no options or, where $2 is strict,
-# under the callers' strict mode, and checks its status is $5 and the calls made
-# are $6.
+# Runs release_onto $3 $4 in the mode $2 names, and checks its status is $5 and
+# the calls made are $6.
 check() {
     local name=$1 mode=$2 branch=$3 tag=$4 status=$5 want=$6 rc=0
     : >"$FAKE_LOG"
@@ -72,12 +82,16 @@ check() {
     fi
 }
 
-check strict-release strict testing 1.2 0 "$(calls testing 1.2)"
-check plain-release plain latest 3.4 0 "$(calls latest 3.4)"
-# Under its callers' errexit, a failing step ends the release there.
-FAKE_RC_tag_create=4 check strict-tag-fails strict latest 1.2 4 \
-    "$(calls latest 1.2 | head -n 5)"
-FAKE_RC_release_assert=1 check strict-refused strict latest 1.2 1 release-assert
+for mode in plain strict strict-if strict-or; do
+    check "$mode-release" "$mode" testing 1.2 0 "$(calls testing 1.2)"
+
+    # A failing step ends the release there, with its status, in every mode.
+    for n in 1 2 3 4 5 6; do
+        FAKE_FAIL=$(calls latest 3.4 | sed -n "${n}p") \
+            check "$mode-step-$n-fails" "$mode" latest 3.4 3 \
+            "$(calls latest 3.4 | head -n "$n")"
+    done
+done
 
 # Sourcing changes none of the shell's options.
 bash --norc --noprofile "$work/options" "$helper" ||
