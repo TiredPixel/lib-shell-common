@@ -15,6 +15,6 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
     for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
         test ! -f "$f" || found=1
     done
-    test -z "$found" ||
-        test -z "$(docker compose config --services)" ||
-        docker compose stop'
+    test -n "$found" || exit 0
+    services=$(docker compose config --services)
+    test -z "$services" || docker compose stop'

@@ -30,11 +30,13 @@ if [ ! -f Makefile ] && [ ! -f makefile ] && [ ! -f GNUmakefile ]; then
     exit 1
 fi
 
-# -q runs nothing. It answers 0 when the target is up to date and 1 when it
-# needs remaking, and either means the rule exists, which is the whole question
-# here. stdout is dropped and stderr kept, because the wording of the diagnostic
-# is what separates the two failures below.
-err=$(make -q "$target" 2>&1 >/dev/null) && status=0 || status=$?
+# -q answers 0 when the target is up to date and 1 when it needs remaking, and
+# either means the rule exists, which is the whole question here. It runs no
+# ordinary recipe line, but still runs those marked + or naming $(MAKE), and
+# reading the Makefile expands its $(shell) calls, as any make does. stdout is
+# dropped and stderr kept, because the wording of the diagnostic is what
+# separates the two failures below; LC_ALL=C, because make translates it.
+err=$(LC_ALL=C make -q "$target" 2>&1 >/dev/null) && status=0 || status=$?
 
 case $status in
 0 | 1)
@@ -42,14 +44,26 @@ case $status in
     ;;
 esac
 
-# GNU make and BSD make word this differently, and neither gives it an exit
-# status of its own. Anything else make said is a fault in the project, and
-# stops the sweep rather than quietly narrowing it.
-case $err in
-*"No rule to make target"* | *"don't know how to make"*)
-    exit 0
-    ;;
-esac
+# Undeclared only where the target make found no rule for is the one asked
+# about. make words a missing prerequisite, or a missing included Makefile, the
+# same way under another name -- GNU make adds "needed by" -- and that project
+# declares the target but cannot make it. GNU make quotes the name 'build' or,
+# in older releases, `build', and ends the line "  Stop." only without -k, which
+# MAKEFLAGS passes down from a calling make; so each line is matched from the
+# name to its end. BSD make's wording is assumed, not checked against a BSD
+# make. Neither gives it an exit status of its own. Anything else make said is a
+# fault in the project, and stops the sweep rather than quietly narrowing it.
+while IFS= read -r line <&3; do
+    case $line in
+    *"No rule to make target '$target'." | \
+        *"No rule to make target '$target'.  Stop." | \
+        *"No rule to make target \`$target'." | \
+        *"No rule to make target \`$target'.  Stop." | \
+        *"don't know how to make $target. Stop")
+        exit 0
+        ;;
+    esac
+done 3<<<"$err"
 
 printf '%s\n' "$err" >&2
 exit 1

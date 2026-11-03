@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+#
+# Tests project/upgrade in place against real repositories in a scratch dir,
+# real GNU make and util-linux script: app, whose submodules lib1 and lib2 are
+# listed in its .projects, each cloned from a bare remote, with app's remote one
+# commit ahead of the clone. lib1 and app declare upgrade and build, lib2 build
+# alone; a recipe logs the target, the project and whether its stdout is a tty,
+# and fails where the project holds a file named fail. A post-merge hook in app
+# logs that the pull reached it. Only app has a compose file, and docker is
+# faked on PATH: compose config --services prints web, compose up logs "start"
+# and the project and exits FAKE_UP_RC, compose stop logs "stop" and the
+# project, ps does nothing, and any other call fails. Every case builds its fixture afresh and runs
+# project/upgrade in app.
+#
+# Run: project/upgrade.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+upgrade=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/upgrade
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+# Nothing from the caller's configuration reaches the fixtures. File URLs are
+# refused to submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+mkdir "$work/bin"
+cat >"$work/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+case $* in
+"compose config --services") echo web ;;
+"compose up -d --pull always --wait --wait-timeout "*)
+    echo "start ${PWD##*/}" >>"$FAKE_LOG"
+    exit "${FAKE_UP_RC:-0}"
+    ;;
+"compose stop") echo "stop ${PWD##*/}" >>"$FAKE_LOG" ;;
+ps) ;;
+*) exit 2 ;;
+esac
+EOF
+chmod +x "$work/bin/docker"
+export PATH=$work/bin:$PATH
+unset DC_WAIT_TIMEOUT
+
+# BSD script, which takes no --version and runs its command as arguments. It
+# logs the call and runs the command without a tty.
+mkdir "$work/bsd"
+cat >"$work/bsd/script" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+case $* in
+--version)
+    echo "script: illegal option -- -" >&2
+    exit 1
+    ;;
+"-e /dev/null make upgrade")
+    echo "script $*" >>"$FAKE_LOG"
+    exec make upgrade
+    ;;
+esac
+exit 2
+EOF
+chmod +x "$work/bsd/script"
+
+# The recipe logs the target, the project's directory and whether stdout is a
+# tty. The string is for make, which expands it.
+# shellcheck disable=SC2016
+recipe='\t@test ! -f fail
+\t@if [ -t 1 ]; then t=tty; else t=notty; fi; \\
+\techo "$@ $(notdir $(CURDIR)) $$t" >>"$$FAKE_LOG"\n'
+
+failed=()
+n=0
+
+# Creates bare remote $w/$1.git and $w/$1.up, a clone committing to it, whose
+# Makefile declares the targets $2...
+mkrepo() {
+    local name=$1 target
+    shift
+    git init -q --bare "$w/$name.git"
+    git init -q "$w/$name.up"
+    for target; do
+        printf %b "$target:\n$recipe"
+    done >"$w/$name.up/Makefile"
+    git -C "$w/$name.up" add Makefile
+    git -C "$w/$name.up" commit -q -m init
+    git -C "$w/$name.up" remote add origin "$w/$name.git"
+    git -C "$w/$name.up" push -q -u origin main
+}
+
+# A fresh fixture in $w, as the header describes.
+fixture() {
+    local sub
+    n=$((n + 1))
+    w=$work/$n
+    mkdir "$w"
+    mkrepo lib1 upgrade build
+    mkrepo lib2 build
+    mkrepo app upgrade build
+    for sub in lib1 lib2; do
+        git -C "$w/app.up" submodule add -q "$w/$sub.git" "$sub"
+    done
+    printf 'lib1\nlib2\n' >"$w/app.up/.projects"
+    touch "$w/app.up/compose.yaml"
+    git -C "$w/app.up" add .projects compose.yaml
+    git -C "$w/app.up" commit -q -m projects
+    git -C "$w/app.up" push -q
+    git clone -q --recurse-submodules "$w/app.git" "$w/app"
+    git -C "$w/app.up" commit -q --allow-empty -m ahead
+    git -C "$w/app.up" push -q
+    cat >"$w/app/.git/hooks/post-merge" <<'EOF'
+#!/bin/sh
+echo "pull ${PWD##*/}" >>"$FAKE_LOG"
+EOF
+    chmod +x "$w/app/.git/hooks/post-merge"
+    export FAKE_LOG=$w/log
+    : >"$FAKE_LOG"
+}
+
+# Runs project/upgrade in app and records a failure of case $1 unless its
+# status is $2 and the log is $3. Its stdout is kept in $w/out and its stderr in
+# $w/err.
+check() {
+    local rc=0
+    (cd "$w/app" && "$upgrade") >"$w/out" 2>"$w/err" </dev/null || rc=$?
+    if [ "$rc" != "$2" ]; then
+        failed+=("$1: exit $rc, not $2: $(<"$w/err")")
+    elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
+        failed+=("$1: the log is: $(<"$FAKE_LOG")")
+    fi
+}
+
+# Records a failure of case $1 unless stderr holds $2.
+expect_err() {
+    if ! grep -qF -- "$2" "$w/err"; then
+        failed+=("$1: stderr lacks $2: $(<"$w/err")")
+    fi
+}
+
+# Pulls, upgrades under a tty each listed project declaring upgrade and not app
+# itself, rebuilds each declaring build, starts and stops, under a heading for
+# each stage.
+fixture
+check whole 0 "$(printf '%s\n' "pull app" "upgrade lib1 tty" \
+    "build lib1 notty" "build lib2 notty" "start app" "stop app")"
+stages=$(grep -oE '[A-Z]+$' "$w/out")
+want=$(printf '%s\n' PULL UPGRADE REBUILD START STOP COMPLETED)
+if [ "$stages" != "$want" ]; then
+    failed+=("whole: the stages are: $stages")
+fi
+
+# Under BSD script, the command is passed as arguments.
+fixture
+PATH=$work/bsd:$PATH check bsd-script 0 "$(printf '%s\n' "pull app" \
+    "script -e /dev/null make upgrade" "upgrade lib1 notty" \
+    "build lib1 notty" "build lib2 notty" "start app" "stop app")"
+
+# With no list, nothing is swept, rather than the run completing having
+# upgraded nothing.
+fixture
+rm -- "$w/app/.projects"
+check no-list 1 ""
+expect_err no-list "$w/app: no .projects, so upgrade has nothing to sweep"
+
+# A failed pull stops the run: app has diverged from its remote.
+fixture
+git -C "$w/app" commit -q --allow-empty -m diverged
+check pull-fails 128 ""
+expect_err pull-fails "Not possible to fast-forward"
+
+# A failed upgrade, its status carried out through script, stops the run
+# before the rebuild. The fail file would fail lib1's build too, so the stages
+# tell a stopped run from one that went on to fail there.
+fixture
+touch "$w/app/lib1/fail"
+check upgrade-fails 2 "pull app"
+stages=$(grep -oE '[A-Z]+$' "$w/out")
+if [ "$stages" != "$(printf '%s\n' PULL UPGRADE)" ]; then
+    failed+=("upgrade-fails: the stages are: $stages")
+fi
+
+# A failed rebuild stops the run before anything starts.
+fixture
+printf %b "upgrade:\n${recipe}build:\n\t@false\n" >"$w/app/lib1/Makefile"
+check rebuild-fails 2 "$(printf '%s\n' "pull app" "upgrade lib1 tty")"
+
+# A failed start stops the run before the stop.
+fixture
+FAKE_UP_RC=1 check start-fails 1 "$(printf '%s\n' "pull app" \
+    "upgrade lib1 tty" "build lib1 notty" "build lib2 notty" "start app")"
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo "ok"

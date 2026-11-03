@@ -10,7 +10,10 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 # carrying none adopt an ancestor's. The second catches services that all sit
 # behind a profile, which selects nothing and which compose calls an error
 # rather than nothing to do. The file test takes every name compose looks for,
-# so a project is not skipped for which of them it uses.
+# so a project is not skipped for which of them it uses. The services are
+# captured on a line of their own, where errexit sees compose fail: inside
+# test's argument the failure would be lost, and a project whose configuration
+# compose cannot read would pass as one with nothing to bring up.
 #
 # --wait, so a service that dies on start or never turns healthy fails the
 # project it belongs to. A daemon-wide health poll would not do: filtering on
@@ -28,8 +31,9 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
     for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
         test ! -f "$f" || found=1
     done
-    test -z "$found" ||
-        test -z "$(docker compose config --services)" ||
+    test -n "$found" || exit 0
+    services=$(docker compose config --services)
+    test -z "$services" ||
         docker compose up -d --pull always --wait --wait-timeout "${DC_WAIT_TIMEOUT:-300}"'
 
 docker ps

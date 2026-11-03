@@ -6,6 +6,13 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 source "$dir/echo-line"
 
+# At the top level, where project/each-without-project sweeps from, so the
+# command runs in this project rather than in whichever directory of it this is
+# called from. Assigned on its own, so that errexit sees git fail outside a
+# repository.
+toplevel=$(git rev-parse --show-toplevel)
+cd "$toplevel"
+
 "$dir/each-without-project" "$@"
 
 # To stderr, as the name printed beside it already is. On stdout the rule lands
@@ -13,5 +20,5 @@ source "$dir/echo-line"
 # tag exists anywhere, and the rule, which ends in no newline, would fuse with
 # the first tag each project lists, hiding that tag from the check.
 echo_line '-' >&2
-echo -e "$(basename "$PWD")\n" >&2
+printf '%s\n\n' "${PWD##*/}" >&2
 "$@"

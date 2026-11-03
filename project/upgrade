@@ -17,12 +17,12 @@ if [ ! -f "$f_projects" ]; then
 fi
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "PULL\n"
+printf 'PULL\n\n'
 
 "$dir/pull"
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "UPGRADE\n"
+printf 'UPGRADE\n\n'
 
 # make runs under `script` so the tools it drives still see a tty; -e so the
 # status carried back out is make's own rather than script's, which is what
@@ -37,19 +37,19 @@ echo -e "UPGRADE\n"
     fi'
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "REBUILD\n"
+printf 'REBUILD\n\n'
 
 "$dir/each-without-project" "$dir/make-if-declared" build
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "START\n"
+printf 'START\n\n'
 
 "$dir/start"
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "STOP\n"
+printf 'STOP\n\n'
 
 "$dir/stop"
 #-------------------------------------------------------------------------------
 echo_line '='
-echo -e "COMPLETED\n"
+printf 'COMPLETED\n\n'
