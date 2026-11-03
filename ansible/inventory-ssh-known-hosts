@@ -1,42 +1,64 @@
 #!/usr/bin/env bash
+#
+# Ansible dynamic inventory listing, as ungrouped, every host in a known_hosts
+# file whose first name ends in .DOMAIN. Ansible passes only --list or --host,
+# so a wrapper script supplies the file and domain before them.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+usage() {
+    echo "Usage: $0 KNOWN_HOSTS DOMAIN --list | --host HOST" >&2
+    exit 2
+}
+
+[ $# -ge 3 ] || usage
 f=$1
 domain=$2
 shift 2
+if [ -z "$f" ] || [ -z "$domain" ]; then
+    usage
+fi
+if ! [ -f "$f" ] || ! [ -r "$f" ]; then
+    echo "$0: $f is not a readable file" >&2
+    exit 1
+fi
 
 cmd_host() {
-    jq '.' <<-EOF
-		{}
-	EOF
+    jq -n '{}'
 }
 
 cmd_list() {
     local hosts
-    hosts=$(cut -d' ' -f1 "$f" |
-        cut -d',' -f1 |
-        grep -E "\.$domain$" |
-        xargs -I '{}' echo '"{}"' |
-        jq -nr '"[", try (input|tojson, repeat(",\(input|tojson)")), "]"')
+    # Each line's first name runs up to its first whitespace or comma; a line
+    # whose first non-blank is # is a comment, as ssh reads it. The domain is
+    # compared as a string, so nothing in it is a pattern.
+    hosts=$(jq -cRn --arg domain "$domain" '
+        [inputs | select(test("^\\s*#") | not)
+            | capture("^(?<name>[^\\s,]*)").name
+            | select(endswith("." + $domain))]
+    ' "$f")
 
-    jq '.' <<-EOF
-		{
-		    "ungrouped": {
-		        "hosts": $hosts
-		    },
-		    "_meta": {
-		        "hostvars": {}
-		    }
-		}
-	EOF
+    if [ "$hosts" = "[]" ]; then
+        echo "$0: no host in $f ends in .$domain" >&2
+        exit 1
+    fi
+
+    jq -n --argjson hosts "$hosts" '{
+        ungrouped: {hosts: $hosts},
+        _meta: {hostvars: {}}
+    }'
 }
 
 case "$1" in
 --host)
+    [ $# -eq 2 ] || usage
     cmd_host "$2"
     ;;
 --list)
+    [ $# -eq 1 ] || usage
     cmd_list
+    ;;
+*)
+    usage
     ;;
 esac
