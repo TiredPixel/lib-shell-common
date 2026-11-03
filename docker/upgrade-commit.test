@@ -116,8 +116,8 @@ committed() {
     elif [ "$(git -C "$w/app" log -1 --no-show-signature --format=%B)" != \
         "$(printf '%s\n' "${message[@]}")" ]; then
         failed+=("$name: the message is: $(git -C "$w/app" log -1 --no-show-signature --format=%B)")
-    elif [ "$(git -C "$w/app" diff-tree --no-commit-id --name-only -r HEAD)" != "$want" ]; then
-        failed+=("$name: the commit changes: $(git -C "$w/app" diff-tree --no-commit-id --name-only -r HEAD)")
+    elif [ "$(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)" != "$want" ]; then
+        failed+=("$name: the commit changes: $(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)")
     elif [ "$(git -C "$w/app.git" rev-parse main)" != "$pushed" ]; then
         failed+=("$name: something was pushed")
     elif [ -e "$w/record" ]; then
@@ -165,6 +165,22 @@ fixture
 printf 'more notes\n' >>"$w/app/notes.txt"
 run "" "$w/record" notes.txt
 committed path-only notes.txt
+
+# A submodule's ignore setting hides it from neither the commit nor its body,
+# nor from the check for other paths staged.
+fixture
+git -C "$w/app" config submodule.lib.ignore all
+: >"$w/record"
+run "" "$w/record" lib
+committed lib-only-ignored lib
+fixture
+git -C "$w/app" config submodule.lib.ignore all
+git -C "$w/app" add lib
+run "" "$w/record"
+if [ "$rc" != 1 ] || [ "$err" != $'lib\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
+    failed+=("other-staged-ignored: exit $rc: $err")
+fi
+unchanged other-staged-ignored
 
 # Where neither a pin nor a PATH moved, nothing is staged or committed, and the
 # record goes; with no PATH, what is already staged is not looked at.

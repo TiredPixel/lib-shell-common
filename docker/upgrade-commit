@@ -67,14 +67,17 @@ if [ ${#paths[@]} -eq 0 ] && [ ${#extra[@]} -eq 0 ]; then
 fi
 
 # :(literal) so a path is never read as a pattern; --no-renames so a staged
-# rename lists the path it leaves as well as the one it makes.
+# rename lists the path it leaves as well as the one it makes. Every diff here
+# takes --ignore-submodules=none, since a submodule.<name>.ignore setting would
+# otherwise hide a staged gitlink from it.
 specs=()
 excludes=()
 for path in "${paths[@]}" "${extra[@]}"; do
     specs+=(":(literal)$path")
     excludes+=(":(exclude,literal)$path")
 done
-others=$(git diff --cached --no-renames --name-only -- ':/' "${excludes[@]}")
+others=$(git diff --cached --no-renames --ignore-submodules=none --name-only \
+    -- ':/' "${excludes[@]}")
 if [ -n "$others" ]; then
     printf '%s\n' "$others" >&2
     echo "${0##*/}: already staged beside the upgrade; commit or unstage it" \
@@ -90,8 +93,8 @@ git add -- "${specs[@]}"
 if [ ${#extra[@]} -gt 0 ]; then
     raw=$(mktemp)
     trap 'rm -f -- "$raw"' EXIT
-    git diff --cached --raw -z --no-renames --no-abbrev -- \
-        "${specs[@]:${#paths[@]}}" >"$raw"
+    git diff --cached --raw -z --no-renames --ignore-submodules=none \
+        --no-abbrev -- "${specs[@]:${#paths[@]}}" >"$raw"
     while IFS= read -r -d '' meta <&3 && IFS= read -r -d '' name <&3; do
         read -r old_mode new_mode old new _ <<<"${meta#:}"
         if [ "$old_mode" = 160000 ] && [ "$new_mode" = 160000 ]; then
@@ -100,7 +103,7 @@ if [ ${#extra[@]} -gt 0 ]; then
     done 3<"$raw"
 fi
 
-if git diff --cached --quiet; then
+if git diff --cached --ignore-submodules=none --quiet; then
     nothing
 fi
 if [ ${#moves[@]} -gt 0 ]; then
