@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# Tests docker/login in a scratch project with docker and git faked on PATH, so
+# nothing logs in anywhere. The fake docker logs each call's arguments, then the
+# password it read on stdin, a line each. The fake git puts HEAD on branch a/b.
+# Each case writes .dockerrepo and checks the server docker login is given, or
+# that none is, which is Docker Hub.
+#
+# Run: docker/login.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/project"
+cat >"$work/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+args=$(printf '%q ' "$@")
+echo "${args% }" >>"$FAKE_LOG"
+echo "stdin $(cat)" >>"$FAKE_LOG"
+EOF
+cat >"$work/bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+case $* in
+"rev-parse --abbrev-ref HEAD") echo a/b ;;
+*) exit 2 ;;
+esac
+EOF
+chmod +x "$work/bin/docker" "$work/bin/git"
+
+export FAKE_LOG=$work/log
+export PATH=$work/bin:$PATH
+export DOCKER_USERNAME=u DOCKER_PASSWORD=p
+
+failed=()
+
+# Runs docker/login with .dockerrepo holding $2, and checks it exits 0 and
+# docker login is given server $3, or no server where $3 is empty, with the
+# password on stdin.
+check() {
+    local name=$1 repo=$2 server=$3 rc=0 want
+    echo "$repo" >"$work/project/.dockerrepo"
+    : >"$FAKE_LOG"
+    (cd "$work/project" && "$dir/login") >"$work/out" 2>&1 || rc=$?
+    want="login -u u --password-stdin${server:+ $server}"$'\n'"stdin p"
+    if [ "$rc" -ne 0 ]; then
+        failed+=("$name: exit $rc: $(<"$work/out")")
+    elif [ "$(<"$FAKE_LOG")" != "$want" ]; then
+        failed+=("$name: docker was called as: $(<"$FAKE_LOG")")
+    fi
+}
+
+check dotted ghcr.io/o/n ghcr.io
+check port localhost:5000/n localhost:5000
+check localhost localhost/n localhost
+check upper Registry/o/n Registry
+check hub o/n ""
+check hub-library n ""
+check hub-dotted-name a.b ""
+
+if [ ${#failed[@]} -gt 0 ]; then
+    printf 'FAILED %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+echo ok

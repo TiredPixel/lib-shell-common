@@ -4,14 +4,16 @@ shopt -s inherit_errexit failglob
 
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
 
-# Docker's rule for an image name: its first path component is a registry host
-# only where it holds a . or a : or is localhost, and otherwise the image is on
-# Docker Hub, which docker login reaches by naming no server.
+# Docker's rule for an image name: in a name with a /, its first path component
+# is a registry host only where it holds a . or a :, is localhost or holds an
+# upper-case letter, and otherwise the image is on Docker Hub, which docker
+# login reaches by naming no server (splitDockerDomain in
+# distribution/reference's normalize.go, checked 2026-11).
 server=()
 case $REPO in
 */*)
     case ${REPO%%/*} in
-    *.* | *:* | localhost) server=("${REPO%%/*}") ;;
+    *.* | *:* | localhost | *[[:upper:]]*) server=("${REPO%%/*}") ;;
     esac
     ;;
 esac
