@@ -1,25 +1,25 @@
-# FROMFREEZE docker.io/library/debian:13
-# ARGFREEZE ACTIONLINT_SHA256_AMD64 sha256:https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_checksums.txt
-# ARGFREEZE ACTIONLINT_SHA256_ARM64 sha256:https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_arm64.tar.gz https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_checksums.txt
-# ARGFREEZE ACTIONLINT_VERSION github:rhysd/actionlint
-# ARGFREEZE CHECKMAKE_SHA256_AMD64 sha256:https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checkmake-v${CHECKMAKE_VERSION}.linux.amd64 https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checksums.txt
-# ARGFREEZE CHECKMAKE_SHA256_ARM64 sha256:https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checkmake-v${CHECKMAKE_VERSION}.linux.arm64 https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checksums.txt
-# ARGFREEZE CHECKMAKE_VERSION github:checkmake/checkmake
-# ARGFREEZE DOCKERFMT_SHA256_AMD64 sha256:https://github.com/reteps/dockerfmt/releases/download/v${DOCKERFMT_VERSION}/dockerfmt-v${DOCKERFMT_VERSION}-linux-amd64.tar.gz
-# ARGFREEZE DOCKERFMT_SHA256_ARM64 sha256:https://github.com/reteps/dockerfmt/releases/download/v${DOCKERFMT_VERSION}/dockerfmt-v${DOCKERFMT_VERSION}-linux-arm64.tar.gz
-# ARGFREEZE DOCKERFMT_VERSION github:reteps/dockerfmt
-# ARGFREEZE DOTENV_LINTER_SHA256_AMD64 sha256:https://github.com/dotenv-linter/dotenv-linter/releases/download/v${DOTENV_LINTER_VERSION}/dotenv-linter-linux-x86_64.tar.gz
-# ARGFREEZE DOTENV_LINTER_SHA256_ARM64 sha256:https://github.com/dotenv-linter/dotenv-linter/releases/download/v${DOTENV_LINTER_VERSION}/dotenv-linter-linux-aarch64.tar.gz
-# ARGFREEZE DOTENV_LINTER_VERSION github:dotenv-linter/dotenv-linter
-# ARGFREEZE HADOLINT_SHA256_AMD64 sha256:https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64 https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/checksums.sha256
-# ARGFREEZE HADOLINT_SHA256_ARM64 sha256:https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-arm64 https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/checksums.sha256
-# ARGFREEZE HADOLINT_VERSION github:hadolint/hadolint
-# ARGFREEZE MDFORMAT_FRONTMATTER_VERSION pypi:mdformat-frontmatter
-# ARGFREEZE MDFORMAT_GFM_VERSION pypi:mdformat-gfm
-# ARGFREEZE MDFORMAT_VERSION pypi:mdformat
-# ARGFREEZE YQ_SHA256_AMD64 sha256:https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64 https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/checksums-bsd
-# ARGFREEZE YQ_SHA256_ARM64 sha256:https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_arm64 https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/checksums-bsd
-# ARGFREEZE YQ_VERSION github:mikefarah/yq
+# TRACK FROM docker.io/library/debian:13
+# TRACK ARG ACTIONLINT_SHA256_AMD64 sha256:https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_checksums.txt
+# TRACK ARG ACTIONLINT_SHA256_ARM64 sha256:https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_arm64.tar.gz https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_checksums.txt
+# TRACK ARG ACTIONLINT_VERSION github:rhysd/actionlint
+# TRACK ARG CHECKMAKE_SHA256_AMD64 sha256:https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checkmake-v${CHECKMAKE_VERSION}.linux.amd64 https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checksums.txt
+# TRACK ARG CHECKMAKE_SHA256_ARM64 sha256:https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checkmake-v${CHECKMAKE_VERSION}.linux.arm64 https://github.com/checkmake/checkmake/releases/download/v${CHECKMAKE_VERSION}/checksums.txt
+# TRACK ARG CHECKMAKE_VERSION github:checkmake/checkmake
+# TRACK ARG DOCKERFMT_SHA256_AMD64 sha256:https://github.com/reteps/dockerfmt/releases/download/v${DOCKERFMT_VERSION}/dockerfmt-v${DOCKERFMT_VERSION}-linux-amd64.tar.gz
+# TRACK ARG DOCKERFMT_SHA256_ARM64 sha256:https://github.com/reteps/dockerfmt/releases/download/v${DOCKERFMT_VERSION}/dockerfmt-v${DOCKERFMT_VERSION}-linux-arm64.tar.gz
+# TRACK ARG DOCKERFMT_VERSION github:reteps/dockerfmt
+# TRACK ARG DOTENV_LINTER_SHA256_AMD64 sha256:https://github.com/dotenv-linter/dotenv-linter/releases/download/v${DOTENV_LINTER_VERSION}/dotenv-linter-linux-x86_64.tar.gz
+# TRACK ARG DOTENV_LINTER_SHA256_ARM64 sha256:https://github.com/dotenv-linter/dotenv-linter/releases/download/v${DOTENV_LINTER_VERSION}/dotenv-linter-linux-aarch64.tar.gz
+# TRACK ARG DOTENV_LINTER_VERSION github:dotenv-linter/dotenv-linter
+# TRACK ARG HADOLINT_SHA256_AMD64 sha256:https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64 https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/checksums.sha256
+# TRACK ARG HADOLINT_SHA256_ARM64 sha256:https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-arm64 https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/checksums.sha256
+# TRACK ARG HADOLINT_VERSION github:hadolint/hadolint
+# TRACK ARG MDFORMAT_FRONTMATTER_VERSION pypi:mdformat-frontmatter
+# TRACK ARG MDFORMAT_GFM_VERSION pypi:mdformat-gfm
+# TRACK ARG MDFORMAT_VERSION pypi:mdformat
+# TRACK ARG YQ_SHA256_AMD64 sha256:https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64 https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/checksums-bsd
+# TRACK ARG YQ_SHA256_ARM64 sha256:https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_arm64 https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/checksums-bsd
+# TRACK ARG YQ_VERSION github:mikefarah/yq
 #
 # dev copies nothing in, so make format runs it on the mounted tree; test adds
 # the tree for the gate. README.md, Building, describes both stages.

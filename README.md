@@ -9,12 +9,13 @@ Bash 4.4 or newer. Every executable script here opens `set -Eeuo pipefail` follo
 The scripts also run these, which a repository needs wherever it runs them:
 
 - `docker/`: git, and the docker CLI with BuildKit and Compose v2; `docker/upgrade` also runs `curl`, `sha256sum` and `timeout`
+- `github/`: git
 - `lint/`: ShellCheck and `file` for `lint/shell`; mikefarah's `yq` and `diff` for `lint/yaml-keys`
 - `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--wait` and `--wait-timeout` for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-create`
 - `ansible/`: ansible-lint, and `jq` for `ansible/inventory-ssh-known-hosts`
 - `terraform/`: Terraform
 
-An `ARGFREEZE` line with a `pypi:` or `npm:` source also needs `jq` where `docker/upgrade` runs.
+A `# TRACK ARG` line with a `pypi:` or `npm:` source also needs `jq` where `docker/upgrade` runs.
 
 Working on this repository needs:
 
@@ -49,21 +50,56 @@ It calls the scripts by path from its root, such as `lib/shell-common/docker/bui
 
 ## Upgrading the library
 
-A repository's `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile` and workflows. The first two lines make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
+A repository's `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile` and workflows, and commits the result in an `upgrade-post` target once its build and tests pass. The first two lines of `upgrade-pre` make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
 
 ```make
 upgrade-pre:
 	git submodule sync lib/shell-common
 	git submodule update --init --checkout lib/shell-common
 	cd lib/shell-common && git checkout latest && git pull --ff-only
-	lib/shell-common/docker/upgrade Dockerfile .github/workflows/*.yml
+	lib/shell-common/docker/upgrade --record tmp/upgrade.record Dockerfile .github/workflows/*.yml
+upgrade:
+	$(MAKE) upgrade-pre
+	$(MAKE) upgrade-post
+upgrade-post:
+	$(MAKE) build
+	$(MAKE) test
+	lib/shell-common/docker/upgrade-commit tmp/upgrade.record lib/shell-common
 ```
 
-`docker/upgrade` takes the `Dockerfile` to re-pin, `Dockerfile` by default, then the GitHub Actions workflows to re-pin with it; only workflows named are touched, so a repository with none, or one that does not pin its actions by SHA, names only the `Dockerfile`.
+`docker/upgrade` takes the `Dockerfile` to re-pin, `Dockerfile` by default, then the GitHub Actions workflows to re-pin with it; only workflows named are touched, so a repository with none names only the `Dockerfile`.
 
-In a named workflow, each `uses:` must already be pinned to a full commit SHA with the release tag as a comment, either on a line of its own directly above it at the same indent, as in `# vX.Y.Z` above `- uses: OWNER/REPO@<40-hex sha>`, which keeps the line within yamllint's default length, or at the end of the line, as in `uses: OWNER/REPO@<40-hex sha> # vX.Y.Z`. It moves to the commit of the action's latest release, and its comment to that release's tag where it stands. A `uses:` naming a tag rather than a commit, or with no tag comment or with both, fails the run until it is pinned by hand.
+A named workflow names the tag each action follows on a comment line at its top, as in `# TRACK USES actions/checkout@v7`, and every `uses:` of that action in the file, whatever it is pinned to, moves to the commit the tag names now. A `uses:` that no `TRACK USES` line covers is left alone, as is any other line that names no covered action. A covered `uses:` with a comment at its end, or a version comment such as `# v7.0.1` above it, fails the run, since the `TRACK USES` line already says what it follows.
 
-The `FROMFREEZE` and `ARGFREEZE` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and how to hold a version back, are described at the top of `docker/upgrade`.
+`docker/upgrade` never writes a live workflow: each one that moves is proposed as `.github/workflows.new/<name>` (*Approving workflows*), and the run is refused while a proposal for a named workflow is still pending.
+
+The `# TRACK FROM`, `# TRACK ARG` and `# TRACK USES` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and how to hold a version back, are described at the top of `docker/upgrade`. A `FROMFREEZE`, `ARGFREEZE` or `USESFREEZE` line left from before is refused: grep lists every one, as `FILE:LINE:TEXT`, to be renamed.
+
+With `--record`, `docker/upgrade` notes each file it wrote and each pin that moved. `docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with a line for each move as the body. It refuses where anything else is staged, commits nothing where nothing moved, and never pushes. `docker/upgrade` refuses to start while an earlier record is still there, or while the `Dockerfile` has changes not committed, since the commit takes each recorded file whole. Where the build or tests fail, fix them, then finish:
+
+```sh
+make upgrade-post
+```
+
+## Approving workflows
+
+GitHub refuses a push from an agent that touches `.github/workflows/`, so a change to a workflow is proposed as the whole file in `.github/workflows.new/`, which the lint covers as it does the live workflows. CI fails while a proposal is pending, through a step that runs `github/workflows-pending` and lists each pending file; a repository taking the library runs it as `lib/shell-common/github/workflows-pending`.
+
+`github/workflows-approve` shows each proposal as a diff against its live workflow, or as the whole file if it is new, and asks on the terminal whether to approve it. It moves each approved file into place, removes `.github/workflows.new/` once it is empty, commits only that move as `Approve workflow` or `Approve workflows`, with each path marked new or changed as the body, and pushes the current branch to origin. If the push fails, the commit stays, to be pushed by hand.
+
+It refuses before changing anything where nothing is pending, anything is already staged, a proposal is the same as its live workflow, a live workflow has local changes or is untracked, HEAD is detached, or there is no origin or terminal.
+
+It needs only bash and git, so it runs from anywhere in a fresh clone of the pushed branch, on any machine, with the proposal committed or only in the working tree. Here, it runs through make:
+
+```sh
+make workflows-approve
+```
+
+A repository taking the library runs it by path:
+
+```sh
+lib/shell-common/github/workflows-approve
+```
 
 ## Building and pushing images
 
@@ -176,10 +212,16 @@ make build
 
 ## Upgrading
 
-Base images are pinned by digest, tools not taken from Debian's packages by `ARG` and checked against a SHA-256 pinned beside each, and the workflow's actions by commit SHA. `make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `FROMFREEZE` or `ARGFREEZE` line, and each `uses:` in `.github/workflows/`, then builds and tests, so a bump that breaks the repository shows before it is committed:
+Base images are pinned by digest, tools not taken from Debian's packages by `ARG` and checked against a SHA-256 pinned beside each, and the workflow's actions by commit SHA. `make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` names on a `# TRACK USES` line, proposing re-pinned workflows in `.github/workflows.new/`, then builds, tests and commits the result as `Upgrade pins`, with a line for each move as the body, so a bump that breaks the repository shows before it is committed. It never pushes.
 
 ```sh
 make upgrade
+```
+
+Where the build or tests fail, fix them, then finish the upgrade:
+
+```sh
+make upgrade-post
 ```
 
 ## Licence

@@ -40,7 +40,7 @@ EOF
 chmod +x "$work/path/find"
 export PATH=$work/path:$PATH
 
-dirs=(ansible docker lint project terraform bin)
+dirs=(ansible docker github lint project terraform bin)
 
 # Makes a tree at $work/$1 with one bash script in each listed directory, a copy
 # of bin/files and an empty docker-compose.yml, and prints its path.
@@ -130,7 +130,7 @@ for d in "${dirs[@]}"; do
     FILES=$files check "missing-$d" "$t" 1 "" "bin/files: $d/ is missing"
 done
 
-for d in ansible docker lint project terraform; do
+for d in ansible docker github lint project terraform; do
     t=$(tree "no-scripts-$d")
     printf '#!/bin/sh\n' >"$t/$d/a"
     check "no-scripts-$d" "$t" 1 "" "bin/files: $d/ holds no bash script"

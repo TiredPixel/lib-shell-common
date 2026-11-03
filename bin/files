@@ -59,7 +59,7 @@ files_shell_in() {
 }
 
 shell_files=()
-for files_dir in ansible docker lint project terraform bin; do
+for files_dir in ansible docker github lint project terraform bin; do
     files_shell_in "$files_dir"
 done
 unset files_dir
