@@ -125,7 +125,7 @@ make build
 
 ## Upgrading
 
-Base images are pinned by digest, and tools not taken from Debian's packages by `ARG`. `make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `FROMFREEZE` or `ARGFREEZE` line, then builds and tests, so a bump that breaks the repository shows before it is committed:
+Base images are pinned by digest, tools not taken from Debian's packages by `ARG` and checked against a SHA-256 pinned beside each, and the workflow's actions by commit SHA. `make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `FROMFREEZE` or `ARGFREEZE` line, and each `uses:` in `.github/workflows/`, then builds and tests, so a bump that breaks the repository shows before it is committed:
 
 ```sh
 make upgrade
