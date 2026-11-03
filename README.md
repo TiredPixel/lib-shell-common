@@ -67,11 +67,13 @@ upgrade-post:
 	lib/shell-common/docker/upgrade-commit tmp/upgrade.record lib/shell-common
 ```
 
+The repository's `.gitignore` names `/tmp/`, where `upgrade-pre` writes the record, so the record is never committed.
+
 `docker/upgrade` takes the `Dockerfile` to re-pin, `Dockerfile` by default, then the GitHub Actions workflows to re-pin with it; only workflows named are touched, so a repository with none names only the `Dockerfile`.
 
 A named workflow names the tag each action follows on a comment line at its top, as in `# TRACK USES actions/checkout@v7`, and every `uses:` of that action in the file, whatever it is pinned to, moves to the commit the tag names now. A `uses:` that no `TRACK USES` line covers is left alone, as is any other line that names no covered action. A covered `uses:` with a comment at its end, or a version comment such as `# v7.0.1` above it, fails the run, since the `TRACK USES` line already says what it follows.
 
-`docker/upgrade` never writes a live workflow: each one that moves is proposed as `.github/workflows.new/<name>` (*Approving workflows*), and the run is refused while a proposal for a named workflow is still pending.
+`docker/upgrade` never writes a live workflow: each one that moves is proposed as `.github/workflows.new/<name>`, to be approved with `make workflows-approve` once the upgrade is committed (*Approving workflows*), and the run is refused while a proposal for a named workflow is still pending.
 
 The `# TRACK FROM`, `# TRACK ARG` and `# TRACK USES` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and how to hold a version back, are described at the top of `docker/upgrade`. A `FROMFREEZE`, `ARGFREEZE` or `USESFREEZE` line left from before is refused: grep lists every one, as `FILE:LINE:TEXT`, to be renamed.
 
@@ -83,22 +85,32 @@ make upgrade-post
 
 ## Approving workflows
 
-GitHub refuses a push from an agent that touches `.github/workflows/`, so a change to a workflow is proposed as the whole file in `.github/workflows.new/`, which the lint covers as it does the live workflows. CI fails while a proposal is pending, through a step that runs `github/workflows-pending` and lists each pending file; a repository taking the library runs it as `lib/shell-common/github/workflows-pending`.
+GitHub refuses a push from an agent that touches `.github/workflows/`, so a change to a workflow is proposed as the whole file in `.github/workflows.new/`, which the lint covers as it does the live workflows. CI fails while a proposal is pending, through a step that runs `github/workflows-pending` and lists each pending file. A repository taking the library runs it after a checkout that takes submodules, since without them `lib/shell-common` is an empty directory:
+
+```yaml
+- uses: actions/checkout@SHA
+  with:
+    submodules: true
+- name: Check no workflow is pending
+  run: |
+    lib/shell-common/github/workflows-pending
+```
 
 `github/workflows-approve` shows each proposal as a diff against its live workflow, or as the whole file if it is new, and asks on the terminal whether to approve it. It moves each approved file into place, removes `.github/workflows.new/` once it is empty, commits only that move as `Approve workflow` or `Approve workflows`, with each path marked new or changed as the body, and pushes the current branch to origin. If the push fails, the commit stays, to be pushed by hand.
 
 It refuses before changing anything where nothing is pending, a proposal is not named `[A-Za-z0-9_][A-Za-z0-9._-]*.yml` or `.yaml`, anything is already staged, a proposal is the same as its live workflow, a live workflow has local changes or is untracked, HEAD is detached, or there is no origin or terminal.
 
-It needs only bash and git, so it runs from anywhere in a fresh clone of the pushed branch, on any machine, with the proposal committed or only in the working tree. Here, it runs through make:
+It needs only bash and git, so it runs from anywhere in a fresh clone of the pushed branch, on any machine, with the proposal committed or only in the working tree. A repository's `Makefile` runs it in a `workflows-approve` target, on the host rather than in an image, since it asks on the terminal and pushes:
+
+```make
+workflows-approve:
+	lib/shell-common/github/workflows-approve
+```
+
+Here, the target runs `github/workflows-approve`:
 
 ```sh
 make workflows-approve
-```
-
-A repository taking the library runs it by path:
-
-```sh
-lib/shell-common/github/workflows-approve
 ```
 
 ## Building and pushing images
