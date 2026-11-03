@@ -8,7 +8,7 @@ Bash 4.4 or newer. Every executable script here opens `set -Eeuo pipefail` follo
 
 The scripts also run these, which a repository needs wherever it runs them:
 
-- `docker/`: git, and the docker CLI with BuildKit and Compose v2; `docker/upgrade` also runs `curl`
+- `docker/`: git, and the docker CLI with BuildKit and Compose v2; `docker/upgrade` also runs `curl`, `sha256sum` and `timeout`
 - `lint/`: ShellCheck and `file` for `lint/shell`; mikefarah's `yq` and `diff` for `lint/yaml-keys`
 - `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run; `script` for `project/upgrade`; `tput`, where present, for the width of `project/echo-line`'s rule
 - `ansible/`: ansible-lint, and `jq` for `ansible/inventory-ssh-known-hosts`
@@ -49,17 +49,21 @@ It calls the scripts by path from its root, such as `lib/shell-common/docker/bui
 
 ## Upgrading the library
 
-A repository's `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile`. The first two lines make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
+A repository's `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile` and workflows. The first two lines make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
 
 ```make
 upgrade-pre:
 	git submodule sync lib/shell-common
 	git submodule update --init --checkout lib/shell-common
 	cd lib/shell-common && git checkout latest && git pull --ff-only
-	lib/shell-common/docker/upgrade
+	lib/shell-common/docker/upgrade Dockerfile .github/workflows/*.yml
 ```
 
-The `FROMFREEZE` and `ARGFREEZE` lines `docker/upgrade` reads, and how to hold a version back, are described at the top of `docker/upgrade`.
+`docker/upgrade` takes the `Dockerfile` to re-pin, `Dockerfile` by default, then the GitHub Actions workflows to re-pin with it; only workflows named are touched, so a repository with none, or one that does not pin its actions by SHA, names only the `Dockerfile`.
+
+In a named workflow, each `uses:` must already be pinned to a full commit SHA with the release tag as a comment, either on a line of its own directly above it at the same indent, as in `# vX.Y.Z` above `- uses: OWNER/REPO@<40-hex sha>`, which keeps the line within yamllint's default length, or at the end of the line, as in `uses: OWNER/REPO@<40-hex sha> # vX.Y.Z`. It moves to the commit of the action's latest release, and its comment to that release's tag where it stands. A `uses:` naming a tag rather than a commit, or with no tag comment or with both, fails the run until it is pinned by hand.
+
+The `FROMFREEZE` and `ARGFREEZE` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and how to hold a version back, are described at the top of `docker/upgrade`.
 
 ## Building and pushing images
 

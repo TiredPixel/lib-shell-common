@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 #
-# Tests docker/upgrade on Dockerfiles in a scratch directory, with docker and
-# curl faked on PATH, so nothing is pulled or fetched: the fake docker answers
-# every pull and gives each image the digest FAKE_DIGEST names, and the fake
-# curl, naming each URL it is given on stderr, answers every /releases/latest
-# with the redirect FAKE_REDIRECT names, every PyPI JSON lookup with FAKE_PYPI
-# and every npm /latest lookup with FAKE_NPM. FAKE_PULL=fail and FAKE_CURL=fail
-# make each fail as the real one would.
+# Tests docker/upgrade on Dockerfiles and workflows in a scratch directory, with
+# docker, curl and git faked on PATH, so nothing is pulled or fetched. Each fake
+# refuses, with exit 2, any arguments but the exact ones upgrade should give it,
+# and names on stderr what it pulls or fetches. The fake docker answers every
+# pull and gives the image it last pulled, and no other, the digest FAKE_DIGEST
+# names. The fake curl answers every /releases/latest with the redirect
+# FAKE_REDIRECT names, every PyPI JSON lookup with FAKE_PYPI, every npm /latest
+# lookup with FAKE_NPM and every https://dl.test/PATH with the file PATH under
+# FAKE_FILES, or a 404 where there is none. The fake git answers ls-remote, run
+# under timeout with no prompt, with FAKE_LS_REMOTE. FAKE_PULL=fail,
+# FAKE_CURL=fail and FAKE_GIT=fail make each fail as the real one would, and
+# FAKE_GIT=timeout exits silently with timeout's 124. A fake mktemp fails for
+# the template FAKE_MKTEMP_FAIL names, and otherwise runs the real one.
 #
 # Run: docker/upgrade.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -21,16 +27,21 @@ cat >"$work/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
-case $1 in
-pull)
+if [ $# = 2 ] && [ "$1" = pull ]; then
+    echo "fake docker: pull $2" >&2
+    printf '%s' "$2" >"$FAKE_PULLED"
     if [ "${FAKE_PULL:-}" = fail ]; then
         echo "fake docker: pull $2 failed" >&2
         exit 1
     fi
-    ;;
-inspect) echo "${3%:*}@$FAKE_DIGEST" ;;
-*) exit 2 ;;
-esac
+elif [ $# = 3 ] && [ "$1" = inspect ] &&
+    [ "$2" = '--format={{index .RepoDigests 0}}' ] &&
+    [ -f "$FAKE_PULLED" ] && [ "$3" = "$(<"$FAKE_PULLED")" ]; then
+    echo "${3%:*}@$FAKE_DIGEST"
+else
+    echo "fake docker: unexpected arguments: $*" >&2
+    exit 2
+fi
 EOF
 cat >"$work/bin/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -38,42 +49,119 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 url=${!#}
 echo "fake curl: $url" >&2
+bound=(--connect-timeout 10 --max-time 60)
+case $url in
+https://github.com/*/releases/latest)
+    want=("${bound[@]}" -fsS -o /dev/null -w '%{redirect_url}' "$url")
+    body=${FAKE_REDIRECT:-}
+    ;;
+https://pypi.org/pypi/*/json)
+    want=("${bound[@]}" -fsSL "$url")
+    body=${FAKE_PYPI:-}
+    ;;
+https://registry.npmjs.org/*/latest)
+    want=("${bound[@]}" -fsS "$url")
+    body=${FAKE_NPM:-}
+    ;;
+https://dl.test/*)
+    want=("${bound[@]}" -fsSL "$url")
+    path=$FAKE_FILES/${url#https://dl.test/}
+    ;;
+*)
+    echo "fake curl: unexpected URL" >&2
+    exit 2
+    ;;
+esac
+if [ "$(printf '%q ' "$@")" != "$(printf '%q ' "${want[@]}")" ]; then
+    echo "fake curl: unexpected arguments: $*" >&2
+    exit 2
+fi
 if [ "${FAKE_CURL:-}" = fail ]; then
     host=${url#https://}
     echo "curl: (6) Could not resolve host: ${host%%/*}" >&2
     exit 6
 fi
-case $url in
-https://github.com/*/releases/latest) printf '%s' "${FAKE_REDIRECT:-}" ;;
-https://pypi.org/pypi/*/json) printf '%s' "${FAKE_PYPI:-}" ;;
-https://registry.npmjs.org/*/latest) printf '%s' "${FAKE_NPM:-}" ;;
-*) exit 2 ;;
-esac
+if [ -n "${path:-}" ]; then
+    if ! [ -f "$path" ]; then
+        echo "curl: (22) The requested URL returned error: 404" >&2
+        exit 22
+    fi
+    cat -- "$path"
+else
+    printf '%s' "$body"
+fi
 EOF
-chmod +x "$work/bin/docker" "$work/bin/curl"
+cat >"$work/bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+echo "fake git: $*" >&2
+if [ $# != 5 ] || [ "$1" != ls-remote ] || [ "$2" != --tags ] ||
+    [[ "$3" != https://github.com/*/* ]] || [[ "$4" != refs/tags/* ]] ||
+    [ "$5" != "$4^{}" ] || [ "${GIT_TERMINAL_PROMPT:-}" != 0 ] ||
+    [ "$(</proc/$PPID/comm)" != timeout ]; then
+    echo "fake git: unexpected arguments or environment" >&2
+    exit 2
+fi
+case ${FAKE_GIT:-} in
+fail)
+    echo "fatal: unable to access '$3/': Could not resolve host: github.com" >&2
+    exit 128
+    ;;
+timeout) exit 124 ;;
+esac
+printf '%s' "$FAKE_LS_REMOTE"
+EOF
+cat >"$work/bin/mktemp" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ "\$*" = "\${FAKE_MKTEMP_FAIL:-}" ]; then
+    echo "mktemp: failed to create file via template '\$*': No space left on device" >&2
+    exit 1
+fi
+exec "$(command -v mktemp)" "\$@"
+EOF
+chmod +x "$work/bin/docker" "$work/bin/curl" "$work/bin/git" "$work/bin/mktemp"
+mkdir "$work/files"
 
 old=sha256:$(printf '0%.0s' {1..64})
 new=sha256:$(printf 'a%.0s' {1..64})
 export FAKE_DIGEST=$new
+export FAKE_PULLED=$work/pulled
 export FAKE_REDIRECT=https://github.com/o/p/releases/tag/v1.2.3
 export FAKE_PYPI='{"info": {"name": "m-d", "version": "2.0.1"}}'
 export FAKE_NPM='{"name": "n-d", "version": "3.4.5"}'
+export FAKE_FILES=$work/files
+c1=$(printf '1%.0s' {1..40})
+c2=$(printf '2%.0s' {1..40})
+c3=$(printf '3%.0s' {1..40})
+export FAKE_LS_REMOTE=$c2$'\trefs/tags/v1.2.3\n'
 export PATH=$work/bin:$PATH
+
+forms="NAME github:OWNER/PROJECT, NAME pypi:PACKAGE, NAME npm:PACKAGE or"
+forms+=" NAME sha256:ASSET_URL [CHECKSUMS_URL]"
+sources="github:OWNER/PROJECT, pypi:PACKAGE, npm:PACKAGE or"
+sources+=" sha256:ASSET_URL [CHECKSUMS_URL]"
 
 failed=()
 
 # Runs upgrade on a Dockerfile holding $2, and checks its status is $3, its
 # stderr holds $4 where that is not empty, and the file afterwards is $5, which
-# is $2 when the run must change nothing.
+# is $2 when the run must change nothing. Where $6 is given, stderr must not
+# hold it.
 check() {
-    local name=$1 before=$2 status=$3 said=$4 after=$5 rc=0
+    local name=$1 before=$2 status=$3 said=$4 after=$5 unsaid=${6:-} rc=0
     local file=$work/$name.Dockerfile
     printf '%s' "$before" >"$file"
+    rm -f -- "$FAKE_PULLED"
     "$upgrade" "$file" >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         failed+=("$name: exit $rc, not $status: $(<"$work/err")")
     elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
         failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+    elif [ -n "$unsaid" ] && grep -qF -- "$unsaid" "$work/err"; then
+        failed+=("$name: stderr holds '$unsaid': $(<"$work/err")")
     elif [ "$(<"$file")" != "$after" ]; then
         failed+=("$name: the file is now: $(<"$file")")
     fi
@@ -108,15 +196,15 @@ FAKE_REDIRECT=https://github.com/o/p/releases/tag/0.16.9 check arg-unprefixed-ta
     $'# ARGFREEZE V github:o/p\nARG V=0.1\n' 0 "" $'# ARGFREEZE V github:o/p\nARG V=0.16.9'
 
 check arg-bad-form $'# ARGFREEZE V\nARG V=1\n' 1 \
-    "is not NAME github:OWNER/PROJECT, NAME pypi:PACKAGE or NAME npm:PACKAGE" \
+    "is not $forms" \
     $'# ARGFREEZE V\nARG V=1'
 
 check arg-bad-name $'# ARGFREEZE 1V github:o/p\nARG V=1\n' 1 \
-    "is not NAME github:OWNER/PROJECT, NAME pypi:PACKAGE or NAME npm:PACKAGE" \
+    "is not $forms" \
     $'# ARGFREEZE 1V github:o/p\nARG V=1'
 
 check arg-bad-source $'# ARGFREEZE V gitlab:o/p\nARG V=1\n' 1 \
-    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V gitlab:o/p\nARG V=1'
+    "is not $sources" $'# ARGFREEZE V gitlab:o/p\nARG V=1'
 
 check arg-names-nothing $'# ARGFREEZE V github:o/p\nARG W=1\n' 1 "names no ARG V line" \
     $'# ARGFREEZE V github:o/p\nARG W=1'
@@ -158,10 +246,10 @@ FAKE_PYPI='{"info": {"version": "!2.0"}}' check pypi-bare-epoch-mark \
     $'# ARGFREEZE V pypi:m-d\nARG V=1'
 
 check pypi-bad-source $'# ARGFREEZE V pypi:o/p\nARG V=1\n' 1 \
-    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V pypi:o/p\nARG V=1'
+    "is not $sources" $'# ARGFREEZE V pypi:o/p\nARG V=1'
 
 check pypi-empty-package $'# ARGFREEZE V pypi:\nARG V=1\n' 1 \
-    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V pypi:\nARG V=1'
+    "is not $sources" $'# ARGFREEZE V pypi:\nARG V=1'
 
 FAKE_CURL=fail check pypi-lookup-fails $'# ARGFREEZE V pypi:m-d\nARG V=1\n' 6 \
     "Could not resolve host: pypi.org" $'# ARGFREEZE V pypi:m-d\nARG V=1'
@@ -187,13 +275,13 @@ check npm-scoped $'# ARGFREEZE V npm:@s/n.d\nARG V=1\n' \
     0 "fake curl: https://registry.npmjs.org/@s/n.d/latest" $'# ARGFREEZE V npm:@s/n.d\nARG V=3.4.5'
 
 check npm-upper-case $'# ARGFREEZE V npm:N\nARG V=1\n' 1 \
-    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V npm:N\nARG V=1'
+    "is not $sources" $'# ARGFREEZE V npm:N\nARG V=1'
 
 check npm-empty-scope $'# ARGFREEZE V npm:@s/\nARG V=1\n' 1 \
-    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V npm:@s/\nARG V=1'
+    "is not $sources" $'# ARGFREEZE V npm:@s/\nARG V=1'
 
 check npm-empty-package $'# ARGFREEZE V npm:\nARG V=1\n' 1 \
-    "is not github:OWNER/PROJECT, pypi:PACKAGE or npm:PACKAGE" $'# ARGFREEZE V npm:\nARG V=1'
+    "is not $sources" $'# ARGFREEZE V npm:\nARG V=1'
 
 FAKE_CURL=fail check npm-lookup-fails $'# ARGFREEZE V npm:n-d\nARG V=1\n' 6 \
     "Could not resolve host: registry.npmjs.org" $'# ARGFREEZE V npm:n-d\nARG V=1'
@@ -221,6 +309,394 @@ FAKE_PYPI='{"info": {}}' check nothing-written-on-pypi-failure \
 FAKE_NPM='{}' check nothing-written-on-npm-failure \
     $'# ARGFREEZE W pypi:m-d\n# ARGFREEZE V npm:n-d\nARG W=1\nARG V=1\n' 1 "" \
     $'# ARGFREEZE W pypi:m-d\n# ARGFREEZE V npm:n-d\nARG W=1\nARG V=1'
+
+check from-blanks-before-as $'# FROMFREEZE r/x:1\nFROM r/x:1\tAS a\nFROM r/x:1  AS b\n' 0 "" \
+    $'# FROMFREEZE r/x:1\nFROM r/x@'"$new"$'\tAS a\nFROM r/x@'"$new"$'  AS b'
+
+check from-registry-port $'# FROMFREEZE localhost:5000/x:1\nFROM localhost:5000/x:1 AS a\n' \
+    0 "fake docker: pull localhost:5000/x:1" $'# FROMFREEZE localhost:5000/x:1\nFROM localhost:5000/x@'"$new"$' AS a'
+
+check from-port-no-tag $'# FROMFREEZE localhost:5000/x\nFROM localhost:5000/x:1\n' 1 \
+    "FROMFREEZE localhost:5000/x is not REPO:TAG" $'# FROMFREEZE localhost:5000/x\nFROM localhost:5000/x:1'
+
+# The second FROM names x on the registry at localhost, not localhost itself.
+check from-repo-on-host $'# FROMFREEZE localhost:1\nFROM localhost:1\nFROM localhost:5000/x:1\n' 0 "" \
+    $'# FROMFREEZE localhost:1\nFROM localhost@'"$new"$'\nFROM localhost:5000/x:1'
+
+check from-pinned-twice $'# FROMFREEZE r/x:1\n# FROMFREEZE r/x:2\nFROM r/x:1\n' 1 \
+    "FROMFREEZE r/x is pinned twice" $'# FROMFREEZE r/x:1\n# FROMFREEZE r/x:2\nFROM r/x:1'
+
+# The first FROM r/x:1 continues the RUN before it, so it is no instruction.
+check from-in-continuation $'# FROMFREEZE r/x:1\nRUN echo \\\nFROM r/x:1\nFROM r/x:1\n' 0 "" \
+    $'# FROMFREEZE r/x:1\nRUN echo \\\nFROM r/x:1\nFROM r/x@'"$new"
+
+check arg-pinned-twice $'# ARGFREEZE V github:o/p\n# ARGFREEZE V pypi:m-d\nARG V=1\n' 1 \
+    "ARGFREEZE V is pinned twice" $'# ARGFREEZE V github:o/p\n# ARGFREEZE V pypi:m-d\nARG V=1'
+
+check arg-any-case $'# ARGFREEZE V github:o/p\nARG V=1\narg V=1\nArg V=1\n' 0 "" \
+    $'# ARGFREEZE V github:o/p\nARG V=1.2.3\narg V=1.2.3\nArg V=1.2.3'
+
+check arg-lower-case-beside-another $'# ARGFREEZE V github:o/p\nARG V=1\narg W=2 V=1\n' 1 \
+    "line 3 is not ARG V=VALUE" $'# ARGFREEZE V github:o/p\nARG V=1\narg W=2 V=1'
+
+check arg-continued $'# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 \\\n    V=1\n' 1 \
+    "line 3 is not ARG V=VALUE" $'# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 \\\n    V=1'
+
+check arg-continued-blanks-after $'# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 \\ \t\nV=1\n' 1 \
+    "line 3 is not ARG V=VALUE" $'# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 \\ \t\nV=1'
+
+check arg-continued-over-comment $'# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 \\\n  # V\n\n V=1\n' 1 \
+    "line 3 is not ARG V=VALUE" $'# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 \\\n  # V\n\n V=1'
+
+check arg-continued-at-end $'# ARGFREEZE V github:o/p\nARG V=1 \\\n' 1 \
+    "line 2 is not ARG V=VALUE" $'# ARGFREEZE V github:o/p\nARG V=1 \\'
+
+# A continued ARG naming only others is left alone, and an ARG V=1 continuing
+# a RUN is no instruction.
+check arg-continued-elsewhere $'# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 \\\n    X=2\nRUN echo \\\nARG V=1\n' \
+    0 "" $'# ARGFREEZE V github:o/p\nARG V=1.2.3\nARG W=1 \\\n    X=2\nRUN echo \\\nARG V=1'
+
+check escape-backtick $'# syntax=docker/dockerfile:1\n# escape=`\n# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 `\n V=1\n' \
+    1 "line 5 is not ARG V=VALUE" \
+    $'# syntax=docker/dockerfile:1\n# escape=`\n# ARGFREEZE V github:o/p\nARG V=1\nARG W=1 `\n V=1'
+
+# With ` the escape character, a line ending in \ is not continued.
+check escape-backtick-loosely $'#  ESCAPE = `  \n# ARGFREEZE V github:o/p\nRUN echo \\\nARG V=1\n' 0 "" \
+    $'#  ESCAPE = `  \n# ARGFREEZE V github:o/p\nRUN echo \\\nARG V=1.2.3'
+
+check escape-after-comment $'# ARGFREEZE V github:o/p\n# escape=`\nARG V=1\nARG W=1 \\\n V=1\n' 1 \
+    "line 4 is not ARG V=VALUE" $'# ARGFREEZE V github:o/p\n# escape=`\nARG V=1\nARG W=1 \\\n V=1'
+
+check escape-after-unknown $'# unknown=x\n# escape=`\n# ARGFREEZE V github:o/p\nRUN echo \\\nARG V=1\nARG V=1\n' \
+    0 "" $'# unknown=x\n# escape=`\n# ARGFREEZE V github:o/p\nRUN echo \\\nARG V=1\nARG V=1.2.3'
+
+check escape-twice $'# escape=`\n# escape=`\n# ARGFREEZE V github:o/p\nARG V=1\n' 1 \
+    "the escape directive appears twice" $'# escape=`\n# escape=`\n# ARGFREEZE V github:o/p\nARG V=1'
+
+check escape-bad $'# escape=x\n# ARGFREEZE V github:o/p\nARG V=1\n' 1 \
+    "escape directive x is not \\ or \`" $'# escape=x\n# ARGFREEZE V github:o/p\nARG V=1'
+
+check arg-continued-no-blank $'# ARGFREEZE V github:o/p\nARG V=1\\\n  W=2\n' 1 \
+    "line 2 is not ARG V=VALUE" $'# ARGFREEZE V github:o/p\nARG V=1\\\n  W=2'
+
+# The escape character, and whatever follows the reference before it, stays.
+check from-continued $'# FROMFREEZE r/x:1\nFROM r/x:1\\\n  AS a\nFROM r/x:1 AS b \\ \n\n  # c\n  AS b\n' 0 "" \
+    $'# FROMFREEZE r/x:1\nFROM r/x@'"$new"$'\\\n  AS a\nFROM r/x@'"$new"$' AS b \\ \n\n  # c\n  AS b'
+
+check from-reference-split $'# FROMFREEZE r/x:1\nFROM r/x:\\\n1\n' 1 \
+    "line 2 is not FROM r/x:TAG or FROM r/x@DIGEST" $'# FROMFREEZE r/x:1\nFROM r/x:\\\n1'
+
+# Joined, the reference runs on into AS.
+check from-reference-joined $'# FROMFREEZE r/x:1\nFROM r/x:1\\\nAS a\n' 1 \
+    "line 2 is not FROM r/x:TAG or FROM r/x@DIGEST" $'# FROMFREEZE r/x:1\nFROM r/x:1\\\nAS a'
+
+check from-after-escape $'# FROMFREEZE r/x:1\nFROM \\\n  r/x:1\n' 1 \
+    "line 2 is not FROM r/x:TAG or FROM r/x@DIGEST" $'# FROMFREEZE r/x:1\nFROM \\\n  r/x:1'
+
+check from-any-case $'# FROMFREEZE r/x:1\nfrom r/x:1\nFrom r/x:1 AS a\n' 0 "" \
+    $'# FROMFREEZE r/x:1\nfrom r/x@'"$new"$'\nFrom r/x@'"$new"$' AS a'
+
+check from-indented $'# FROMFREEZE r/x:1\nFROM r/x:1\n  FROM r/x:1\n' 1 \
+    "line 3 is not FROM r/x:TAG or FROM r/x@DIGEST" $'# FROMFREEZE r/x:1\nFROM r/x:1\n  FROM r/x:1'
+
+check from-untagged $'# FROMFREEZE r/x:1\nFROM r/x:1\nFROM r/x AS dev\n' 1 \
+    "line 3 is not FROM r/x:TAG or FROM r/x@DIGEST" $'# FROMFREEZE r/x:1\nFROM r/x:1\nFROM r/x AS dev'
+
+check from-flag $'# FROMFREEZE r/x:1\nFROM --platform=linux/amd64 r/x:1\n' 1 \
+    "line 2 is not FROM r/x:TAG or FROM r/x@DIGEST" $'# FROMFREEZE r/x:1\nFROM --platform=linux/amd64 r/x:1'
+
+# A flag naming no image, and a FROM naming another, are passed over.
+check from-others $'# FROMFREEZE r/x:1\nFROM --platform=x\nFROM --platform=x r/y:1\nRUN echo r/x:1\nFROM r/x:1\n' 0 "" \
+    $'# FROMFREEZE r/x:1\nFROM --platform=x\nFROM --platform=x r/y:1\nRUN echo r/x:1\nFROM r/x@'"$new"
+
+# Each refusal comes before any pin is looked up.
+check from-pinned-twice-early $'# FROMFREEZE r/x:1\n# FROMFREEZE r/y:1\n# FROMFREEZE r/x:2\nFROM r/x:1\nFROM r/y:1\n' 1 \
+    "FROMFREEZE r/x is pinned twice" \
+    $'# FROMFREEZE r/x:1\n# FROMFREEZE r/y:1\n# FROMFREEZE r/x:2\nFROM r/x:1\nFROM r/y:1' "fake docker:"
+
+check arg-pinned-twice-early $'# ARGFREEZE V github:o/p\n# ARGFREEZE W github:o/p\n# ARGFREEZE V github:o/q\nARG V=1\nARG W=1\n' 1 \
+    "ARGFREEZE V is pinned twice" \
+    $'# ARGFREEZE V github:o/p\n# ARGFREEZE W github:o/p\n# ARGFREEZE V github:o/q\nARG V=1\nARG W=1' "fake curl:"
+
+check arg-names-nothing-early $'# FROMFREEZE r/x:1\n# ARGFREEZE V github:o/p\nFROM r/x:1\n' 1 \
+    "names no ARG V line" $'# FROMFREEZE r/x:1\n# ARGFREEZE V github:o/p\nFROM r/x:1' "fake docker:"
+
+# A heredoc's body, pins included, is no instruction.
+check heredoc $'# ARGFREEZE V github:o/p\nARG V=1\nRUN <<EOF\narg V=1\n# ARGFREEZE W github:o/p\nEOF\nARG V=1\n' 0 "" \
+    $'# ARGFREEZE V github:o/p\nARG V=1.2.3\nRUN <<EOF\narg V=1\n# ARGFREEZE W github:o/p\nEOF\nARG V=1.2.3'
+
+check heredoc-several $'# ARGFREEZE V github:o/p\ncopy <<-"A" 2<<\'B\' \\\n  /d/\n\tARG V=1\n\tA\nARG V=1\nB\nADD <<C /f\n EOF\nC\nARG V=1\n' 0 "" \
+    $'# ARGFREEZE V github:o/p\ncopy <<-"A" 2<<\'B\' \\\n  /d/\n\tARG V=1\n\tA\nARG V=1\nB\nADD <<C /f\n EOF\nC\nARG V=1.2.3'
+
+# Without <<-, a tab before the delimiter keeps it in the body.
+check heredoc-tab-kept $'# ARGFREEZE V github:o/p\nRUN <<EOF\n\tEOF\nARG V=1\nEOF\nARG V=1\n' 0 "" \
+    $'# ARGFREEZE V github:o/p\nRUN <<EOF\n\tEOF\nARG V=1\nEOF\nARG V=1.2.3'
+
+# A quoted <<, one in another instruction and one with no delimiter open no
+# heredoc.
+check heredoc-not $'# ARGFREEZE V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1\nCMD cat <<EOF\nARG V=1\n' 0 "" \
+    $'# ARGFREEZE V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1.2.3\nCMD cat <<EOF\nARG V=1.2.3'
+
+check heredoc-unended $'# ARGFREEZE V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1\n' 1 \
+    "a heredoc's body has no end line EOF" $'# ARGFREEZE V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1'
+
+hash() {
+    local sum
+    sum=$(printf '%s' "$1" | sha256sum)
+    printf '%s' "${sum%% *}"
+}
+mkdir "$work/files/v1.2.3" "$work/files/v0.9" "$work/files/va&b"
+printf 'tool' >"$work/files/v1.2.3/t_1.2.3_linux"
+printf 'old tool' >"$work/files/v0.9/t_0.9_linux"
+printf 'old tool' >"$work/files/va&b/t_a&b_linux"
+ht=$(hash tool)
+hu=$(hash 'old tool')
+hx=$(printf 'c%.0s' {1..64})
+hy=$(printf 'd%.0s' {1..64})
+sums=$work/files/v1.2.3/sums
+
+# A sha256 pin before the version pin its URLs name, which resolves first.
+pins=$'# ARGFREEZE H sha256:https://dl.test/v${V}/t_${V}_linux https://dl.test/v${V}/sums\n# ARGFREEZE V github:o/p\n'
+before=$pins$'ARG V=1.0.0\nARG H='"$hy"
+pinned() {
+    printf '%s' "$pins"$'ARG V=1.2.3\nARG H='"$1"
+}
+
+printf '%s  t_1.2.3_darwin\n%s  t_1.2.3_linux\n%s  t_1.2.3_linux.sig\n%s  xt_1.2.3_linux\n' \
+    "$hy" "$hx" "$hy" "$hy" >"$sums"
+check sum-gnu "$before" 0 "fake curl: https://dl.test/v1.2.3/sums" "$(pinned "$hx")"
+
+printf '%s *t_1.2.3_linux\n' "$hx" >"$sums"
+check sum-gnu-binary "$before" 0 "" "$(pinned "$hx")"
+
+printf '%s  ./dist/t_1.2.3_linux\n' "$hx" >"$sums"
+check sum-gnu-path "$before" 0 "" "$(pinned "$hx")"
+
+printf 'MD5 (t_1.2.3_linux) = %s\nSHA256 (t_1.2.3_darwin) = %s\nSHA256 (t_1.2.3_linux) = %s\nSHA512 (t_1.2.3_linux) = %s%s\n' \
+    "${hy:0:32}" "$hy" "$hx" "$hy" "$hy" >"$sums"
+check sum-bsd "$before" 0 "" "$(pinned "$hx")"
+
+printf '%s  t_1.2.3_linux\n' "${ht^^}" >"$sums"
+check sum-upper-case "$before" 0 "" "$(pinned "$ht")"
+
+printf '%s  t_1.2.3_linux\nSHA256 (dist/t_1.2.3_linux) = %s\n' "$hx" "$hx" >"$sums"
+check sum-listed-twice "$before" 0 "" "$(pinned "$hx")"
+
+# A single space before the name is neither GNU's form nor BSD's.
+printf '%s t_1.2.3_linux\nSHA1 (t_1.2.3_linux) = %s\n%s  t_1.2.3_linux.sig\n' "$hx" "${hx:0:40}" "$hx" >"$sums"
+check sum-missing "$before" 1 "ARGFREEZE H: https://dl.test/v1.2.3/sums gives no SHA-256 for t_1.2.3_linux" "$before"
+
+printf '%s  t_1.2.3_linux\n%s  a/t_1.2.3_linux\n' "$hx" "$hy" >"$sums"
+check sum-differing "$before" 1 "gives t_1.2.3_linux different SHA-256s, $hx $hy" "$before"
+
+rm -- "$sums"
+check sum-fetch-fails "$before" 22 "returned error: 404" "$before"
+
+check hash-download $'# ARGFREEZE H sha256:https://dl.test/v${V}/t_${V}_linux\n# ARGFREEZE V github:o/p\nARG V=1\nARG H='"$hy"$'\n' \
+    0 "fake curl: https://dl.test/v1.2.3/t_1.2.3_linux" \
+    $'# ARGFREEZE H sha256:https://dl.test/v${V}/t_${V}_linux\n# ARGFREEZE V github:o/p\nARG V=1.2.3\nARG H='"$ht"
+
+check hash-download-fails $'# ARGFREEZE H sha256:https://dl.test/v1/t\nARG H='"$hy"$'\n' 22 "returned error: 404" \
+    $'# ARGFREEZE H sha256:https://dl.test/v1/t\nARG H='"$hy"
+
+# An ARG nothing pins keeps its value, which the URL takes.
+check hash-unpinned-var $'# ARGFREEZE H sha256:https://dl.test/v${W}/t_${W}_linux\nARG W=0.9\nARG H='"$hy"$'\nARG W=0.9\n' 0 "" \
+    $'# ARGFREEZE H sha256:https://dl.test/v${W}/t_${W}_linux\nARG W=0.9\nARG H='"$hu"$'\nARG W=0.9'
+
+# An & in the value is taken as it is, not as the ${VAR} it replaces.
+check hash-var-ampersand $'# ARGFREEZE H sha256:https://dl.test/v${W}/t_${W}_linux\nARG W=a&b\nARG H='"$hy"$'\n' 0 \
+    "fake curl: https://dl.test/va&b/t_a&b_linux" \
+    $'# ARGFREEZE H sha256:https://dl.test/v${W}/t_${W}_linux\nARG W=a&b\nARG H='"$hu"
+
+check hash-var-names-nothing $'# ARGFREEZE H sha256:https://dl.test/${X}\nARG H=1\n' 1 \
+    "ARGFREEZE H: \${X} names no ARG X line" $'# ARGFREEZE H sha256:https://dl.test/${X}\nARG H=1' "fake curl:"
+
+check hash-var-differing $'# ARGFREEZE H sha256:https://dl.test/${W}\nARG H=1\nARG W=1\nARG W=2\n' 1 \
+    "ARGFREEZE H: \${W}: its ARG lines hold different values, 1 2" \
+    $'# ARGFREEZE H sha256:https://dl.test/${W}\nARG H=1\nARG W=1\nARG W=2'
+
+check hash-var-is-hash $'# ARGFREEZE H sha256:https://dl.test/${G}\n# ARGFREEZE G sha256:https://dl.test/g\nARG H=1\nARG G=1\n' 1 \
+    "ARGFREEZE H: \${G} is itself a sha256 pin" \
+    $'# ARGFREEZE H sha256:https://dl.test/${G}\n# ARGFREEZE G sha256:https://dl.test/g\nARG H=1\nARG G=1' "fake curl:"
+
+check hash-bare-dollar $'# ARGFREEZE V github:o/p\n# ARGFREEZE H sha256:https://dl.test/${V}/$V\nARG V=1\nARG H=1\n' 1 \
+    "ARGFREEZE H: https://dl.test/\${V}/\$V holds a \$ not in \${VAR}" \
+    $'# ARGFREEZE V github:o/p\n# ARGFREEZE H sha256:https://dl.test/${V}/$V\nARG V=1\nARG H=1' "fake curl:"
+
+check hash-var-not-literal $'# ARGFREEZE H sha256:https://dl.test/${W}\nARG H=1\nARG W=$X\n' 1 \
+    "ARGFREEZE H: \${W} is \$X, not a literal" $'# ARGFREEZE H sha256:https://dl.test/${W}\nARG H=1\nARG W=$X'
+
+check hash-var-no-file $'# ARGFREEZE H sha256:https://dl.test/${W}\nARG H=1\nARG W=a/\n' 1 \
+    "ARGFREEZE H: https://dl.test/a/ names no file" $'# ARGFREEZE H sha256:https://dl.test/${W}\nARG H=1\nARG W=a/'
+
+check hash-not-https $'# ARGFREEZE H sha256:http://dl.test/t\nARG H=1\n' 1 "is not $sources" \
+    $'# ARGFREEZE H sha256:http://dl.test/t\nARG H=1'
+
+check hash-three-urls $'# ARGFREEZE H sha256:https://dl.test/t https://dl.test/s https://dl.test/u\nARG H=1\n' 1 \
+    "is not $sources" $'# ARGFREEZE H sha256:https://dl.test/t https://dl.test/s https://dl.test/u\nARG H=1'
+
+check hash-names-directory $'# ARGFREEZE H sha256:https://dl.test/t/\nARG H=1\n' 1 "is not $sources" \
+    $'# ARGFREEZE H sha256:https://dl.test/t/\nARG H=1'
+
+# Runs upgrade on a Dockerfile holding $2 and a workflow holding $3, and checks
+# its status is $4, its stderr holds $5 where that is not empty, and the files
+# afterwards are $6 and $7. Where $8 is given, stderr must not hold it.
+flow() {
+    local name=$1 before=$2 wbefore=$3 status=$4 said=$5 after=$6 wafter=$7 unsaid=${8:-} rc=0
+    local file=$work/$name.Dockerfile wfile=$work/$name.yml
+    printf '%s' "$before" >"$file"
+    printf '%s' "$wbefore" >"$wfile"
+    rm -f -- "$FAKE_PULLED"
+    "$upgrade" "$file" "$wfile" >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+    elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
+        failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+    elif [ -n "$unsaid" ] && grep -qF -- "$unsaid" "$work/err"; then
+        failed+=("$name: stderr holds '$unsaid': $(<"$work/err")")
+    elif [ "$(<"$file")" != "$after" ]; then
+        failed+=("$name: the Dockerfile is now: $(<"$file")")
+    elif [ "$(<"$wfile")" != "$wafter" ]; then
+        failed+=("$name: the workflow is now: $(<"$wfile")")
+    fi
+}
+
+df=$'# ARGFREEZE V github:o/p\nARG V=1'
+dfafter=$'# ARGFREEZE V github:o/p\nARG V=1.2.3'
+
+# Blanks after the comment are dropped.
+wf=$(printf '%s\n' "steps:" "  - uses: actions/checkout@$c1 # v1.0.0" \
+    "  - uses: o/r/sub/dir@$c1  #v1.0.0"$' \t' "  - name: x" "    uses: o/r@$c1 # v1.0.0" \
+    "  - uses: ./local" "  - uses: docker://alpine:3" "  # uses: o/r@v1")
+wfafter=$(printf '%s\n' "steps:" "  - uses: actions/checkout@$c2 # v1.2.3" \
+    "  - uses: o/r/sub/dir@$c2  #v1.2.3" "  - name: x" "    uses: o/r@$c2 # v1.2.3" \
+    "  - uses: ./local" "  - uses: docker://alpine:3" "  # uses: o/r@v1")
+flow wf-rewrites "$df" "$wf" 0 'fake git: ls-remote --tags https://github.com/o/r refs/tags/v1.2.3 refs/tags/v1.2.3^{}' \
+    "$dfafter" "$wfafter"
+if [ "$(grep -c 'fake git: .* https://github.com/o/r ' "$work/err")" != 1 ]; then
+    failed+=("wf-rewrites: o/r not looked up once: $(<"$work/err")")
+fi
+
+# A tag on the line above, at the uses: line's indent, is rewritten there.
+aw=$(printf '%s\n' "steps:" "  # v1.0.0" "  - uses: actions/checkout@$c1" \
+    "  - name: x" "    #v1.0.0"$' \t' "    uses: o/r/sub/dir@$c1" "  - uses: o/r@$c1 # v1.0.0")
+awafter=$(printf '%s\n' "steps:" "  # v1.2.3" "  - uses: actions/checkout@$c2" \
+    "  - name: x" "    #v1.2.3" "    uses: o/r/sub/dir@$c2" "  - uses: o/r@$c2 # v1.2.3")
+flow wf-rewrites-above "$df" "$aw" 0 "" "$dfafter" "$awafter"
+
+aw=$(printf '%s\n' "steps:" "  # v1" "  - uses: o/r@$c1 # v1")
+flow wf-tag-twice "$df" "$aw" 1 "line 3: uses: o/r@$c1 has a # TAG comment both above it and at its end" \
+    "$df" "$aw" "fake curl:"
+
+# Neither a comment at another indent nor one of more than one word is a tag.
+n=0
+for above in "    # v1" "# v1" "  # Check out v1"; do
+    n=$((n + 1))
+    aw=$(printf '%s\n' "steps:" "$above" "  - uses: o/r@$c1")
+    flow "wf-not-above-$n" "$df" "$aw" 1 "line 3: uses: o/r@$c1 has no # TAG comment" \
+        "$df" "$aw" "fake curl:"
+done
+
+flow wf-dockerfile-unpinned $'FROM x\n' "$wf" 0 "nothing to re-pin" $'FROM x' "$wfafter"
+
+# Peeled through the annotated tag to the commit.
+FAKE_LS_REMOTE=$c3$'\trefs/tags/v1.2.3\n'$c2$'\trefs/tags/v1.2.3^{}\n' flow wf-annotated \
+    "$df" "  - uses: o/r@$c1 # v1"$'\n' 0 "" "$dfafter" "  - uses: o/r@$c2 # v1.2.3"
+
+FAKE_LS_REMOTE=$c2$'\trefs/tags/v1.2.3^{}\n' flow wf-only-peeled "$df" "  - uses: o/r@$c1 # v1"$'\n' 1 \
+    "uses: o/r has no tag v1.2.3" "$df" "  - uses: o/r@$c1 # v1"
+
+FAKE_LS_REMOTE='' flow wf-no-tag "$df" "  - uses: o/r@$c1 # v1"$'\n' 1 \
+    "uses: o/r has no tag v1.2.3" "$df" "  - uses: o/r@$c1 # v1"
+
+FAKE_LS_REMOTE=$c2$'\trefs/tags/v1.2.30\n' flow wf-other-tag "$df" "  - uses: o/r@$c1 # v1"$'\n' 1 \
+    "uses: o/r: git ls-remote gave $c2 refs/tags/v1.2.30" "$df" "  - uses: o/r@$c1 # v1"
+
+FAKE_LS_REMOTE=$'abc\trefs/tags/v1.2.3\n' flow wf-not-a-commit "$df" "  - uses: o/r@$c1 # v1"$'\n' 1 \
+    "uses: o/r: git ls-remote gave abc refs/tags/v1.2.3" "$df" "  - uses: o/r@$c1 # v1"
+
+# The Dockerfile's pin has resolved, and neither file is written.
+FAKE_GIT=fail flow wf-git-fails "$df" "  - uses: o/r@$c1 # v1"$'\n' 1 "Could not resolve host" \
+    "$df" "  - uses: o/r@$c1 # v1"
+if ! grep -qF "uses: o/r: git ls-remote failed or timed out" "$work/err"; then
+    failed+=("wf-git-fails: the failure is not named: $(<"$work/err")")
+fi
+
+FAKE_GIT=timeout flow wf-git-times-out "$df" "  - uses: o/r@$c1 # v1"$'\n' 1 \
+    "uses: o/r: git ls-remote failed or timed out" "$df" "  - uses: o/r@$c1 # v1"
+
+FAKE_REDIRECT=https://github.com/o/r/releases flow wf-no-release $'FROM x\n' "  - uses: o/r@$c1 # v1"$'\n' 1 \
+    "uses: o/r: github.com/o/r gave no latest release" 'FROM x' "  - uses: o/r@$c1 # v1"
+
+FAKE_REDIRECT='https://github.com/o/r/releases/tag/v1*' flow wf-tag-not-a-version $'FROM x\n' "  - uses: o/r@$c1 # v1"$'\n' 1 \
+    "uses: o/r: its latest tag v1* is not a version" 'FROM x' "  - uses: o/r@$c1 # v1" "fake git:"
+
+# Each refusal comes before any pin is looked up.
+flow wf-tag-pinned "$df" $'  - uses: o/r@v1\n' 1 "line 1: uses: o/r@v1 names no commit; pin it by SHA first" \
+    "$df" '  - uses: o/r@v1' "fake curl:"
+
+flow wf-short-commit "$df" $'  - uses: o/r@abc1234 # v1\n' 1 "uses: o/r@abc1234 names no commit" \
+    "$df" '  - uses: o/r@abc1234 # v1' "fake curl:"
+
+flow wf-no-comment "$df" "  - uses: o/r@$c1"$'\n' 1 \
+    "line 1: uses: o/r@$c1 has no # TAG comment above it or at its end" "$df" "  - uses: o/r@$c1" "fake curl:"
+
+# A uses: on the first line has no line above it, whatever the last line holds.
+flow wf-first-line "$df" $'  - uses: o/r@'"$c1"$'\n  # v1\n' 1 "line 1: uses: o/r@$c1 has no # TAG comment" \
+    "$df" $'  - uses: o/r@'"$c1"$'\n  # v1' "fake curl:"
+
+form="is not uses: OWNER/REPO[/PATH]@SHA with a # TAG comment, uses: ./PATH or uses: docker://IMAGE"
+flow wf-quoted "$df" "  - uses: \"o/r@$c1\" # v1"$'\n' 1 "line 1 $form" \
+    "$df" "  - uses: \"o/r@$c1\" # v1" "fake curl:"
+
+flow wf-no-owner "$df" "  - uses: checkout@$c1 # v1"$'\n' 1 "line 1 $form" \
+    "$df" "  - uses: checkout@$c1 # v1" "fake curl:"
+
+flow wf-uses-elsewhere "$df" $'  - run: echo uses: x\n' 1 "line 1 $form" \
+    "$df" '  - run: echo uses: x' "fake curl:"
+
+flow wf-nothing "$df" $'  - uses: ./local\n' 0 "no uses: pinned by SHA, so there is nothing to re-pin" \
+    "$dfafter" '  - uses: ./local'
+
+# A file left as it was is not written at all.
+file=$work/untouched.Dockerfile
+printf 'FROM x\n' >"$file"
+inode=$(ls -i "$file")
+"$upgrade" "$file" >/dev/null 2>"$work/err" || failed+=("untouched: failed: $(<"$work/err")")
+[ "$(ls -i "$file")" = "$inode" ] || failed+=("untouched: the Dockerfile was written")
+
+file=$work/twice.Dockerfile
+printf '%s' "$df" >"$file"
+printf '  - uses: o/r@%s # v1\n' "$c1" >"$work/twice.yml"
+for list in "$work/twice.yml $work/twice.yml" "$file"; do
+    read -r -a named <<<"$list"
+    if "$upgrade" "$file" "${named[@]}" 2>"$work/err" ||
+        ! grep -qF "${named[-1]}: is named twice" "$work/err"; then
+        failed+=("named-twice: $list not refused: $(<"$work/err")")
+    fi
+done
+if "$upgrade" "$file" "$work/absent.yml" 2>"$work/err" ||
+    ! grep -qF "$work/absent.yml: no such file" "$work/err"; then
+    failed+=("wf-missing: not refused naming it: $(<"$work/err")")
+fi
+
+# The workflow's temporary file cannot be made once the Dockerfile's has been,
+# so neither file is written and no temporary file is left.
+FAKE_MKTEMP_FAIL=$(readlink -f "$work")/wf-write-fails.yml.XXXXXX flow wf-write-fails \
+    "$df" "  - uses: o/r@$c1 # v1"$'\n' 1 "No space left on device" "$df" "  - uses: o/r@$c1 # v1"
+if compgen -G "$work/wf-write-fails.*.*" >/dev/null; then
+    failed+=("wf-write-fails: left $(compgen -G "$work/wf-write-fails.*.*")")
+fi
+
+# A symbolic link stays one, and its target is written.
+printf '%s' "$df" >"$work/target.Dockerfile"
+ln -s target.Dockerfile "$work/link.Dockerfile"
+rc=0
+"$upgrade" "$work/link.Dockerfile" >/dev/null 2>"$work/err" || rc=$?
+if [ "$rc" != 0 ] || ! [ -L "$work/link.Dockerfile" ] ||
+    [ "$(<"$work/target.Dockerfile")" != "$dfafter" ]; then
+    failed+=("symlink: exit $rc, link or target wrong: $(<"$work/err")")
+fi
 
 file=$work/mode.Dockerfile
 printf '# ARGFREEZE V github:o/p\nARG V=1\n' >"$file"

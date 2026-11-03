@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 #
-# Re-pin a Dockerfile (default ./Dockerfile) to what its pins name today, so an
-# upgrade moves everything forward and the tests that follow it catch what
-# broke. Two kinds of comment line, read wherever they fall in the file, though
-# kept at the top by convention:
+# Usage: docker/upgrade [DOCKERFILE [WORKFLOW...]]
+#
+# Re-pin a Dockerfile (default ./Dockerfile), and each GitHub Actions workflow
+# named after it, to what its pins name today, so an upgrade moves everything
+# forward and the tests that follow it catch what broke. In the Dockerfile, two
+# kinds of comment line, read wherever they fall in the file, though kept at the
+# top by convention:
 #
 #   # FROMFREEZE REPO:TAG
-#       every FROM REPO line is pinned to the digest REPO:TAG names now
+#       every FROM REPO:TAG or FROM REPO@DIGEST line is pinned to the digest
+#       REPO:TAG names now
 #   # ARGFREEZE NAME github:OWNER/PROJECT
 #       every ARG NAME=VALUE line is set to the project's latest GitHub
 #       release, a leading v dropped from its tag
@@ -17,43 +21,423 @@
 #       every ARG NAME=VALUE line is set to the version npm's registry tags
 #       latest for the package, which may be scoped, as @SCOPE/NAME, read with
 #       jq from its JSON
+#   # ARGFREEZE NAME sha256:ASSET_URL [CHECKSUMS_URL]
+#       every ARG NAME=VALUE line is set to the SHA-256 of the file at
+#       ASSET_URL: the one CHECKSUMS_URL gives for the asset's file name, on a
+#       GNU line (HASH  NAME, HASH *NAME, NAME optionally after a path) or a BSD
+#       one (SHA256 (NAME) = HASH), or without CHECKSUMS_URL, the hash of the
+#       asset downloaded; both are https:// URLs, and either may name another
+#       ARG as ${VAR}, which takes VAR's new value where an ARGFREEZE of
+#       another kind pins it, after every such pin has resolved, and its value
+#       in the file where nothing pins it
 #
 # A version held back is one whose ARGFREEZE line is removed, the ARG set to the
 # version that works and a comment beside it saying why; nothing here then
-# touches it.
+# touches it, and a sha256 pin naming it as ${VAR} keeps to it.
 #
-# A pin that names nothing in the file fails the run, as does an ARGFREEZE whose
-# ARG has no default or more than one value, or a lookup that fails: each would
-# otherwise leave a pin where it was with no sign that it had not moved. Nothing
-# is written until every pin has been resolved.
+# In each workflow, every step's uses: OWNER/REPO[/PATH]@SHA, SHA a full 40-hex
+# commit, is re-pinned to the commit OWNER/REPO's latest GitHub release tags,
+# peeled through an annotated tag, and its # TAG comment to that tag. The
+# comment is either a line of its own directly above the uses: line, at the
+# same indent, or the end of the uses: line itself; a uses: with neither, or
+# both, fails. A uses: naming a tag or branch rather than a commit fails, as
+# one to pin by SHA by hand first; ./PATH and docker:// are passed over. Lines
+# are read as text, not parsed as YAML, so any other line holding uses: fails
+# rather than being passed over. Workflows are re-pinned only when named, as by
+# Makefile's upgrade-pre.
+#
+# FROM and ARG are matched in any case, as Docker reads them, and on logical
+# lines, with continued lines joined at the escape character, which a leading
+# # escape= directive may change, and heredoc bodies skipped. A pinned FROM must
+# open its line as FROM REPO:TAG or FROM REPO@DIGEST, the reference whole on
+# that line, and an ARGFREEZE's ARG must sit on a line of its own as
+# ARG NAME=VALUE, each keyword in any case.
+#
+# A pin that names nothing in the file fails the run, as does a REPO or NAME
+# pinned twice, a FROM naming REPO in another form, an ARGFREEZE whose ARG has
+# no default, more than one value or another form, or a lookup that fails: each
+# would otherwise leave a pin where it was with no sign that it had not moved.
+# So does a sha256 pin's ${VAR} naming no ARG or another sha256 pin, or a file
+# named twice. Every pin in every file is checked before any is looked up, and
+# no file is written until every pin has been resolved; each that changes is
+# then written to a temporary file beside it, and only once all are written is
+# each moved over its file, through any symbolic link and keeping its mode.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dockerfile=${1:-Dockerfile}
+workflows=("${@:2}")
 
-die() {
-    echo "$dockerfile: $*" >&2
+refuse() {
+    echo "$1: ${*:2}" >&2
     exit 1
 }
 
+die() {
+    refuse "$dockerfile" "$@"
+}
+
 [ -f "$dockerfile" ] || die "no such file"
+for w in "${!workflows[@]}"; do
+    workflow=${workflows[$w]}
+    [ -f "$workflow" ] || refuse "$workflow" "no such file"
+    [ ! "$workflow" -ef "$dockerfile" ] || refuse "$workflow" "is named twice"
+    for other in "${workflows[@]:0:w}"; do
+        [ ! "$workflow" -ef "$other" ] || refuse "$workflow" "is named twice"
+    done
+done
 
 mapfile -t lines <"$dockerfile"
 
-froms=()
-args=()
+# Bounded, so a stalled server fails the run rather than hanging it.
+fetch() {
+    curl --connect-timeout 10 --max-time 60 "$@"
+}
+
+# Sets tag to the latest release's tag of the GitHub project $1, a refusal
+# naming the file $2 and the pin $3. GitHub answers /releases/latest with a
+# redirect to the latest release's tag, without the API or a token. A project
+# with no release redirects elsewhere, which the match refuses. GitHub's docs
+# (Linking to releases, docs.github.com, checked 2026-11) document the link, not
+# the redirect or what a project with no release gets.
+latest_tag() {
+    local url
+    echo "Looking up $1's latest release"
+    url=$(fetch -fsS -o /dev/null -w '%{redirect_url}' \
+        "https://github.com/$1/releases/latest")
+    [[ "$url" =~ ^https://github\.com/[^/]+/[^/]+/releases/tag/([^/?#]+)$ ]] ||
+        refuse "$2" "$3: github.com/$1 gave no latest release:" \
+            "${url:-no redirect}"
+    tag=${BASH_REMATCH[1]}
+}
+
+# Sets refs to the names of the ${VAR}s in $1, failing on any other $.
+refs_in() {
+    local rest=$1
+    refs=()
+    while [[ "$rest" == *'$'* ]]; do
+        [[ "$rest" =~ ^[^$]*\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$ ]] || return 1
+        refs+=("${BASH_REMATCH[1]}")
+        rest=${BASH_REMATCH[2]}
+    done
+}
+
+# Parser directives open the file, before any comment, blank line or
+# instruction; an unknown one ends them, as Docker treats it as a comment
+# (Dockerfile reference, "Parser directives", docs.docker.com, checked 2026-11).
+escape=\\
+escaped=""
 for line in "${lines[@]}"; do
-    case $line in
-    "# FROMFREEZE "*) froms+=("${line#"# FROMFREEZE "}") ;;
-    "# ARGFREEZE "*) args+=("${line#"# ARGFREEZE "}") ;;
+    [[ "$line" =~ ^#[[:space:]]*([A-Za-z][A-Za-z0-9]*)[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] ||
+        break
+    case ${BASH_REMATCH[1],,} in
+    escape)
+        [ -z "$escaped" ] || die "the escape directive appears twice"
+        escaped=1
+        escape=${BASH_REMATCH[2]}
+        case $escape in
+        \\ | \`) ;;
+        *) die "escape directive $escape is not \\ or \`" ;;
+        esac
+        ;;
+    syntax | check) ;;
+    *) break ;;
     esac
 done
+
+# Each instruction, keyed by the index of its first line, with the index of its
+# last in ends. A line ending in the escape character, then any blanks,
+# continues on the next; comment and blank lines are skipped, within an
+# instruction as between them, and pins are read from them.
+#
+# BuildKit reads a word <<WORD or <<-WORD, WORD optionally quoted, in a RUN,
+# COPY or ADD as a heredoc, whose body runs from the next line to one that is
+# WORD, leading tabs dropped after <<- (Dockerfile reference, "Here-Documents",
+# docs.docker.com, checked 2026-11). Its words are split here at blanks, not
+# shell-lexed. Each body still to come is in docs, its WORD prefixed with -
+# where leading tabs are dropped and + where they are not.
+delimiter='[^<"'\''[:space:]]+'
+heredoc="^[0-9]*<<(-?)(\"($delimiter)\"|'($delimiter)'|($delimiter))\$"
+froms=()
+args=()
+logical=()
+ends=()
+docs=()
+start=""
+for i in "${!lines[@]}"; do
+    line=${lines[$i]}
+    if [ ${#docs[@]} -gt 0 ]; then
+        if [ "${docs[0]:0:1}" = - ]; then
+            [[ "$line" =~ ^$'\t'*(.*)$ ]]
+            line=${BASH_REMATCH[1]}
+        fi
+        [ "$line" != "${docs[0]:1}" ] || docs=("${docs[@]:1}")
+        continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]]; then
+        case $line in
+        "# FROMFREEZE "*) froms+=("${line#"# FROMFREEZE "}") ;;
+        "# ARGFREEZE "*) args+=("${line#"# ARGFREEZE "}") ;;
+        esac
+        continue
+    fi
+    if [ -z "$start" ]; then
+        start=$i
+        text=""
+    fi
+    if [[ "$line" =~ ^(.*)"$escape"[[:blank:]]*$ ]]; then
+        text+=${BASH_REMATCH[1]}
+        continue
+    fi
+    logical[start]=$text$line
+    ends[start]=$i
+    read -r -a words <<<"$text$line"
+    keyword=${words[0]:-}
+    case ${keyword^^} in
+    RUN | COPY | ADD)
+        for word in "${words[@]:1}"; do
+            [[ "$word" =~ $heredoc ]] || continue
+            docs+=("${BASH_REMATCH[1]:-+}${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}")
+        done
+        ;;
+    esac
+    start=""
+done
+if [ -n "$start" ]; then
+    logical[start]=$text
+    ends[start]=$((${#lines[@]} - 1))
+fi
+[ ${#docs[@]} -eq 0 ] || die "a heredoc's body has no end line ${docs[0]:1}"
 
 if [ ${#froms[@]} -eq 0 ] && [ ${#args[@]} -eq 0 ]; then
     echo "$dockerfile: no # FROMFREEZE or # ARGFREEZE line, so there is" \
         "nothing to re-pin" >&2
-    exit 0
 fi
+
+# Each pin is checked and its lines found before any is looked up. targets holds
+# the indices of the lines each pin rewrites, keyed by FROM REPO or ARG NAME,
+# and heads and tails what each such line keeps before and after its new value.
+declare -A targets=()
+declare -A heads=()
+declare -A tails=()
+
+for data in "${froms[@]}"; do
+    repo=${data%:*}
+    tag=${data##*:}
+    # A tag holding / is a registry's port, as in localhost:5000/x, with no tag.
+    if [ -z "$repo" ] || [ -z "$tag" ] || [ "$repo" = "$data" ] ||
+        [[ "$tag" == */* ]]; then
+        die "FROMFREEZE $data is not REPO:TAG"
+    fi
+    [ -z "${targets["FROM $repo"]+set}" ] || die "FROMFREEZE $repo is pinned twice"
+    targets["FROM $repo"]=""
+
+    # Every FROM naming it, in any form, so one it cannot rewrite is refused
+    # rather than left behind. A reference holding / after REPO: names another
+    # repository, on a registry whose host is REPO.
+    for i in "${!logical[@]}"; do
+        read -r -a words <<<"${logical[$i]}"
+        keyword=${words[0]:-}
+        [ "${keyword^^}" = FROM ] || continue
+        image=""
+        for word in "${words[@]:1}"; do
+            if [[ "$word" != --* ]]; then
+                image=$word
+                break
+            fi
+        done
+        case $image in
+        "$repo" | "$repo":* | "$repo"@*) ;;
+        *) continue ;;
+        esac
+        reference=${image#"$repo"}
+        reference=${reference#[:@]}
+        [[ "$reference" != */* ]] || continue
+
+        line=${lines[$i]}
+        cont=""
+        if [ "${ends[i]}" != "$i" ]; then
+            [[ "$line" =~ ^(.*)("$escape"[[:blank:]]*)$ ]]
+            line=${BASH_REMATCH[1]}
+            cont=${BASH_REMATCH[2]}
+        fi
+        keyword=${line%% *}
+        rest=${line#"$keyword $repo"}
+        rest=${rest#[:@]}
+        found=${rest%%[[:space:]]*}
+        if [ "${keyword^^}" != FROM ] || [ -z "$found" ] ||
+            [ "$found" != "$reference" ]; then
+            die "FROMFREEZE $repo: line $((i + 1)) is not" \
+                "FROM $repo:TAG or FROM $repo@DIGEST"
+        fi
+        targets["FROM $repo"]+=" $i"
+        heads[$i]=$keyword
+        # Whatever follows the reference, such as AS dev, stays.
+        tails[$i]=${rest#"$found"}$cont
+    done
+    [ -n "${targets["FROM $repo"]}" ] || die "FROMFREEZE $data names no FROM $repo line"
+done
+
+# Sets found to the indices of the ARG NAME=VALUE lines naming $1, heads to the
+# keyword each opens with and value to the value they share, a refusal naming
+# the pin $2. Every ARG instruction naming it, in any form, is read, so a second
+# ARG with no default, declaring it beside another or continued over lines is
+# refused rather than left behind.
+scan_arg() {
+    local name=$1 label=$2 values=() i word words keyword v
+    found=""
+    for i in "${!logical[@]}"; do
+        read -r -a words <<<"${logical[$i]}"
+        keyword=${words[0]:-}
+        [ "${keyword^^}" = ARG ] || continue
+        for word in "${words[@]:1}"; do
+            [ "${word%%=*}" = "$name" ] || continue
+            if [ "${ends[i]}" != "$i" ] ||
+                ! [[ "${lines[$i]}" =~ ^([Aa][Rr][Gg])\ $name=([^[:space:]\"\']+)$ ]]; then
+                die "$label: line $((i + 1)) is not ARG $name=VALUE"
+            fi
+            found+=" $i"
+            heads[$i]=${BASH_REMATCH[1]}
+            values+=("${BASH_REMATCH[2]}")
+        done
+    done
+    [ ${#values[@]} -gt 0 ] || die "$label names no ARG $name line"
+    value=${values[0]}
+    for v in "${values[@]}"; do
+        [ "$v" = "$value" ] ||
+            die "$label: its ARG lines hold different values, ${values[*]}"
+    done
+}
+
+# Each ARGFREEZE's kind, keyed by NAME, and each value a sha256 pin's ${VAR} is
+# to take, keyed by VAR: a new version once it resolves, or the value in the
+# file of an ARG nothing pins.
+declare -A kinds=()
+declare -A resolved=()
+
+forms="NAME github:OWNER/PROJECT, NAME pypi:PACKAGE, NAME npm:PACKAGE or"
+forms+=" NAME sha256:ASSET_URL [CHECKSUMS_URL]"
+sources="github:OWNER/PROJECT, pypi:PACKAGE, npm:PACKAGE or"
+sources+=" sha256:ASSET_URL [CHECKSUMS_URL]"
+url='https://[^[:space:]]*[^/[:space:]]'
+for data in "${args[@]}"; do
+    name=${data%% *}
+    source=${data#* }
+    if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [ "$source" = "$data" ]; then
+        die "ARGFREEZE $data is not $forms"
+    fi
+    # npm's rules for a new package's name: lower case, optionally scoped (npm
+    # Docs, package.json, "name", docs.npmjs.com, checked 2026-11).
+    [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+        [[ "$source" =~ ^pypi:[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+        [[ "$source" =~ ^npm:(@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$ ]] ||
+        [[ "$source" =~ ^sha256:$url(\ $url)?$ ]] ||
+        die "ARGFREEZE $name: $source is not $sources"
+    [ -z "${kinds[$name]+set}" ] || die "ARGFREEZE $name is pinned twice"
+    kinds[$name]=${source%%:*}
+    scan_arg "$name" "ARGFREEZE $name"
+    targets["ARG $name"]=$found
+done
+
+for data in "${args[@]}"; do
+    name=${data%% *}
+    source=${data#* }
+    [ "${kinds[$name]}" = sha256 ] || continue
+    read -r -a urls <<<"${source#sha256:}"
+    for url in "${urls[@]}"; do
+        refs_in "$url" || die "ARGFREEZE $name: $url holds a \$ not in \${VAR}"
+        for ref in "${refs[@]}"; do
+            case ${kinds[$ref]:-} in
+            sha256) die "ARGFREEZE $name: \${$ref} is itself a sha256 pin" ;;
+            "")
+                scan_arg "$ref" "ARGFREEZE $name: \${$ref}"
+                [[ "$value" != *'$'* ]] ||
+                    die "ARGFREEZE $name: \${$ref} is $value, not a literal"
+                resolved[$ref]=$value
+                ;;
+            esac
+        done
+    done
+done
+
+# Each workflow's pinned uses: lines, by the index of the workflow in w_of and
+# of the line in i_of, with what the line keeps before the reference in
+# head_of, the action named, without its commit, in action_of, its OWNER/REPO
+# in repo_of, the index of the line holding its # TAG in t_of and what that
+# line keeps before the tag in sep_of. repos lists each OWNER/REPO once, in the
+# order first named, and repo_file the workflow that first names it.
+w_of=()
+i_of=()
+head_of=()
+action_of=()
+repo_of=()
+t_of=()
+sep_of=()
+repos=()
+declare -A repo_file=()
+
+uses='^([[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+)([^[:space:]#][^[:space:]]*)'
+uses+='(([[:space:]]+#[[:space:]]*)[^[:space:]]+[[:space:]]*)?$'
+action='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(/[^@[:space:]]+)?@'
+for w in "${!workflows[@]}"; do
+    workflow=${workflows[$w]}
+    mapfile -t wlines <"$workflow"
+    pins=0
+    for i in "${!wlines[@]}"; do
+        line=${wlines[$i]}
+        [[ "$line" == *uses:* ]] || continue
+        [[ ! "$line" =~ ^[[:space:]]*# ]] || continue
+        form="line $((i + 1)) is not uses: OWNER/REPO[/PATH]@SHA with a # TAG"
+        form+=" comment, uses: ./PATH or uses: docker://IMAGE"
+        [[ "$line" =~ $uses ]] || refuse "$workflow" "$form"
+        head=${BASH_REMATCH[1]}
+        reference=${BASH_REMATCH[3]}
+        comment=${BASH_REMATCH[4]}
+        sep=${BASH_REMATCH[5]}
+        case $reference in
+        ./* | docker://*) continue ;;
+        esac
+        [[ "$reference" =~ $action(.*)$ ]] || refuse "$workflow" "$form"
+        repo=${BASH_REMATCH[1]}
+        ref=${BASH_REMATCH[3]}
+        [[ "$ref" =~ ^[0-9a-f]{40}$ ]] ||
+            refuse "$workflow" "line $((i + 1)): uses: $reference names no" \
+                "commit; pin it by SHA first"
+        indent=${head%%[^[:space:]]*}
+        above=""
+        if [ "$i" -gt 0 ] &&
+            [[ "${wlines[i - 1]}" =~ ^("$indent"#[[:space:]]*)[^[:space:]]+[[:space:]]*$ ]]; then
+            above=${BASH_REMATCH[1]}
+        fi
+        if [ -n "$comment" ] && [ -n "$above" ]; then
+            refuse "$workflow" "line $((i + 1)): uses: $reference has a" \
+                "# TAG comment both above it and at its end"
+        fi
+        t=$i
+        if [ -z "$comment" ]; then
+            [ -n "$above" ] ||
+                refuse "$workflow" "line $((i + 1)): uses: $reference has no" \
+                    "# TAG comment above it or at its end"
+            t=$((i - 1))
+            sep=$above
+        fi
+        w_of+=("$w")
+        i_of+=("$i")
+        head_of+=("$head")
+        action_of+=("${reference%@*}")
+        repo_of+=("$repo")
+        t_of+=("$t")
+        sep_of+=("$sep")
+        pins=$((pins + 1))
+        if [ -z "${repo_file[$repo]+set}" ]; then
+            repos+=("$repo")
+            repo_file[$repo]=$workflow
+        fi
+    done
+    [ "$pins" -gt 0 ] ||
+        echo "$workflow: no uses: pinned by SHA, so there is nothing to" \
+            "re-pin" >&2
+done
 
 # What each line of the file becomes, keyed by its index, so the file is
 # rewritten once, after every pin has resolved.
@@ -62,19 +446,6 @@ declare -A rewrite=()
 for data in "${froms[@]}"; do
     repo=${data%:*}
     tag=${data##*:}
-    if [ -z "$repo" ] || [ -z "$tag" ] || [ "$repo" = "$data" ]; then
-        die "FROMFREEZE $data is not REPO:TAG"
-    fi
-
-    targets=()
-    for i in "${!lines[@]}"; do
-        rest=${lines[$i]#"FROM $repo"}
-        case $rest in
-        "${lines[$i]}") ;;
-        [:@]*) targets+=("$i") ;;
-        esac
-    done
-    [ ${#targets[@]} -gt 0 ] || die "FROMFREEZE $data names no FROM $repo line"
 
     echo "Pulling $repo:$tag"
     docker pull "$repo:$tag"
@@ -86,71 +457,20 @@ for data in "${froms[@]}"; do
         die "docker inspect gave $repo:$tag no digest: $digest"
     echo "  => $digest"
 
-    for i in "${targets[@]}"; do
-        # Whatever follows the reference, such as AS dev, stays.
-        rest=${lines[$i]#"FROM $repo"}
-        rest=${rest#[:@]}
-        suffix=""
-        case $rest in
-        *" "*) suffix=" ${rest#* }" ;;
-        esac
-        rewrite[$i]="FROM $repo@$digest$suffix"
+    read -r -a indices <<<"${targets["FROM $repo"]}"
+    for i in "${indices[@]}"; do
+        rewrite[$i]="${heads[$i]} $repo@$digest${tails[$i]}"
     done
 done
 
 for data in "${args[@]}"; do
     name=${data%% *}
     source=${data#* }
-    if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [ "$source" = "$data" ]; then
-        die "ARGFREEZE $data is not NAME github:OWNER/PROJECT," \
-            "NAME pypi:PACKAGE or NAME npm:PACKAGE"
-    fi
-    # npm's rules for a new package's name: lower case, optionally scoped (npm
-    # Docs, package.json, "name", docs.npmjs.com, checked 2026-11).
-    [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
-        [[ "$source" =~ ^pypi:[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
-        [[ "$source" =~ ^npm:(@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$ ]] ||
-        die "ARGFREEZE $name: $source is not github:OWNER/PROJECT," \
-            "pypi:PACKAGE or npm:PACKAGE"
-
-    # Every ARG line naming it, in any form, so a second ARG with no default or
-    # declaring it beside another is refused rather than left behind.
-    targets=()
-    values=()
-    for i in "${!lines[@]}"; do
-        read -r -a words <<<"${lines[$i]}"
-        [ "${words[0]:-}" = ARG ] || continue
-        for word in "${words[@]:1}"; do
-            [ "${word%%=*}" = "$name" ] || continue
-            [[ "${lines[$i]}" =~ ^ARG\ $name=([^[:space:]\"\']+)$ ]] ||
-                die "ARGFREEZE $name: line $((i + 1)) is not" \
-                    "ARG $name=VALUE"
-            targets+=("$i")
-            values+=("${BASH_REMATCH[1]}")
-        done
-    done
-    [ ${#targets[@]} -gt 0 ] || die "ARGFREEZE $name names no ARG $name line"
-    for value in "${values[@]}"; do
-        [ "$value" = "${values[0]}" ] ||
-            die "ARGFREEZE $name: its ARG lines hold different values," \
-                "${values[*]}"
-    done
 
     case $source in
     github:*)
         project=${source#github:}
-        # GitHub answers /releases/latest with a redirect to the latest
-        # release's tag, without the API or a token. A project with no release
-        # redirects elsewhere, which the match refuses. GitHub's docs (Linking
-        # to releases, docs.github.com, checked 2026-11) document the link, not
-        # the redirect or what a project with no release gets.
-        echo "Looking up $project's latest release"
-        url=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
-            "https://github.com/$project/releases/latest")
-        [[ "$url" =~ ^https://github\.com/[^/]+/[^/]+/releases/tag/([^/?#]+)$ ]] ||
-            die "ARGFREEZE $name: github.com/$project gave no latest" \
-                "release: ${url:-no redirect}"
-        tag=${BASH_REMATCH[1]}
+        latest_tag "$project" "$dockerfile" "ARGFREEZE $name"
         version=${tag#v}
         [[ "$version" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]] ||
             die "ARGFREEZE $name: $project's latest tag $tag is not a version"
@@ -163,7 +483,7 @@ for data in "${args[@]}"; do
         # 2026-11) documents the latest version, not the pre-release or the
         # redirect behaviour.
         echo "Looking up $package's latest version on PyPI"
-        json=$(curl -fsSL "https://pypi.org/pypi/$package/json")
+        json=$(fetch -fsSL "https://pypi.org/pypi/$package/json")
         version=$(jq -r '.info.version // empty' <<<"$json") ||
             die "ARGFREEZE $name: pypi.org/pypi/$package/json is not" \
                 "PyPI's JSON"
@@ -175,7 +495,7 @@ for data in "${args[@]}"; do
     npm:*)
         package=${source#npm:}
         echo "Looking up $package's latest version on npm"
-        json=$(curl -fsS "https://registry.npmjs.org/$package/latest")
+        json=$(fetch -fsS "https://registry.npmjs.org/$package/latest")
         version=$(jq -r '.version // empty' <<<"$json") ||
             die "ARGFREEZE $name: registry.npmjs.org/$package/latest is not" \
                 "npm's JSON"
@@ -183,18 +503,159 @@ for data in "${args[@]}"; do
             die "ARGFREEZE $name: $package's latest version on npm," \
                 "${version:-none}, is not a version"
         ;;
+    sha256:*) continue ;;
     esac
     echo "  => $version"
+    resolved[$name]=$version
 
-    for i in "${targets[@]}"; do
-        rewrite[$i]="ARG $name=$version"
+    read -r -a indices <<<"${targets["ARG $name"]}"
+    for i in "${indices[@]}"; do
+        rewrite[$i]="${heads[$i]} $name=$version"
     done
 done
 
-out=$(mktemp "$dockerfile.XXXXXX")
-trap 'rm -f -- "$out"' EXIT
-for i in "${!lines[@]}"; do
-    printf '%s\n' "${rewrite[$i]:-${lines[$i]}}"
-done >"$out"
-# Copied over rather than moved, so the Dockerfile keeps its own mode.
-cat -- "$out" >"$dockerfile"
+gnu='^([0-9A-Fa-f]{64}) [ *](.+)$'
+bsd='^SHA256 \((.+)\) = ([0-9A-Fa-f]{64})$'
+for data in "${args[@]}"; do
+    name=${data%% *}
+    source=${data#* }
+    [ "${kinds[$name]}" = sha256 ] || continue
+
+    read -r -a urls <<<"${source#sha256:}"
+    for u in "${!urls[@]}"; do
+        refs_in "${urls[$u]}"
+        for ref in "${refs[@]}"; do
+            # Quoted, so an & in the value is no reference to the match.
+            urls[u]=${urls[$u]//"\${$ref}"/"${resolved[$ref]}"}
+        done
+    done
+    asset=${urls[0]##*/}
+    [ -n "$asset" ] || die "ARGFREEZE $name: ${urls[0]} names no file"
+
+    if [ ${#urls[@]} -gt 1 ]; then
+        echo "Looking up $asset's SHA-256 in ${urls[1]}"
+        sums=$(fetch -fsSL "${urls[1]}")
+        hashes=()
+        while IFS= read -r line <&3; do
+            if [[ "$line" =~ $gnu ]]; then
+                hash=${BASH_REMATCH[1]}
+                entry=${BASH_REMATCH[2]}
+            elif [[ "$line" =~ $bsd ]]; then
+                entry=${BASH_REMATCH[1]}
+                hash=${BASH_REMATCH[2]}
+            else
+                continue
+            fi
+            [ "${entry##*/}" = "$asset" ] || continue
+            hashes+=("${hash,,}")
+        done 3<<<"$sums"
+        [ ${#hashes[@]} -gt 0 ] ||
+            die "ARGFREEZE $name: ${urls[1]} gives no SHA-256 for $asset"
+        hash=${hashes[0]}
+        for h in "${hashes[@]}"; do
+            [ "$h" = "$hash" ] ||
+                die "ARGFREEZE $name: ${urls[1]} gives $asset different" \
+                    "SHA-256s, ${hashes[*]}"
+        done
+    else
+        echo "Hashing ${urls[0]}"
+        hash=$(fetch -fsSL "${urls[0]}" | sha256sum)
+        hash=${hash%% *}
+    fi
+    echo "  => $hash"
+
+    read -r -a indices <<<"${targets["ARG $name"]}"
+    for i in "${indices[@]}"; do
+        rewrite[$i]="${heads[$i]} $name=$hash"
+    done
+done
+
+# Each OWNER/REPO's new commit and tag, keyed by OWNER/REPO.
+declare -A commits=()
+declare -A tags=()
+for repo in "${repos[@]}"; do
+    workflow=${repo_file[$repo]}
+    latest_tag "$repo" "$workflow" "uses: $repo"
+    # Refused before ls-remote, which would read * ? [ in it as a pattern.
+    [[ "$tag" =~ ^[A-Za-z0-9._+-]+$ ]] ||
+        refuse "$workflow" "uses: $repo: its latest tag $tag is not a version"
+
+    # No prompt, so a repository that is missing or private fails rather than
+    # waiting on a password until the timeout. Refused by name, as timeout and
+    # the git it stops both exit silently.
+    echo "Looking up $repo's commit for $tag"
+    listed=$(GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote --tags \
+        "https://github.com/$repo" "refs/tags/$tag" "refs/tags/$tag^{}") ||
+        refuse "$workflow" "uses: $repo: git ls-remote failed or timed out"
+    [ -n "$listed" ] || refuse "$workflow" "uses: $repo has no tag $tag"
+    # An annotated tag is listed twice, the second time peeled to its commit.
+    commit=""
+    peeled=""
+    while IFS=$'\t' read -r sha ref <&3; do
+        [[ "$sha" =~ ^[0-9a-f]{40}$ ]] ||
+            refuse "$workflow" "uses: $repo: git ls-remote gave $sha $ref"
+        case $ref in
+        "refs/tags/$tag") commit=$sha ;;
+        "refs/tags/$tag^{}") peeled=$sha ;;
+        *) refuse "$workflow" "uses: $repo: git ls-remote gave $sha $ref" ;;
+        esac
+    done 3<<<"$listed"
+    [ -n "$commit" ] || refuse "$workflow" "uses: $repo has no tag $tag"
+    commits[$repo]=${peeled:-$commit}
+    tags[$repo]=$tag
+    echo "  => ${commits[$repo]}"
+done
+
+# Each file that changes, and the temporary file beside it holding what it
+# becomes. A symbolic link is followed, so the link stays.
+changed=()
+temps=()
+trap 'rm -f -- "${temps[@]}"' EXIT
+
+# Writes the lines in new to a temporary file beside $1 where they differ from
+# those in old.
+stage() {
+    local file=$1 differs="" target temp i
+    for i in "${!old[@]}"; do
+        [ "${new[$i]}" = "${old[$i]}" ] || differs=1
+    done
+    [ -n "$differs" ] || return 0
+    target=$(readlink -f -- "$file")
+    temp=$(mktemp "$target.XXXXXX")
+    temps+=("$temp")
+    # Copied first, so the temporary file takes the file's own mode.
+    cp -p -- "$target" "$temp"
+    printf '%s\n' "${new[@]}" >"$temp"
+    changed+=("$target")
+}
+
+old=("${lines[@]}")
+new=("${lines[@]}")
+for i in "${!rewrite[@]}"; do
+    new[i]=${rewrite[$i]}
+done
+stage "$dockerfile"
+
+for w in "${!workflows[@]}"; do
+    mapfile -t old <"${workflows[$w]}"
+    new=("${old[@]}")
+    for p in "${!w_of[@]}"; do
+        [ "${w_of[$p]}" = "$w" ] || continue
+        repo=${repo_of[$p]}
+        i=${i_of[$p]}
+        t=${t_of[$p]}
+        pinned=${head_of[$p]}${action_of[$p]}@${commits[$repo]}
+        tagged=${sep_of[$p]}${tags[$repo]}
+        if [ "$t" = "$i" ]; then
+            new[i]=$pinned$tagged
+        else
+            new[i]=$pinned
+            new[t]=$tagged
+        fi
+    done
+    stage "${workflows[$w]}"
+done
+
+for t in "${!temps[@]}"; do
+    mv -f -- "${temps[$t]}" "${changed[$t]}"
+done
