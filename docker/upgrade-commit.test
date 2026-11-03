@@ -33,7 +33,8 @@ moves=("V 1.0.0 -> 1.2.3" "o/r v1: v0 -> 3333333")
 
 # A fresh fixture in $w: app at $w/app, pushed to $w/app.git, with lib at
 # $w/app/lib one commit past what app records, the upgrade's changes made and
-# its record at $w/record. pushed holds the commit $w/app.git's main is at.
+# its record at $w/record. pushed holds the commit $w/app.git's main is at, and
+# lib_move the line upgrade-commit writes for lib.
 fixture() {
     n=$((n + 1))
     w=$work/$n
@@ -55,6 +56,10 @@ fixture() {
     git -C "$w/app" push -q origin main
     pushed=$(git -C "$w/app.git" rev-parse main)
     git -C "$w/app/lib" commit -q --allow-empty -m forwards
+    local old new
+    old=$(git -C "$w/app" rev-parse HEAD:lib)
+    new=$(git -C "$w/app/lib" rev-parse HEAD)
+    lib_move="lib ${old:0:7} -> ${new:0:7}"
 
     printf 'ARG V=1.2.3\n' >"$w/app/Dockerfile"
     mkdir "$w/app/.github/workflows.new"
@@ -88,21 +93,31 @@ unchanged() {
     fi
 }
 
-# Fails case $1 unless HEAD is one commit past the fixture's, as Upgrade pins
-# with the moves as its body, changing exactly the paths after $1, the remote
-# untouched and the record removed.
+# Fails case $1 unless HEAD is one commit past the fixture's, changing exactly
+# the paths after $1, as Upgrade pins with a body of the moves where Dockerfile
+# is among them and then lib_move where lib is, the remote untouched and the
+# record removed.
 committed() {
-    local name=$1 want
+    local name=$1 want message=("Upgrade pins") body=()
     want=$(printf '%s\n' "${@:2}")
+    if [[ $'\n'$want$'\n' == *$'\nDockerfile\n'* ]]; then
+        body+=("${moves[@]}")
+    fi
+    if [[ $'\n'$want$'\n' == *$'\nlib\n'* ]]; then
+        body+=("$lib_move")
+    fi
+    if [ ${#body[@]} -gt 0 ]; then
+        message+=("" "${body[@]}")
+    fi
     if [ "$rc" != 0 ]; then
         failed+=("$name: exit $rc, not 0: $err")
     elif [ "$(git -C "$w/app" rev-parse HEAD~1)" != "$pushed" ]; then
         failed+=("$name: HEAD is not one commit past the fixture's")
     elif [ "$(git -C "$w/app" log -1 --no-show-signature --format=%B)" != \
-        "$(printf '%s\n' "Upgrade pins" "" "${moves[@]}")" ]; then
+        "$(printf '%s\n' "${message[@]}")" ]; then
         failed+=("$name: the message is: $(git -C "$w/app" log -1 --no-show-signature --format=%B)")
-    elif [ "$(git -C "$w/app" diff-tree --no-commit-id --name-only -r HEAD)" != "$want" ]; then
-        failed+=("$name: the commit changes: $(git -C "$w/app" diff-tree --no-commit-id --name-only -r HEAD)")
+    elif [ "$(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)" != "$want" ]; then
+        failed+=("$name: the commit changes: $(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)")
     elif [ "$(git -C "$w/app.git" rev-parse main)" != "$pushed" ]; then
         failed+=("$name: something was pushed")
     elif [ -e "$w/record" ]; then
@@ -133,19 +148,74 @@ git -C "$w/app" add Dockerfile
 run "" "$w/record"
 committed own-staged .github/workflows.new/build.yml Dockerfile
 
-# Where nothing moved, nothing is staged or committed, and the record goes.
+# A submodule PATH that did not move adds no line.
+fixture
+git -C "$w/app/lib" checkout -q HEAD~1
+run "" "$w/record" lib
+committed lib-unmoved .github/workflows.new/build.yml Dockerfile
+
+# Where no pin moved, a PATH that changed is still committed: a submodule with
+# its move as the body, any other path with no body.
 fixture
 : >"$w/record"
 run "" "$w/record" lib
-if [ "$rc" != 0 ] || [ -n "$out" ] ||
-    [ "$err" != "upgrade-commit: $w/record: nothing moved, so there is nothing to commit" ]; then
-    failed+=("nothing-moved: exit $rc: $out$err")
-elif [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ] ||
-    [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
-    failed+=("nothing-moved: something was staged or committed")
-elif [ -e "$w/record" ]; then
-    failed+=("nothing-moved: the record was kept")
+committed lib-only lib
+fixture
+: >"$w/record"
+printf 'more notes\n' >>"$w/app/notes.txt"
+run "" "$w/record" notes.txt
+committed path-only notes.txt
+
+# A submodule's ignore setting hides it from neither the commit nor its body,
+# nor from the check for other paths staged.
+fixture
+git -C "$w/app" config submodule.lib.ignore all
+: >"$w/record"
+run "" "$w/record" lib
+committed lib-only-ignored lib
+fixture
+git -C "$w/app" config submodule.lib.ignore all
+git -C "$w/app" add lib
+run "" "$w/record"
+if [ "$rc" != 1 ] || [ "$err" != $'lib\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
+    failed+=("other-staged-ignored: exit $rc: $err")
 fi
+unchanged other-staged-ignored
+
+# Where neither a pin nor a PATH moved, nothing is staged or committed, and the
+# record goes; with no PATH, what is already staged is not looked at.
+for how in unmoved-path no-path; do
+    fixture
+    : >"$w/record"
+    if [ "$how" = unmoved-path ]; then
+        git -C "$w/app/lib" checkout -q HEAD~1
+        run "" "$w/record" lib
+    else
+        git -C "$w/app" add lib
+        run "" "$w/record"
+    fi
+    if [ "$rc" != 0 ] || [ -n "$out" ] ||
+        [ "$err" != "upgrade-commit: $w/record: nothing moved, so there is nothing to commit" ]; then
+        failed+=("nothing-moved-$how: exit $rc: $out$err")
+    elif [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
+        failed+=("nothing-moved-$how: a commit was made")
+    elif [ "$how" = unmoved-path ] &&
+        [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
+        failed+=("nothing-moved-$how: something was staged")
+    elif [ -e "$w/record" ]; then
+        failed+=("nothing-moved-$how: the record was kept")
+    fi
+done
+
+# Where no pin moved, any other path staged is still refused.
+fixture
+: >"$w/record"
+git -C "$w/app" add notes.txt Dockerfile
+run "" "$w/record" lib
+if [ "$rc" != 1 ] || [ "$err" != $'Dockerfile\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
+    failed+=("lib-only-other-staged: exit $rc: $err")
+fi
+unchanged lib-only-other-staged
 
 # Any other path staged is refused, listed as git lists it, before anything is
 # staged; a staged rename lists both its paths.
