@@ -89,22 +89,22 @@ fixture() {
 }
 
 # Runs project/tag-create in app with the arguments given, keeping its status in
-# rc and its output in $w/out.
+# rc and its stderr in $w/err.
 run() {
     rc=0
-    (cd "$w/app" && "$tag_create" "$@") >"$w/out" 2>&1 || rc=$?
+    (cd "$w/app" && "$tag_create" "$@") >"$w/out" 2>"$w/err" || rc=$?
 }
 
 # Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
 expect() {
     if [ "$3" != "$4" ]; then
-        failed+=("$1: $2 is $3, not $4: $(<"$w/out")")
+        failed+=("$1: $2 is $3, not $4: $(<"$w/err")")
     fi
 }
 
-# Records a failure of case $1 unless the output holds $2.
+# Records a failure of case $1 unless stderr holds $2.
 expect_out() {
-    grep -qF -- "$2" "$w/out" || failed+=("$1: output lacks '$2': $(<"$w/out")")
+    grep -qF -- "$2" "$w/err" || failed+=("$1: stderr lacks '$2': $(<"$w/err")")
 }
 
 # The object tag $2 names in repository $1, or "none".
@@ -119,7 +119,7 @@ expect_tagged() {
     for r in app app/lib; do
         if ! git -C "$w/$r" cat-file tag "$2" 2>/dev/null |
             grep -qFx -- '-----BEGIN PGP SIGNATURE-----'; then
-            failed+=("$1: $r has no signed tag $2: $(<"$w/out")")
+            failed+=("$1: $r has no signed tag $2: $(<"$w/err")")
         fi
         expect "$1" "$r's origin's $2" "$(tag_of "$w/${r##*/}.git" "$2")" \
             "$(tag_of "$w/$r" "$2")"
@@ -144,7 +144,7 @@ fixture
 git -C "$w/app/lib" tag 1.2
 run 1.2
 expect local-exists status "$rc" 1
-expect_out local-exists "1.2: already exists"
+expect_out local-exists "tag-create: 1.2: already exists"
 expect_untagged local-exists 1.2
 
 # 1.01 and 1.1 are one version to sort -V but are distinct tags, so either
@@ -155,7 +155,7 @@ git -C "$w/app" tag v1.01
 git -C "$w/app/lib" tag v1.1
 run v1.1
 expect zeros-exists status "$rc" 1
-expect_out zeros-exists "v1.1: already exists"
+expect_out zeros-exists "tag-create: v1.1: already exists"
 expect_untagged zeros-exists v1.1
 
 fixture
@@ -163,7 +163,7 @@ git -C "$w/app" tag v1.1
 git -C "$w/app/lib" tag v1.01
 run v1.1
 expect zeros-exists-after status "$rc" 1
-expect_out zeros-exists-after "v1.1: already exists"
+expect_out zeros-exists-after "tag-create: v1.1: already exists"
 expect zeros-exists-after "lib's v1.1" "$(tag_of "$w/app/lib" v1.1)" none
 expect zeros-exists-after "lib's origin's v1.1" \
     "$(tag_of "$w/lib.git" v1.1)" none
@@ -178,7 +178,7 @@ git -C "$w/app/lib" tag 1.2
 git -C "$w/app/lib" tag 1.3
 GIT_CONFIG_COUNT=7 GIT_CONFIG_KEY_6=column.ui GIT_CONFIG_VALUE_6=always run 1.2
 expect column status "$rc" 1
-expect_out column "1.2: already exists"
+expect_out column "tag-create: 1.2: already exists"
 expect_untagged column 1.2
 
 fixture
@@ -205,7 +205,8 @@ git -C "$w/lib.up" tag -a -m 1.2 1.2
 git -C "$w/lib.up" push -q "$w/lib.git" 1.2
 run 1.2
 expect remote-exists status "$rc" 1
-expect_out remote-exists "1.2: already exists on an origin"
+expect_out remote-exists "tag-create: 1.2: already exists on an origin"
+expect remote-exists stdout "$(<"$w/out")" ""
 expect_untagged remote-exists 1.2
 expect remote-exists "lib's 1.2" "$(tag_of "$w/app/lib" 1.2)" none
 
@@ -213,7 +214,7 @@ expect remote-exists "lib's 1.2" "$(tag_of "$w/app/lib" 1.2)" none
 fixture
 git -C "$w/app/lib" remote set-url origin "$w/missing.git"
 run 1.2
-[ "$rc" -ne 0 ] || failed+=("unreachable: exit 0, not a failure: $(<"$w/out")")
+[ "$rc" -ne 0 ] || failed+=("unreachable: exit 0, not a failure: $(<"$w/err")")
 expect_untagged unreachable 1.2
 expect unreachable "lib's 1.2" "$(tag_of "$w/app/lib" 1.2)" none
 
@@ -233,20 +234,35 @@ git -C "$w/app/lib" tag 1.2
 git -C "$w/app/lib" remote set-url origin "$w/missing.git"
 run 1.2
 expect local-offline status "$rc" 1
-expect_out local-offline "1.2: already exists"
+expect_out local-offline "tag-create: 1.2: already exists"
+expect local-offline stdout "$(<"$w/out")" ""
 expect_untagged local-offline 1.2
 
-# A missing or empty tag is refused before anything runs.
+# A missing, empty or extra argument is refused with the usage before anything
+# runs.
 fixture
 run
-expect no-tag status "$rc" 1
-expect_out no-tag "must be set to the tag to create"
+expect no-tag status "$rc" 2
+expect no-tag stderr "$(<"$w/err")" "Usage: tag-create TAG"
+expect no-tag stdout "$(<"$w/out")" ""
 run ""
-expect empty-tag status "$rc" 1
-expect_out empty-tag "must be set to the tag to create"
+expect empty-tag status "$rc" 2
+expect empty-tag stderr "$(<"$w/err")" "Usage: tag-create TAG"
+expect empty-tag stdout "$(<"$w/out")" ""
+run 1.2 1.3
+expect extra status "$rc" 2
+expect extra stderr "$(<"$w/err")" "Usage: tag-create TAG"
+expect extra stdout "$(<"$w/out")" ""
+expect_untagged extra 1.2
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

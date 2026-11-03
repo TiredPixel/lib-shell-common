@@ -8,7 +8,8 @@
 # reads in place of arguments. A case checks the whole log, so a tool given any
 # argument other than those expected fails it.
 #
-# Run: bin/lint.test. Exits 1 naming each case that failed.
+# Run: bin/lint.test. Reports each case that failed on stderr, and exits 1 if
+# any did.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -111,48 +112,96 @@ upto() {
             return
         fi
     done 3<<<"$2"
-    echo "upto: no line for $1" >&2
+    echo "${0##*/}: upto: no line for $1" >&2
     exit 1
 }
 
-failed=()
+failures=0
 
-# Runs bin/lint in the tree and checks its status is $2, its log is $3, and its
-# stderr holds $4.
+# Reports that case $1 failed with detail $2, then each line of file $3 where
+# given, every line prefixed.
+fail() {
+    local l
+    echo "${0##*/}: $1: $2" >&2
+    if [ -n "${3-}" ]; then
+        while IFS= read -r l <&3; do
+            echo "${0##*/}: $1: $l" >&2
+        done 3<"$3"
+    fi
+    failures=$((failures + 1))
+}
+
+# The whole stderr of a run that fails nowhere, since the fakes print nothing;
+# with $1 set, for 2 workflows, else for none.
+progress() {
+    local workflows=0
+    if [ -n "${1-}" ]; then
+        workflows=2
+    fi
+    echo "bin/lint: checking 2 shell file(s)"
+    echo "bin/lint: checking 2 YAML file(s)"
+    echo "bin/lint: checking c1.yml"
+    echo "bin/lint: checking c2.yml"
+    echo "bin/lint: checking $workflows workflow(s)"
+    echo "bin/lint: checking 1 Dockerfile(s)"
+    echo "bin/lint: checking 1 Markdown file(s)"
+    echo "bin/lint: checking 1 Makefile(s)"
+    echo "bin/lint: checking 1 dotenv file(s)"
+}
+
+# The progress line before each tool's check, where it fails on its first call.
+declare -A section=(
+    [shellcheck]="bin/lint: checking 2 shell file(s)"
+    [shfmt]="bin/lint: checking 2 shell file(s)"
+    ["yaml-keys"]="bin/lint: checking 2 YAML file(s)"
+    [yamllint]="bin/lint: checking 2 YAML file(s)"
+    ["docker-compose"]="bin/lint: checking c1.yml"
+    [actionlint]="bin/lint: checking 2 workflow(s)"
+    [dockerfmt]="bin/lint: checking 1 Dockerfile(s)"
+    [hadolint]="bin/lint: checking 1 Dockerfile(s)"
+    [mdformat]="bin/lint: checking 1 Markdown file(s)"
+    [checkmake]="bin/lint: checking 1 Makefile(s)"
+    ["dotenv-linter"]="bin/lint: checking 1 dotenv file(s)"
+)
+
+# Runs bin/lint in the tree and checks its status is $2, its log is $3, its
+# stdout is empty and its stderr is $4.
 check() {
     local name=$1 status=$2 log=$3 said=$4 rc=0
     : >"$FAKE_LOG"
     (cd "$t" && bin/lint) >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status" "$work/err"
     elif [ "$(<"$FAKE_LOG")" != "$log" ]; then
-        failed+=("$name: the log is: $(<"$FAKE_LOG")")
-    elif ! grep -qxF -- "$said" "$work/err"; then
-        failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+        fail "$name" "the log is:" "$FAKE_LOG"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is not empty:" "$work/out"
+    elif [ "$(<"$work/err")" != "$said" ]; then
+        fail "$name" "stderr is:" "$work/err"
     fi
 }
 
 # With no workflow, actionlint is not run, since given no file it would look for
 # workflows itself.
-check no-workflows 0 "$(expected)" "checking 0 workflow(s)"
+check no-workflows 0 "$(expected)" "$(progress)"
 
-FAKE_WORKFLOWS=1 check workflows 0 "$(expected 1)" "checking 2 workflow(s)"
+FAKE_WORKFLOWS=1 check workflows 0 "$(expected 1)" "$(progress 1)"
 
 # Any failing check ends the run with its status, running nothing after it.
 all=$(expected 1)
+said=$(progress 1)
 for tool in "${tools[@]}" yaml-keys; do
     want=$(upto "$tool" "$all")
-    FAKE_WORKFLOWS=1 FAKE_FAIL=$tool check "fails-$tool" 7 "$want" \
-        "checking 2 shell file(s)"
+    heard=$(upto "${section[$tool]}" "$said")
+    FAKE_WORKFLOWS=1 FAKE_FAIL=$tool check "fails-$tool" 7 "$want" "$heard"
 done
 
 # A failure on a later compose file ends the run too, after it says which.
 c2=$(line docker-compose -f c2.yml config -q)
-FAKE_WORKFLOWS=1 FAKE_FAIL=$c2 check fails-compose-c2 7 "$(upto "$c2" "$all")" \
-    "checking c2.yml"
+want=$(upto "$c2" "$all")
+heard=$(upto "bin/lint: checking c2.yml" "$said")
+FAKE_WORKFLOWS=1 FAKE_FAIL=$c2 check fails-compose-c2 7 "$want" "$heard"
 
-if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi
-echo "ok"

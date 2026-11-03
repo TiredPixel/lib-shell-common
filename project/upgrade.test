@@ -145,16 +145,26 @@ expect_err() {
     fi
 }
 
+# The stages announced on stderr, one per line.
+stages() {
+    sed -n 's/^upgrade: \([a-z]*\)$/\1/p' "$w/err"
+}
+
 # Pulls, upgrades under a tty each listed project declaring upgrade and not app
-# itself, rebuilds each declaring build, starts and stops, under a heading for
-# each stage.
+# itself, rebuilds each declaring build, starts and stops, announcing each stage
+# on stderr and leaving stdout to the stages' own output.
 fixture
 check whole 0 "$(printf '%s\n' "pull app" "upgrade lib1 tty" \
     "build lib1 notty" "build lib2 notty" "start app" "stop app")"
-stages=$(grep -oE '[A-Z]+$' "$w/out")
-want=$(printf '%s\n' PULL UPGRADE REBUILD START STOP COMPLETED)
-if [ "$stages" != "$want" ]; then
-    failed+=("whole: the stages are: $stages")
+want=$(printf '%s\n' pull upgrade rebuild start stop completed)
+if [ "$(stages)" != "$want" ]; then
+    failed+=("whole: the stages are: $(stages)")
+fi
+if grep -q '^upgrade: ' "$w/out"; then
+    failed+=("whole: stdout carries a stage: $(<"$w/out")")
+fi
+if grep -qxE '[[:space:]=-]*' "$w/err"; then
+    failed+=("whole: stderr carries a rule or a blank line: $(<"$w/err")")
 fi
 
 # Under BSD script, the command is passed as arguments.
@@ -168,7 +178,7 @@ PATH=$work/bsd:$PATH check bsd-script 0 "$(printf '%s\n' "pull app" \
 fixture
 rm -- "$w/app/.projects"
 check no-list 1 ""
-expect_err no-list "$w/app: no .projects, so upgrade has nothing to sweep"
+expect_err no-list "upgrade: $w/app: no .projects, so there is nothing to sweep"
 
 # A failed pull stops the run: app has diverged from its remote.
 fixture
@@ -182,9 +192,8 @@ expect_err pull-fails "Not possible to fast-forward"
 fixture
 touch "$w/app/lib1/fail"
 check upgrade-fails 2 "pull app"
-stages=$(grep -oE '[A-Z]+$' "$w/out")
-if [ "$stages" != "$(printf '%s\n' PULL UPGRADE)" ]; then
-    failed+=("upgrade-fails: the stages are: $stages")
+if [ "$(stages)" != "$(printf '%s\n' pull upgrade)" ]; then
+    failed+=("upgrade-fails: the stages are: $(stages)")
 fi
 
 # A failed rebuild stops the run before anything starts.
@@ -197,8 +206,14 @@ fixture
 FAKE_UP_RC=1 check start-fails 1 "$(printf '%s\n' "pull app" \
     "upgrade lib1 tty" "build lib1 notty" "build lib2 notty" "start app")"
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

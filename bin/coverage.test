@@ -4,7 +4,8 @@
 # its arguments, each shell-quoted, then the entries of the report directory it
 # was given, as "out:" and their names, and exits with FAKE_KCOV's status.
 #
-# Run: bin/coverage.test. Exits 1 naming each case that failed.
+# Run: bin/coverage.test. Reports each case that failed on stderr, and exits 1
+# if any did.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -33,7 +34,20 @@ chmod +x "$work/path/kcov"
 export FAKE_LOG=$work/log
 export PATH=$work/path:$PATH
 
-failed=()
+failures=0
+
+# Reports that case $1 failed with detail $2, then each line of file $3 where
+# given, every line prefixed.
+fail() {
+    local l
+    echo "${0##*/}: $1: $2" >&2
+    if [ -n "${3-}" ]; then
+        while IFS= read -r l <&3; do
+            echo "${0##*/}: $1: $l" >&2
+        done 3<"$3"
+    fi
+    failures=$((failures + 1))
+}
 
 # Makes a tree at $work/$1 holding bin/coverage, and prints its path.
 tree() {
@@ -57,15 +71,17 @@ check() {
         printf '\nout:'
     )
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status" "$work/err"
     elif [ "$(<"$FAKE_LOG")" != "$log" ]; then
-        failed+=("$name: the log is: $(<"$FAKE_LOG")")
+        fail "$name" "the log is:" "$FAKE_LOG"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is not empty:" "$work/out"
     elif [ "$(<"$work/err")" != "$said" ]; then
-        failed+=("$name: stderr is: $(<"$work/err")")
+        fail "$name" "stderr is:" "$work/err"
     fi
 }
 
-report="coverage report: tmp/coverage/index.html"
+report="bin/coverage: report written to tmp/coverage/index.html"
 
 # With no report yet, tmp/coverage/ is made, along with tmp/.
 t=$(tree fresh)
@@ -77,17 +93,42 @@ mkdir -p "$t/tmp/coverage/sub"
 : >"$t/tmp/coverage/index.html"
 : >"$t/tmp/coverage/sub/f"
 : >"$t/tmp/keep"
-check replaced "$t" 0 "removing $t/tmp/coverage"$'\n'"$report"
+check replaced "$t" 0 "bin/coverage: removing $t/tmp/coverage"$'\n'"$report"
 if ! [ -e "$t/tmp/keep" ]; then
-    failed+=("replaced: tmp/keep was removed")
+    fail replaced "tmp/keep was removed"
 fi
 
 # kcov's failure is bin/coverage's, with no report named.
 t=$(tree kcov-fails)
 FAKE_KCOV=3 check kcov-fails "$t" 3 ""
 
-if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+# A name bin/test would refuse is refused before the last report is touched or
+# kcov runs.
+t=$(tree refused)
+mkdir -p "$t/tmp/coverage"
+: >"$t/tmp/coverage/index.html"
+for args in a/one one.test a/b/c.test ./a/one.test "a/one.test b/two"; do
+    read -r -a names <<<"$args"
+    name="refused $args"
+    said="bin/coverage: ${names[-1]} is not a */*.test"$'\n'
+    said+="Usage: bin/coverage [DIR/NAME.test...]"
+    rc=0
+    : >"$FAKE_LOG"
+    (cd "$t" && bin/coverage "${names[@]}") >"$work/out" 2>"$work/err" ||
+        rc=$?
+    if [ "$rc" != 2 ]; then
+        fail "$name" "exit $rc, not 2" "$work/err"
+    elif [ -s "$FAKE_LOG" ]; then
+        fail "$name" "the log is:" "$FAKE_LOG"
+    elif ! [ -e "$t/tmp/coverage/index.html" ]; then
+        fail "$name" "the last report was removed"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is not empty:" "$work/out"
+    elif [ "$(<"$work/err")" != "$said" ]; then
+        fail "$name" "stderr is:" "$work/err"
+    fi
+done
+
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi
-echo "ok"

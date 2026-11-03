@@ -11,11 +11,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-
-source "$dir/echo-line"
+prog=${0##*/}
 
 f_projects=.projects
+
+if [ $# -eq 0 ]; then
+    echo "Usage: $prog COMMAND [ARG...]" >&2
+    exit 2
+fi
 
 # .projects and the paths in it are relative to the top level, so the sweep is
 # the same from any directory in the repository. Assigned on its own, so that
@@ -51,7 +54,8 @@ if [ -f "$f_projects" ]; then
         case $entry in
         '160000 '*) ;;
         *)
-            echo "$project: not a submodule of $PWD, so it cannot be swept" >&2
+            echo "$prog: $project: not a submodule of $PWD," \
+                "so it cannot be swept" >&2
 
             exit 1
             ;;
@@ -62,8 +66,8 @@ if [ -f "$f_projects" ]; then
         # project/release-assert gives, its top level is this repository's.
         top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || top=
         if [[ ! $top -ef $project ]]; then
-            echo "$project: submodule of $PWD not checked out, so it cannot" \
-                "be swept; project/submodule-init checks it out" >&2
+            echo "$prog: $project: submodule of $PWD not checked out," \
+                "so it cannot be swept; project/submodule-init checks it out" >&2
 
             exit 1
         fi
@@ -76,8 +80,7 @@ for project in "${projects[@]}"; do
     pushd "$project" >/dev/null
 
     # To stderr, for the reason project/each gives.
-    echo_line '-' >&2
-    printf '%s\n\n' "$project" >&2
+    echo "$prog: $project" >&2
     "$@"
 
     popd >/dev/null

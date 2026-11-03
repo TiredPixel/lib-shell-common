@@ -70,7 +70,7 @@ fi
 
 # Named rather than counted, so the log records what the pass actually covered
 # and an absence is visible without anyone having to ask for it.
-printf '%s\n' "${named[@]}" "${scripts[@]}" | sed 's/^/  /' >&2
+printf '%s\n' "${named[@]}" "${scripts[@]}" >&2
 
 # -P SCRIPTDIR, so a source of a file beside the script is followed rather than
 # reported as unresolved.

@@ -2,8 +2,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-tag=${1:?must be set to the tag to create}
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+prog=${0##*/}
+
+if [ $# -ne 1 ] || [ -z "$1" ]; then
+    echo "Usage: $prog TAG" >&2
+    exit 2
+fi
+tag=$1
 
 # The sweeps' status is checked rather than discarded: as the left operand of an
 # && list it would be exempt from errexit, so a sweep that failed, on a
@@ -22,7 +28,7 @@ existing=$("$dir/each" git tag -l --no-column)
 # 14X655 -- and -x because 14.6 is not 14.655. Asked before any origin, so a tag
 # that exists here is refused without needing the network.
 if grep -qFx -- "$tag" <<<"$existing"; then
-    echo "$tag: already exists" >&2
+    echo "$prog: $tag: already exists" >&2
     exit 1
 fi
 
@@ -32,7 +38,7 @@ fi
 remote=$("$dir/each" "$dir/tag-list-origin" | cut -f2)
 
 if grep -qFx -- "refs/tags/$tag" <<<"$remote"; then
-    echo "$tag: already exists on an origin" >&2
+    echo "$prog: $tag: already exists on an origin" >&2
     exit 1
 fi
 

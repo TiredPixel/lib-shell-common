@@ -129,8 +129,14 @@ check config-fails 1 "lib compose config --services"
 fixture
 FAKE_UP_RC=1 check up-fails 1 "$(up lib 300)"
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

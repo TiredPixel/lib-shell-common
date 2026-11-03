@@ -10,12 +10,21 @@ shopt -s inherit_errexit failglob
 bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 out=$PWD/tmp/coverage
 
+# Checked here as bin/test checks them, so a bad name leaves the last report.
+for t in "$@"; do
+    if ! [[ $t =~ ^[^/]+/[^/]+\.test$ ]]; then
+        printf 'bin/coverage: %q is not a */*.test\n' "$t" >&2
+        echo "Usage: bin/coverage [DIR/NAME.test...]" >&2
+        exit 2
+    fi
+done
+
 if [ -e "$out" ]; then
-    echo "removing ${out:?}" >&2
+    echo "bin/coverage: removing ${out:?}" >&2
     rm -rf -- "${out:?}"
 fi
 mkdir -p -- "$out"
 
 kcov --include-path="$PWD" "$out" "$bin/test" "$@"
 
-echo "coverage report: tmp/coverage/index.html" >&2
+echo "bin/coverage: report written to tmp/coverage/index.html" >&2

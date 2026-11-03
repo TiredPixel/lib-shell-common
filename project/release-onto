@@ -39,7 +39,7 @@ release_onto() {
 
     release_checkout "$dir" "$branch" || return
 
-    "$dir/release-commit-submodules" || return
+    "$dir/release-commit-submodules" "$tag" || return
 
     "$dir/tag-create" "$tag" || return
 

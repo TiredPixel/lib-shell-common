@@ -10,55 +10,37 @@ bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 source "$bin/files"
 
-echo -e "\n=== LINT SHELL\n"
-
-echo "checking ${#shell_files[@]} shell file(s)" >&2
+echo "bin/lint: checking ${#shell_files[@]} shell file(s)" >&2
 # -P SCRIPTDIR, so a source of a file beside the script, such as docker/init or
 # bin/files, is followed rather than reported as unresolved.
 shellcheck -x -P SCRIPTDIR "${shell_files[@]}"
 shfmt "${shfmt_args[@]}" -d "${shell_files[@]}"
 
-echo -e "\n=== LINT YAML\n"
-
-echo "checking ${#yaml_files[@]} YAML file(s)" >&2
+echo "bin/lint: checking ${#yaml_files[@]} YAML file(s)" >&2
 printf '%s\0' "${yaml_files[@]}" | "$bin/../lint/yaml-keys"
 yamllint --strict "${yaml_files[@]}"
-
-echo -e "\n=== LINT COMPOSE\n"
 
 # The image installs Debian's docker-compose package and no docker CLI, so
 # Compose runs as docker-compose here rather than as docker compose.
 for f in "${compose_files[@]}"; do
-    echo "checking $f" >&2
+    echo "bin/lint: checking $f" >&2
     docker-compose -f "$f" config -q
 done
 
-echo -e "\n=== LINT WORKFLOWS\n"
-
-echo "checking ${#workflow_files[@]} workflow(s)" >&2
+echo "bin/lint: checking ${#workflow_files[@]} workflow(s)" >&2
 if [ ${#workflow_files[@]} -gt 0 ]; then
     actionlint "${workflow_files[@]}"
 fi
 
-echo -e "\n=== LINT DOCKERFILE\n"
-
-echo "checking ${#docker_files[@]} Dockerfile(s)" >&2
+echo "bin/lint: checking ${#docker_files[@]} Dockerfile(s)" >&2
 dockerfmt "${dockerfmt_args[@]}" --check "${docker_files[@]}"
 hadolint "${docker_files[@]}"
 
-echo -e "\n=== LINT MARKDOWN\n"
-
-echo "checking ${#markdown_files[@]} Markdown file(s)" >&2
+echo "bin/lint: checking ${#markdown_files[@]} Markdown file(s)" >&2
 mdformat "${mdformat_args[@]}" --check "${markdown_files[@]}"
 
-echo -e "\n=== LINT MAKEFILE\n"
-
-echo "checking ${#make_files[@]} Makefile(s)" >&2
+echo "bin/lint: checking ${#make_files[@]} Makefile(s)" >&2
 checkmake "${make_files[@]}"
 
-echo -e "\n=== LINT DOTENV\n"
-
-echo "checking ${#dotenv_files[@]} dotenv file(s)" >&2
+echo "bin/lint: checking ${#dotenv_files[@]} dotenv file(s)" >&2
 dotenv-linter check "${dotenv_files[@]}"
-
-echo

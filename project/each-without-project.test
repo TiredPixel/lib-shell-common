@@ -23,10 +23,7 @@ export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
-# The rule each name follows on its line is 80 wide whatever terminal runs the
-# test.
-unset TERM
-rule=$(printf '%80s' '' | tr ' ' -)
+p="each-without-project"
 
 cat >"$work/record" <<'EOF'
 #!/usr/bin/env bash
@@ -96,8 +93,21 @@ swept=$(printf '%s\n' "WORK/app/lib1 a b" "WORK/app/lib2 a b")
 fixture
 run .
 expect top 0 "${swept//WORK/$w}"
-expect_err top "${rule}lib1"
-expect_err top "${rule}lib2"
+if [ "$(<"$w/err")" != "$(printf '%s\n' "$p: lib1" "$p: lib2")" ]; then
+    failed+=("top: stderr is: $(<"$w/err")")
+fi
+if [ -s "$w/out" ]; then
+    failed+=("top: stdout is: $(<"$w/out")")
+fi
+
+# With no command, the usage is printed and nothing runs.
+fixture
+rc=0
+(cd "$w/app" && "$each") >"$w/out" 2>"$w/err" || rc=$?
+expect usage 2 ""
+if [ "$(<"$w/err")" != "Usage: $p COMMAND [ARG...]" ]; then
+    failed+=("usage: stderr is: $(<"$w/err")")
+fi
 
 # From a subdirectory, the list and its paths are read from the top level.
 fixture
@@ -128,7 +138,8 @@ fixture
 printf 'lib1\nsub\n' >"$w/app/.projects"
 run .
 expect not-submodule 1 ""
-expect_err not-submodule "sub: not a submodule of $w/app, so it cannot be swept"
+expect_err not-submodule \
+    "$p: sub: not a submodule of $w/app, so it cannot be swept"
 
 # A submodule not checked out is refused before any command runs, rather than
 # visited as an empty directory where git answers about app.
@@ -136,8 +147,8 @@ fixture
 git -C "$w/app" submodule deinit -q -f lib2
 run .
 expect not-checked-out 1 ""
-expect_err not-checked-out "lib2: submodule of $w/app not checked out, so it \
-cannot be swept; project/submodule-init checks it out"
+expect_err not-checked-out "$p: lib2: submodule of $w/app not checked out, so \
+it cannot be swept; project/submodule-init checks it out"
 
 # As above, for a submodule whose directory is gone.
 fixture
@@ -174,10 +185,16 @@ printf '%s\n' 'lib\n1' lib2 >"$w/app/.projects"
 run .
 expect backslash 0 "$w/app/lib\\n1 a b
 $w/app/lib2 a b"
-expect_err backslash "${rule}lib\\n1"
+expect_err backslash "$p: lib\\n1"
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

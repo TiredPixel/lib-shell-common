@@ -16,7 +16,9 @@ failed=()
 
 # Runs version-assert with the arguments from $5 on and VERSION set to $2, or
 # unset where $2 is "-unset-", and checks its status is $3, its stdout is empty,
-# and its stderr holds $4 where that is not empty or is empty where $4 is.
+# and its stderr holds $4 where that is not empty or is empty where $4 is. On a
+# refusal, exit 1, every stderr line must carry the program prefix and end
+# without a full stop.
 check() {
     local name=$1 version=$2 status=$3 said=$4 rc=0
     shift 4
@@ -33,42 +35,45 @@ check() {
         failed+=("$name: stderr is: $(<"$work/err")")
     elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
         failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+    elif [ "$rc" = 1 ] && grep -qv -e '^version-assert: .*[^.]$' "$work/err"; then
+        failed+=("$name: a line lacks the prefix or ends in a full stop: $(<"$work/err")")
     fi
 }
 
-check unset -unset- 1 "must be set to the version to stamp"
-check empty "" 1 "must be set to the version to stamp"
-check placeholder 0.0 1 "VERSION is 0.0, which is the unstamped placeholder"
+check unset -unset- 1 "version-assert: VERSION must be set to the version to stamp"
+check empty "" 1 "version-assert: VERSION must be set to the version to stamp"
+check placeholder 0.0 1 "version-assert: VERSION is 0.0, which is the unstamped placeholder"
 check three-parts 1.2.3 1 "a release is major.minor and nothing else"
 check describe 14.654.4-gdd8f39ac 1 "a release is major.minor and nothing else"
+check describe-why 14.654.4-gdd8f39ac 1 "version-assert: a build that is not exactly on a tag has no release number to claim"
 check major-only 14 1 "a release is major.minor and nothing else"
 check release 14.655 0 ""
 check zero-major 0.1 0 ""
 check minor-largest 1.9999 0 ""
-check minor-too-large 1.10000 1 "VERSION minor is 10000"
+check minor-too-large 1.10000 1 "version-assert: VERSION minor is 10000"
 # The test builtin reads a leading zero as decimal, so 0654 is 654.
 check minor-leading-zero 1.0654 0 ""
 check major-largest 209999.0 0 ""
-check major-too-large 210000.0 1 "VERSION major is 210000"
-check placeholder-three 0.0.0 1 "VERSION is 0.0.0, which is the unstamped placeholder"
+check major-too-large 210000.0 1 "version-assert: VERSION major is 210000"
+check placeholder-three 0.0.0 1 "version-assert: VERSION is 0.0.0, which is the unstamped placeholder"
 check explicit-two 14.655 0 "" --parts 2
 check explicit-two-three-parts 1.2.3 1 "a release is major.minor and nothing else" --parts 2
 check last-setting-wins 14.655 0 "" --parts 3 --parts 2
 
 # The whole value is matched, not any one line of it.
-check release-then-line $'14.655\nx' 1 "a release is major.minor and nothing else"
+check release-then-line $'14.655\nx' 1 "version-assert: VERSION is \$'14.655\\nx'; a release is major.minor and nothing else"
 check line-then-release $'x\n14.655' 1 "a release is major.minor and nothing else"
 
 # A part too long for the test builtin is over its bound, not an error or a
 # pass; leading zeros do not count towards that length.
-check minor-oversized 1.99999999999999999999 1 "VERSION minor is 99999999999999999999;"
-check major-oversized 99999999999999999999.1 1 "VERSION major is 99999999999999999999;"
+check minor-oversized 1.99999999999999999999 1 "version-assert: VERSION minor is 99999999999999999999;"
+check major-oversized 99999999999999999999.1 1 "version-assert: VERSION major is 99999999999999999999;"
 check minor-long-zeros 1.0000000000000000000001 0 ""
 check minor-all-zeros 1.0000 0 ""
-check minor-18-digits 1.999999999999999999 1 "VERSION minor is 999999999999999999;"
+check minor-18-digits 1.999999999999999999 1 "version-assert: VERSION minor is 999999999999999999;"
 
-check three-placeholder 0.0.0 1 "VERSION is 0.0.0, which is the unstamped placeholder" --parts 3
-check three-placeholder-two 0.0 1 "VERSION is 0.0, which is the unstamped placeholder" --parts 3
+check three-placeholder 0.0.0 1 "version-assert: VERSION is 0.0.0, which is the unstamped placeholder" --parts 3
+check three-placeholder-two 0.0 1 "version-assert: VERSION is 0.0, which is the unstamped placeholder" --parts 3
 check three-release 14.655.4 0 "" --parts 3
 check three-two-parts 14.655 1 "a release is major.minor.patch and nothing else" --parts 3
 check three-four-parts 1.2.3.4 1 "a release is major.minor.patch and nothing else" --parts 3
@@ -76,13 +81,13 @@ check three-describe 14.654.4-gdd8f39ac 1 "a release is major.minor.patch and no
 check three-multi-line $'1.2.3\n4' 1 "a release is major.minor.patch and nothing else" --parts 3
 check three-zero-major 0.0.1 0 "" --parts 3
 check three-minor-largest 1.999.0 0 "" --parts 3
-check three-minor-too-large 1.1000.0 1 "VERSION minor is 1000; the build number needs under 1000." --parts 3
+check three-minor-too-large 1.1000.0 1 "version-assert: VERSION minor is 1000; the build number needs under 1000" --parts 3
 check three-patch-largest 1.0.999 0 "" --parts 3
-check three-patch-too-large 1.0.1000 1 "VERSION patch is 1000; the build number needs under 1000." --parts 3
+check three-patch-too-large 1.0.1000 1 "version-assert: VERSION patch is 1000; the build number needs under 1000" --parts 3
 check three-patch-leading-zero 1.0.0999 0 "" --parts 3
-check three-patch-oversized 1.0.99999999999999999999 1 "VERSION patch is 99999999999999999999;" --parts 3
+check three-patch-oversized 1.0.99999999999999999999 1 "version-assert: VERSION patch is 99999999999999999999;" --parts 3
 check three-major-largest 2099.999.999 0 "" --parts 3
-check three-major-too-large 2100.0.0 1 "VERSION major is 2100; the build number needs 2099 or under." --parts 3
+check three-major-too-large 2100.0.0 1 "version-assert: VERSION major is 2100; the build number needs 2099 or under" --parts 3
 
 # Other scripts' digits are not a release under any locale, though in a UTF-8
 # one other than C.UTF-8 a 0-9 bracket matches them. The values are written as
@@ -100,7 +105,7 @@ while read -r loc <&3; do
     LC_ALL=$loc check "three-arabic-indic-$loc" $'1.2.\xd9\xa3' 1 "a release is major.minor.patch and nothing else" --parts 3
 done 3< <(locale -a)
 if [ "$utf8" = 0 ]; then
-    failed+=("locale -a lists no UTF-8 locale to run the digit cases under")
+    failed+=("utf8-locales: locale -a lists none to run the digit cases under")
 fi
 
 # Arguments are checked before VERSION.
@@ -108,12 +113,18 @@ check parts-other 14.655 2 "Usage:" --parts 4
 check parts-one 14 2 "Usage:" --parts 1
 check parts-empty 14.655 2 "Usage:" --parts ""
 check parts-missing 14.655 2 "Usage:" --parts
-check unknown-option 14.655 2 "Usage:" --bogus
+check unknown-option 14.655 2 "Usage: version-assert [--parts 2|3]" --bogus
 check positional 14.655 2 "Usage:" 14.655
 check usage-before-unset -unset- 2 "Usage:" --parts 4
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

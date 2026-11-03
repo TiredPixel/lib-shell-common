@@ -53,9 +53,5 @@ docker build \
 
 for tag in "${tags[@]}"; do
     docker push "$REPO:$tag"
+    echo "${0##*/}: pushed $REPO:$tag" >&2
 done
-
-echo
-echo "version: $version"
-echo "repo:    $REPO"
-echo "tags:    ${tags[*]}"

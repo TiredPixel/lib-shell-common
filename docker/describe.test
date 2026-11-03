@@ -61,7 +61,7 @@ chmod +x "$work/bin/git"
 export PATH=$work/bin:$PATH
 
 # The shells that source describe are scripts in files rather than -c strings,
-# as its callers are, so BASH_SOURCE is set in them as it is in a caller.
+# as its callers are, so $0 names the script as it names a caller.
 cat >"$work/source" <<'EOF'
 if [ "$1" = strict ]; then
     set -Eeuo pipefail
@@ -102,7 +102,7 @@ check() {
 }
 
 if no_tmpdir=$(env -u LC_ALL LANGUAGE=de TMPDIR="$work/missing" mktemp 2>&1); then
-    echo "mktemp made a file in a missing directory" >&2
+    echo "${0##*/}: missing-tmpdir: mktemp made a file in a missing directory" >&2
     exit 1
 fi
 
@@ -117,9 +117,9 @@ for mode in plain strict; do
     done
     # Any other failure is passed on, and exits 1 before the caller goes on.
     check "$mode-broken" "$mode" broken "$work/tmp" 1 "" \
-        "fatal: not a git repository (or any of the parent directories): .git"$'\n'"$describe: git describe failed"
+        "fatal: not a git repository (or any of the parent directories): .git"$'\n'"source: git describe failed"
     check "$mode-mentions" "$mode" mentions "$work/tmp" 1 "" \
-        "fatal: bad object: No names found, cannot describe anything."$'\n'"$describe: git describe failed"
+        "fatal: bad object: No names found, cannot describe anything."$'\n'"source: git describe failed"
     # No temporary file for git's stderr: mktemp says why, in its own words
     # here, and git never runs.
     check "$mode-no-tmpdir" "$mode" broken "$work/missing" 1 "" "$no_tmpdir"
@@ -130,8 +130,14 @@ FAKE_GIT=tagged TMPDIR=$work/tmp bash --norc --noprofile "$work/options" \
     "$describe" ||
     failed+=("options: sourcing changed the shell's options")
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

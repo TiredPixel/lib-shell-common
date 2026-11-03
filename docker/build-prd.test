@@ -93,7 +93,7 @@ build() {
 
 push="push r/x:a-b.prd"
 pushed="fake docker: pushed r/x:a-b.prd"
-broken="fatal: bad object HEAD"$'\n'"$dir/describe: git describe failed"
+broken="fatal: bad object HEAD"$'\n'
 
 for model in latest stable; do
     caches="--cache-from r/x:a-b.dev --cache-from r/x:a-b.prd"
@@ -115,7 +115,7 @@ for model in latest stable; do
 
     # Any other failure of git's stops the build before docker is called.
     FAKE_DESCRIBE=broken check "$model-describe-fails" "build-prd-$model" 1 \
-        "" "" "$broken"
+        "" "" "${broken}build-prd-$model: git describe failed"
 
     FAKE_BUILD=3 check "$model-build-fails" "build-prd-$model" 3 "$built" \
         "fake docker: built" "fake docker: building"
@@ -125,8 +125,14 @@ for model in latest stable; do
         "fake docker: building"
 done
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

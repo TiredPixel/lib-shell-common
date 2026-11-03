@@ -13,6 +13,12 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=${0##*/}
+
+if [ $# -eq 0 ] || [ -z "$1" ]; then
+    echo "Usage: $prog TARGET [COMMAND...]" >&2
+    exit 2
+fi
 target=$1
 shift
 
@@ -26,7 +32,7 @@ fi
 # what it says both for a Makefile lacking the rule and for no Makefile at all,
 # and only the first of those is a project with nothing to do.
 if [ ! -f Makefile ] && [ ! -f makefile ] && [ ! -f GNUmakefile ]; then
-    echo "$PWD: no Makefile, so make $target cannot be swept here" >&2
+    echo "$prog: $PWD: no Makefile, so make $target cannot be swept here" >&2
     exit 1
 fi
 
@@ -36,7 +42,8 @@ fi
 # reading the Makefile expands its $(shell) calls, as any make does. stdout is
 # dropped and stderr kept, because the wording of the diagnostic is what
 # separates the two failures below; LC_ALL=C, because make translates it.
-err=$(LC_ALL=C make -q "$target" 2>&1 >/dev/null) && status=0 || status=$?
+status=0
+err=$(LC_ALL=C make -q "$target" 2>&1 >/dev/null) || status=$?
 
 case $status in
 0 | 1)

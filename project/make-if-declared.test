@@ -141,7 +141,20 @@ expect_err keep-going-missing-include "No rule to make target 'other.mk'"
 # A directory with no Makefile is not one with nothing to do.
 project "" ""
 run no-makefile 1 build
-expect_err no-makefile "$w: no Makefile, so make build cannot be swept here"
+expect_err no-makefile \
+    "make-if-declared: $w: no Makefile, so make build cannot be swept here"
+
+# A missing or empty target is refused with the usage before make is asked.
+for args in no-target empty-target; do
+    project Makefile "build:\n$recipe"
+    target=()
+    [ "$args" = no-target ] || target=('')
+    run "$args" 2 "${target[@]}"
+    if [ "$(<"$w/err")" != "Usage: make-if-declared TARGET [COMMAND...]" ]; then
+        failed+=("$args: stderr is: $(<"$w/err")")
+    fi
+    expect_log "$args" ""
+done
 
 export PATH=$work/fake:$PATH
 
@@ -171,8 +184,14 @@ project Makefile "build:\n"
 FAKE_ERR="make: *** No rule to make target 'build'.  Stop." \
     run literal-target 1 'b*'
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

@@ -16,7 +16,7 @@ export DOCKER_BUILDKIT=1
 REPO=$(cat -- .dockerrepo) || REPO=""
 
 if [ -z "$REPO" ]; then
-    echo "${BASH_SOURCE[0]}: REPO: .dockerrepo missing or empty;" \
+    echo "${0##*/}: REPO: .dockerrepo missing or empty;" \
         "write the image repository, such as ghcr.io/OWNER/NAME, to it" >&2
     exit 1
 fi
@@ -42,7 +42,7 @@ fi
 # to do and the status is 1 even where init is sourced from a bash -c string
 # without errexit, where ${TAG:?} exits 127.
 if [ -z "$TAG" ]; then
-    echo "${BASH_SOURCE[0]}: TAG: detached HEAD and no CI branch or tag" \
+    echo "${0##*/}: TAG: detached HEAD and no CI branch or tag" \
         "variable set; check out a branch" >&2
     exit 1
 fi

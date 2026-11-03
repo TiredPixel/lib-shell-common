@@ -92,39 +92,39 @@ check no-scripts 0 "$none" ""
 project
 script run
 mkdir "$p/bin"
-check empty-bin 0 "  ./run" "$sc ./run"
+check empty-bin 0 "./run" "$sc ./run"
 
 project
 script run
 text README
 script bin/tool
 text bin/notes.sh
-check found 0 "  ./run"$'\n'"  bin/tool" "$sc ./run bin/tool"
+check found 0 "./run"$'\n'"bin/tool" "$sc ./run bin/tool"
 
 # A colon in a name is not taken for the end of the name.
 project
 script 'a:b'
-check colon 0 "  ./a:b" "$sc ./a:b"
+check colon 0 "./a:b" "$sc ./a:b"
 
 project
 script gradlew
 script gradlew.bat
 script bin/tool
-check gradle-skipped 0 "  bin/tool" "$sc bin/tool"
+check gradle-skipped 0 "bin/tool" "$sc bin/tool"
 
 # A named file is checked whether or not anything was found.
 project
 printf 'echo sourced\n' >"$p/fragment"
-check named-only 0 "  fragment" "$sc fragment" fragment
+check named-only 0 "fragment" "$sc fragment" fragment
 
 project
 printf 'echo sourced\n' >"$p/fragment"
 script run
-check named-and-found 0 "  fragment"$'\n'"  ./run" "$sc fragment ./run" fragment
+check named-and-found 0 "fragment"$'\n'"./run" "$sc fragment ./run" fragment
 
 project
 script run
-FAKE_SHELLCHECK=1 check shellcheck-fails 1 "  ./run" "$sc ./run"
+FAKE_SHELLCHECK=1 check shellcheck-fails 1 "./run" "$sc ./run"
 
 # A failing file(1) stops the run before shellcheck, rather than reading as no
 # scripts found.
@@ -132,8 +132,14 @@ project
 script run
 PREPATH=$work/badfile check file-fails 1 "fake file: broken" ""
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

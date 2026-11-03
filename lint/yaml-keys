@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
+# Usage: yaml-keys <PATHS (NUL-separated)
+#
 # Check every YAML path given on stdin, NUL-separated, against what
-# `yq -P 'sort_keys(..)'` would write, and report the ones that differ. Reports
-# and never rewrites: this is the read-only half of a formatting pass, and the
-# writing half is the caller's. Both should take the same path set, or one will
-# rewrite a file the other never checks.
+# `yq -P 'sort_keys(..)'` would write, and report the ones that differ, each as
+# a unified diff on stdout from the file to its sorted form. Reports and never
+# rewrites: this is the read-only half of a formatting pass, and the writing
+# half is the caller's. Both should take the same path set, or one will rewrite
+# a file the other never checks.
 #
 # Every offender is named rather than only the first, since one formatting run
 # fixes them all either way -- stopping at the first only costs the reader a
@@ -15,6 +18,13 @@
 # the same name does not implement.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
+
+prog=$(basename "$0")
+
+if [ $# -ne 0 ]; then
+    echo "Usage: $prog <PATHS (NUL-separated)" >&2
+    exit 2
+fi
 
 unsorted=0
 unreadable=0
@@ -31,18 +41,18 @@ while IFS= read -r -d '' f <&3; do
     # Written to a file rather than piped into diff, so yq's own status is seen
     # and a file it cannot parse is not reported as merely unsorted.
     if ! yq -P 'sort_keys(..)' "$f" >"$sorted"; then
-        echo "$f: yq could not read it, so its keys were not checked" >&2
+        echo "$prog: $f: yq could not read it, so its keys were not checked" >&2
         unreadable=1
         continue
     fi
 
     # diff exits 1 on a difference and above that on trouble, which is fatal.
     rc=0
-    diff -q -- "$sorted" "$f" >/dev/null || rc=$?
+    diff -u --label "$f" --label "$f (sorted)" -- "$f" "$sorted" || rc=$?
     case $rc in
     0) ;;
     1)
-        echo "$f: keys not sorted" >&2
+        echo "$prog: $f: keys not sorted" >&2
         unsorted=1
         ;;
     *) exit "$rc" ;;
@@ -53,10 +63,10 @@ done 3<&0 </dev/null
 # as a caller whose own path list came out wrong, and only the caller can tell
 # those apart. Saying how many were checked is what stops nothing-was-checked
 # reading like everything-passed.
-echo "$(basename "$0"): checked $checked file(s)" >&2
+echo "$prog: checked $checked file(s)" >&2
 
 if [ "$unsorted" -ne 0 ]; then
-    echo "YAML key order: rewrite with yq -i -P 'sort_keys(..)'." >&2
+    echo "$prog: rewrite with yq -i -P 'sort_keys(..)'" >&2
 fi
 
 if [ "$unsorted" -ne 0 ] || [ "$unreadable" -ne 0 ]; then

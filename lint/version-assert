@@ -32,8 +32,10 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=$(basename "$0")
+
 usage() {
-    echo "Usage: $0 [--parts 2|3]" >&2
+    echo "Usage: $prog [--parts 2|3]" >&2
     exit 2
 }
 
@@ -55,13 +57,16 @@ case $parts in
 *) usage ;;
 esac
 
-# :? rather than ?, because the risk here is empty rather than unset: a workflow
-# that resolves no version still exports the variable, holding nothing, and set
-# -u does not catch that.
-: "${VERSION:?must be set to the version to stamp}"
+# Empty is refused with unset, because the risk here is empty rather than unset:
+# a workflow that resolves no version still exports the variable, holding
+# nothing. Exit 1 rather than 2, because VERSION is input to check, not usage.
+if [ -z "${VERSION:-}" ]; then
+    echo "$prog: VERSION must be set to the version to stamp" >&2
+    exit 1
+fi
 
 if [ "$VERSION" = 0.0 ] || [ "$VERSION" = 0.0.0 ]; then
-    echo "VERSION is $VERSION, which is the unstamped placeholder, not a release." >&2
+    echo "$prog: VERSION is $VERSION, which is the unstamped placeholder, not a release" >&2
     exit 1
 fi
 
@@ -78,8 +83,10 @@ else
 fi
 
 if ! [[ $VERSION =~ $pattern ]]; then
-    echo "VERSION is '$VERSION'; a release is $shape and nothing else." >&2
-    echo "A build that is not exactly on a tag has no release number to claim." >&2
+    # Quoted with %q, so a value holding a newline stays on one line.
+    printf '%s: VERSION is %q; a release is %s and nothing else\n' \
+        "$prog" "$VERSION" "$shape" >&2
+    echo "$prog: a build that is not exactly on a tag has no release number to claim" >&2
     exit 1
 fi
 
@@ -114,12 +121,12 @@ else
 fi
 
 if above "$minor" $((lower - 1)); then
-    echo "VERSION minor is $minor; the build number needs under $lower." >&2
+    echo "$prog: VERSION minor is $minor; the build number needs under $lower" >&2
     exit 1
 fi
 
 if [ -n "$patch" ] && above "$patch" $((lower - 1)); then
-    echo "VERSION patch is $patch; the build number needs under $lower." >&2
+    echo "$prog: VERSION patch is $patch; the build number needs under $lower" >&2
     exit 1
 fi
 
@@ -133,6 +140,6 @@ fi
 # rather than on the computed number, so the formula lives in the two places
 # that use it and not in a third.
 if above "$major" "$major_max"; then
-    echo "VERSION major is $major; the build number needs $major_max or under." >&2
+    echo "$prog: VERSION major is $major; the build number needs $major_max or under" >&2
     exit 1
 fi

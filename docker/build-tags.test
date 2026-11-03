@@ -101,12 +101,12 @@ expect() {
     done
     calls="$build ."
     want_out="fake docker: built"
+    want_err="fake docker: building"
     for tag in "$@"; do
         calls+=$'\n'"push r/x:$tag"
         want_out+=$'\n'"fake docker: pushed r/x:$tag"
+        want_err+=$'\n'"build-tags: pushed r/x:$tag"
     done
-    want_out+=$'\n\n'"version: $version"$'\n'"repo:    r/x"$'\n'"tags:    $*"
-    want_err="fake docker: building"
 }
 
 # On a release, the release and each shorter prefix are tags too.
@@ -136,12 +136,19 @@ check untagged 128 a/b "" "" ""
 expect 1.2 a-b 1.2 1
 build=${calls%%$'\n'*}
 want_out="fake docker: built"
+want_err="fake docker: building"
 check build-fails 3 a/b 1.2 1.2 "$build" FAKE_BUILD=3
 want_out+=$'\n'"fake docker: pushed r/x:a-b"
 check push-fails 4 a/b 1.2 1.2 "$build"$'\n'"push r/x:a-b" FAKE_PUSH=4
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

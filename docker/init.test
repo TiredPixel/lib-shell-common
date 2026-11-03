@@ -31,7 +31,7 @@ echo r/x >"$work/project/.dockerrepo"
 export PATH=$work/bin:$PATH
 
 # The shells that source init are scripts in files rather than -c strings, as
-# its callers are, so BASH_SOURCE is set in them as it is in a caller. The
+# its callers are, so $0 names the script as it names a caller. The
 # sourcing shell runs show, a child that sees only what init exports.
 cat >"$work/source" <<'EOF'
 if [ "$1" = strict ]; then
@@ -84,11 +84,13 @@ for mode in plain strict; do
     check "$mode-push" "$mode" 0 "r/x 1.2 1" FAKE_BRANCH=HEAD \
         GITHUB_REF_NAME=1.2
     check "$mode-detached" "$mode" 1 \
-        "detached HEAD and no CI branch or tag variable set" FAKE_BRANCH=HEAD
+        "source: TAG: detached HEAD and no CI branch or tag variable set" \
+        FAKE_BRANCH=HEAD
     # A CI that exports its branch or tag variable empty is refused all the
     # same.
     check "$mode-empty-variable" "$mode" 1 \
-        "detached HEAD and no CI branch or tag variable set" FAKE_BRANCH=HEAD \
+        "source: TAG: detached HEAD and no CI branch or tag variable set" \
+        FAKE_BRANCH=HEAD \
         CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=
 done
 
@@ -96,7 +98,7 @@ done
 for project in missing empty; do
     for mode in plain strict; do
         check "$mode-$project-dockerrepo" "$mode" 1 \
-            ".dockerrepo missing or empty" FAKE_BRANCH=a/b
+            "source: REPO: .dockerrepo missing or empty" FAKE_BRANCH=a/b
     done
 done
 
@@ -105,8 +107,14 @@ done
     "$work/options" "$init") ||
     failed+=("options: sourcing changed the shell's options")
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
-echo "ok"

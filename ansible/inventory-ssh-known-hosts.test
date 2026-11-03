@@ -90,8 +90,15 @@ check host-missing 2 "" "$kh" example.com --host
 check host-extra 2 "" "$kh" example.com --host a.example.com b
 check list-extra 2 "" "$kh" example.com --list a.example.com
 
+# Every line of a failure carries the program and the case, captured output
+# included.
 if [ ${#failed[@]} -gt 0 ]; then
-    printf 'FAILED %s\n' "${failed[@]}" >&2
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
     exit 1
 fi
 echo "ok"

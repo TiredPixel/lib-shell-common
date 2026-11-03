@@ -17,7 +17,7 @@ status=0
 timeout --foreground 60 git ls-remote --tags --refs origin || status=$?
 
 if [ "$status" -eq 124 ]; then
-    echo "$PWD: origin did not answer within 60 s" >&2
+    echo "${0##*/}: $PWD: origin did not answer within 60 s" >&2
 fi
 
 exit "$status"

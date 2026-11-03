@@ -65,7 +65,7 @@ done
 unset files_dir
 # Carry no shebang, since they are sourced.
 shell_files+=(ansible/lint-args bin/files docker/describe docker/init
-    project/echo-line project/release-onto)
+    project/release-onto)
 
 compose_files=(docker-compose.yml)
 # A proposed workflow waits in .github/workflows.new/ until it is moved into
