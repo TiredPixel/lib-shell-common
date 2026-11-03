@@ -24,14 +24,21 @@ RUN apt-get update \
         curl \
         diffutils \
         docker-compose \
+        file \
         git \
         jq \
         kcov \
+        locales \
+        make \
         pipx \
         shellcheck \
         shfmt \
         yamllint \
     && rm -rf /var/lib/apt/lists/*
+
+# A UTF-8 locale besides C.UTF-8, under which [0-9] also matches other scripts'
+# digits, so lint/version-assert.test can catch that in the image.
+RUN localedef -i en_US -f UTF-8 en_US.UTF-8
 
 ENV LANG=C.UTF-8 \
     LANGUAGE=C.UTF-8 \
