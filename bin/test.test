@@ -215,10 +215,20 @@ done
 if [ -z "$settled" ]; then
     failed+=("capped: never waited with two tests started: $(<"$FAKE_LOG")")
 else
-    # The file carries no final newline, so read returns 1 having read it.
-    { read -r -a children || :; } <"/proc/$pid/task/$pid/children"
-    if [ ${#children[@]} -ne 2 ]; then
-        failed+=("capped: ${#children[@]} tests ran at once, not 2")
+    # Counted from the parent field of each process's /proc/<pid>/stat, which
+    # every Linux kernel provides, where /proc/<pid>/task/<pid>/children needs
+    # CONFIG_PROC_CHILDREN. The fields after the last ) are state, then parent.
+    # A process that exits mid-scan is skipped.
+    children=0
+    for stat in /proc/[0-9]*/stat; do
+        read -r line <"$stat" 2>/dev/null || continue
+        read -r -a fields <<<"${line##*) }"
+        if [ "${fields[1]}" = "$pid" ]; then
+            children=$((children + 1))
+        fi
+    done
+    if [ "$children" -ne 2 ]; then
+        failed+=("capped: $children tests ran at once, not 2")
     fi
 fi
 echo >&4
