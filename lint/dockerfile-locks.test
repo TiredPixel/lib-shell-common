@@ -266,8 +266,17 @@ for c in "yarn install --immutable" "yarn install --frozen-lockfile" \
     "yarn --immutable" "pnpm install --frozen-lockfile" \
     "pnpm i --frozen-lockfile" "bun install --frozen-lockfile" \
     "bun i --frozen-lockfile" "uv sync --locked" "uv sync --frozen" \
-    "npx --no tsc" "npm exec --no -- tsc" "npm x --no tsc"; do
+    "npx --no tsc" "npm exec --no -- tsc" "npm x --no tsc" \
+    "npx -y --no tsc" "npm --no exec tsc" "npx --yes=false tsc"; do
     pass "${c// /-}" "$c"
+done
+# npx's --no holds only as the last of --no and --yes among its own options,
+# before the command it runs or --.
+for data in "npx --no --yes tsc|npx tsc" "npx --no -y tsc|npx tsc" \
+    "npx tsc --no|npx tsc" "npx -- tsc --no|npx tsc" \
+    "npm exec tsc -- --no|npm exec" "npm --no exec --yes tsc|npm exec"; do
+    c=${data%|*}
+    refuse "${c// /-}" "$c" "${data#*|}$fetch_tail"
 done
 
 # Splitting into simple commands.

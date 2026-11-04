@@ -38,11 +38,11 @@
 #   yarn alone, but for its version or help, or yarn install, pnpm install or
 #   i, bun install or i, and uv sync, but given yarn's --immutable or
 #   --frozen-lockfile, pnpm's or bun's --frozen-lockfile, or uv's --locked or
-#   --frozen; npx given a command, npm exec or x, but given --no; npm init or
-#   create given an initializer, which runs npm exec; yarn, pnpm or bun add, uv
-#   pip install or sync, uv add, uv tool install, uvx given a command, poetry
-#   install or add, pipenv install or sync, pdm install, add or sync, and
-#   easy_install
+#   --frozen; npx given a command, npm exec or x, but given --no, the last of
+#   --no and --yes before the command it runs or --; npm init or create given
+#   an initializer, which runs npm exec; yarn, pnpm or bun add, uv pip install
+#   or sync, uv add, uv tool install, uvx given a command, poetry install or
+#   add, pipenv install or sync, pdm install, add or sync, and easy_install
 #       unless the RUN is --network=none, since what each fetches is not
 #       checked here
 #   python3 -m build or pyproject-build but given -n or --no-isolation, uv
@@ -277,6 +277,28 @@ npm_initializer() {
     done
 }
 
+# Whether npx, or npm exec, $1 being npx or npm, given the rest, is kept from
+# installing: its options read in order, up to the command it runs or --, the
+# last of --no and --yes holding. npm's own command word is passed over.
+npx_offline() {
+    local a no="" word=""
+    [ "$1" != npm ] || word=1
+    shift
+    for a in "$@"; do
+        case $a in
+        --) break ;;
+        --no | --no-yes | --yes=false) no=1 ;;
+        --yes | -y | --yes=true) no="" ;;
+        -*) ;;
+        *)
+            [ -n "$word" ] || break
+            word=""
+            ;;
+        esac
+    done
+    [ -n "$no" ]
+}
+
 # Checks command $1, given the rest.
 check_named() {
     local name=$1 a c="" line n=1
@@ -386,7 +408,7 @@ check_named() {
             ! has --frozen "$@" || return 0
             ;;
         "npx "* | "npm exec "*)
-            ! has --no "$@" || return 0
+            ! npx_offline "$name" "$@" || return 0
             ;;
         esac
         why "${line% } outside a RUN --network=none, since what it fetches is" \
