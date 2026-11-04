@@ -2017,6 +2017,9 @@ staged lock-stage-later $'# TRACK LOCK m stage=a pypi:m-d\nFROM later AS a\nFROM
     "fake docker: run later pypi m-d" "fake docker: run r/h"
 staged lock-stage-arg $'# TRACK LOCK m stage=s pypi:m-d\nARG BASE=r/h:3\nFROM --platform=$BUILDPLATFORM ${BASE} AS s\n' \
     "fake docker: run r/h:3 pypi m-d"
+# A stage named through a tracked ARG is found by the ARG's new value.
+staged lock-stage-arg-tracked $'# TRACK ARG V github:o/p\n# TRACK LOCK m stage=s pypi:m-d\nARG V=1.0.0\nFROM r/a:1 AS base1.0.0\nFROM r/b:1 AS base1.2.3\nFROM base${V} AS s\n' \
+    "fake docker: run r/b:1 pypi m-d" "fake docker: run r/a"
 # A value in one pair of matching quotes is taken without them, as Docker takes
 # it.
 staged lock-stage-arg-dquoted $'# TRACK LOCK m stage=s pypi:m-d\nARG BASE="r/h:3"\nFROM $BASE AS s\n' \
@@ -2156,9 +2159,9 @@ for data in '{}|latest version on npm, none, is not a version' \
 done
 
 # A requirement whose marker turns on the machine or kernel is refused, unless
-# it is gated on an extra, and nothing else but by and, that nothing resolved
-# asks for; one turning on the operating system alone is not, every image being
-# Linux.
+# it is gated on an extra, only by extra == "EXTRA" and nothing else but by
+# and, that nothing resolved asks for; one turning on the operating system
+# alone is not, every image being Linux.
 marked() {
     jq -n --arg r "$1" --arg also "${2:-}" '{install: [
         {metadata: {name: "m-d", version: "2.0.1",
@@ -2173,7 +2176,9 @@ for data in 'x ;platform_machine=="x86_64"|' \
     'x; platform_version == "#1 SMP"|' \
     'x; extra == "a" or platform_machine == "aarch64"|' \
     'x; extra == '"'"'arm'"'"' and platform_machine == "aarch64"|M.D[Arm] >= 1' \
-    'x; platform_machine == "aarch64" and extra == "b"|m-d [a, b]'; do
+    'x; platform_machine == "aarch64" and extra == "b"|m-d [a, b]' \
+    'x; platform_machine == "aarch64" and extra != "test"|' \
+    'x; "arm" == extra and platform_machine == "aarch64"|'; do
     n=$((n + 1))
     marked "${data%|*}" "${data#*|}"
     lockcase "lock-marker-$n" "$pdf"

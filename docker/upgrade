@@ -735,35 +735,41 @@ declare -A news=()
 # The index of the FROM line each TRACK LOCK naming a stage resolves in, keyed
 # by NAME, found through each FROM that names an earlier stage.
 declare -A lock_from=()
-for name in "${lock_names[@]}"; do
-    if [ -z "${lock_stage[$name]+set}" ]; then
-        [ ${#froms[@]} -eq 1 ] ||
-            die "TRACK LOCK $name has no stage=STAGE, so resolves in the" \
-                "image TRACK FROM pins, and needs exactly one TRACK FROM," \
-                "not ${#froms[@]}"
-        continue
-    fi
-    stage=${lock_stage[$name]}
-    i=${stage_at[${stage,,}]:-}
-    [ -n "$i" ] || die "TRACK LOCK $name: no FROM line names stage $stage"
-    while :; do
-        image=${from_image[$i]}
-        expand "$image" ||
-            refuse_at "$dockerfile" $((i + 1)) "TRACK LOCK $name: FROM $image" \
-                "holds a variable that no ARG VAR=VALUE before the first FROM" \
-                "sets, or a \$ not in \$VAR or \${VAR}"
-        [ "${expanded,,}" != scratch ] ||
-            refuse_at "$dockerfile" $((i + 1)) "TRACK LOCK $name: stage" \
-                "$stage is FROM scratch, which has nothing to resolve in"
-        # Docker reads a stage only once it is defined.
-        j=${stage_at[${expanded,,}]:-}
-        if [ -z "$j" ] || [ "$j" -ge "$i" ]; then
-            break
+find_stages() {
+    local name stage i j image
+    for name in "${lock_names[@]}"; do
+        if [ -z "${lock_stage[$name]+set}" ]; then
+            [ ${#froms[@]} -eq 1 ] ||
+                die "TRACK LOCK $name has no stage=STAGE, so resolves in the" \
+                    "image TRACK FROM pins, and needs exactly one TRACK FROM," \
+                    "not ${#froms[@]}"
+            continue
         fi
-        i=$j
+        stage=${lock_stage[$name]}
+        i=${stage_at[${stage,,}]:-}
+        [ -n "$i" ] || die "TRACK LOCK $name: no FROM line names stage $stage"
+        while :; do
+            image=${from_image[$i]}
+            expand "$image" ||
+                refuse_at "$dockerfile" $((i + 1)) "TRACK LOCK $name: FROM" \
+                    "$image holds a variable that no ARG VAR=VALUE before the" \
+                    "first FROM sets, or a \$ not in \$VAR or \${VAR}"
+            [ "${expanded,,}" != scratch ] ||
+                refuse_at "$dockerfile" $((i + 1)) "TRACK LOCK $name: stage" \
+                    "$stage is FROM scratch, which has nothing to resolve in"
+            # Docker reads a stage only once it is defined.
+            j=${stage_at[${expanded,,}]:-}
+            if [ -z "$j" ] || [ "$j" -ge "$i" ]; then
+                break
+            fi
+            i=$j
+        done
+        lock_from[$name]=$i
     done
-    lock_from[$name]=$i
-done
+}
+# Found now to refuse before any lookup, and again once the pins resolve, since
+# a tracked ARG's new value can name another stage.
+find_stages
 
 # Sets versions to each package's version in package-lock.json $1, keyed by its
 # path there, and roots to the packages its root depends on, one to a line;
@@ -1129,8 +1135,9 @@ listing='
     | @tsv'
 # Each requirement in pip's report whose marker names the machine or kernel, so
 # another architecture would resolve it otherwise, as PACKAGE: REQUIREMENT. One
-# gated on an extra, and on nothing else but by and, is passed over unless a
-# requirement resolved asks for that extra, as NAME[EXTRA].
+# gated on an extra, only by extra == "EXTRA" and on nothing else but by and,
+# is passed over unless a requirement resolved asks for that extra, as
+# NAME[EXTRA].
 # shellcheck disable=SC2016 # jq's own $variables, not the shell's
 markers='
     def norm: ascii_downcase | gsub("[-_.]+"; "-");
@@ -1146,6 +1153,10 @@ markers='
         | test("\\b(platform_machine|platform_release|platform_version)\\b"))
     | select(($marker | test("\\bextra\\b") | not)
         or ($marker | test("\\bor\\b"))
+        or ([$marker | scan("\\bextra\\b")] | length)
+            != ([$marker
+                | scan("\\bextra\\s*==\\s*[\"\u0027][^\"\u0027]*[\"\u0027]")]
+                | length)
         or any($marker
             | scan("\\bextra\\s*==\\s*[\"\u0027]([^\"\u0027]*)[\"\u0027]")[0]
             | norm;
@@ -1196,6 +1207,7 @@ lock_image() {
     fi
 }
 
+find_stages
 for name in "${lock_names[@]}"; do
     read -r -a named_here <<<"${packages_of[$name]}"
     now_keys[$name]=""
