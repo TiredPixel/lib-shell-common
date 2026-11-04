@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+#
+# Usage: lock-resolve pypi PACKAGE[==VERSION]...
+#        lock-resolve npm NAME PACKAGE_JSON
+#
+# Resolves a TRACK LOCK for docker/upgrade, which feeds this script on stdin to
+# bash -s in the image the lock resolves in, run with docker run -i --rm as
+# root, so resolution sees the Python or Node the build will. Where
+# python3 -m pip, or npm, already runs, as in python and node images, it is
+# used as it is, whatever the distribution, /etc/os-release unread. Otherwise
+# it is installed with the distribution's own manager, chosen by ID, then each
+# word of ID_LIKE, in /etc/os-release: apt-get for debian or ubuntu, dnf, or
+# microdnf where dnf is missing, for fedora or rhel, an image with neither
+# refused, and apk for alpine; any other distribution is refused, naming its
+# ID, as is an image with no /etc/os-release. Nothing it runs reads stdin,
+# which holds the rest of this script.
+#
+# With pypi, stdout is the JSON report of pip install --dry-run from PyPI,
+# wheels only, for the PACKAGEs, run by a pip upgraded first where it is older
+# than 22.2. With npm, it is the package-lock.json npm writes from
+# registry.npmjs.org for PACKAGE_JSON, the package.json's contents, in a
+# directory named NAME, as a lock's own is, since npm names the lock after it;
+# no install script is run. Everything else goes to stderr.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+usage() {
+    echo "Usage: lock-resolve pypi PACKAGE[==VERSION]..." >&2
+    echo "       lock-resolve npm NAME PACKAGE_JSON" >&2
+    exit 2
+}
+
+kind=${1:-}
+case $kind in
+pypi)
+    shift
+    [ $# -ge 1 ] || usage
+    ;;
+npm)
+    if [ $# != 3 ] || [[ ! "$2" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
+        usage
+    fi
+    ;;
+*) usage ;;
+esac
+
+# Stdout carries only the payload, on 3.
+exec 3>&1 1>&2
+
+# The image's own tool, where it has one, is the build's.
+present=""
+case $kind in
+pypi)
+    tool="python3 -m pip"
+    if python3 -m pip --version </dev/null >/dev/null 2>&1; then
+        present=1
+    fi
+    ;;
+npm)
+    tool=npm
+    if npm --version </dev/null >/dev/null 2>&1; then
+        present=1
+    fi
+    ;;
+esac
+
+# The distribution matters only where the tool must be installed. Read rather
+# than sourced, so nothing in it runs. A value may be quoted, as os-release(5)
+# allows.
+id=""
+family=""
+if [ -z "$present" ]; then
+    if ! [ -e /etc/os-release ]; then
+        echo "lock-resolve: the image has no /etc/os-release to name its" \
+            "distribution, and no $tool of its own" >&2
+        exit 1
+    fi
+    like=""
+    while IFS= read -r line <&4; do
+        [[ "$line" =~ ^(ID|ID_LIKE)=(.*)$ ]] || continue
+        key=${BASH_REMATCH[1]}
+        value=${BASH_REMATCH[2]}
+        if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+            value=${BASH_REMATCH[1]}
+        fi
+        case $key in
+        ID) id=$value ;;
+        ID_LIKE) like=$value ;;
+        esac
+    done 4</etc/os-release
+    read -r -a likes <<<"$like"
+    for word in "$id" "${likes[@]}"; do
+        case $word in
+        debian | ubuntu) family=apt ;;
+        fedora | rhel) family=dnf ;;
+        alpine) family=apk ;;
+        *) continue ;;
+        esac
+        break
+    done
+fi
+
+case $present:$kind:$family in
+1:*) ;;
+:pypi:apt | :pypi:dnf) packages=(python3-pip) ;;
+:pypi:apk) packages=(py3-pip) ;;
+# Fedora's nodejs-npm provides npm, which RHEL 9 and its rebuilds name it.
+:npm:?*) packages=(npm) ;;
+*)
+    echo "lock-resolve: /etc/os-release names ${id:-no ID}, which is not" \
+        "Debian, Ubuntu, Fedora, a RHEL-like or Alpine, nor like one, and" \
+        "the image has no $tool of its own" >&2
+    exit 1
+    ;;
+esac
+
+if [ -z "$present" ]; then
+    case $family in
+    apt)
+        apt-get update </dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            --no-install-recommends "${packages[@]}" </dev/null
+        ;;
+    dnf)
+        # Minimal images, such as UBI's, carry microdnf alone, which reads a
+        # boolean only as 0 or 1.
+        if command -v dnf >/dev/null; then
+            dnf install -y --setopt=install_weak_deps=False "${packages[@]}" \
+                </dev/null
+        elif command -v microdnf >/dev/null; then
+            microdnf install -y --setopt=install_weak_deps=0 "${packages[@]}" \
+                </dev/null
+        else
+            echo "lock-resolve: /etc/os-release names $id, like Fedora or" \
+                "RHEL, but the image has neither dnf nor microdnf" >&2
+            exit 1
+        fi
+        ;;
+    apk) apk add --no-cache "${packages[@]}" </dev/null ;;
+    esac
+fi
+
+case $kind in
+pypi)
+    # pip gained --dry-run and --report in 22.2; an older one, as RHEL 9
+    # ships, is upgraded here, in a container thrown away after, under the
+    # image's own Python.
+    version=$(python3 -m pip --version </dev/null)
+    if ! [[ "$version" =~ ^pip\ ([0-9]+)\.([0-9]+) ]]; then
+        echo "lock-resolve: pip --version gave $version" >&2
+        exit 1
+    fi
+    major=${BASH_REMATCH[1]}
+    minor=${BASH_REMATCH[2]}
+    if [ "$major" -lt 22 ] || { [ "$major" = 22 ] && [ "$minor" -lt 2 ]; }; then
+        python3 -m pip install -q --disable-pip-version-check --upgrade \
+            'pip>=22.2' </dev/null
+    fi
+    # --dry-run is exempt from pip's PEP 668 externally-managed refusal, as it
+    # installs nothing. PyPI alone is read, whatever index the image's
+    # configuration files or environment name, since the hashes come from it.
+    PIP_CONFIG_FILE=/dev/null python3 -m pip install -q --isolated \
+        --disable-pip-version-check --root-user-action=ignore \
+        --index-url=https://pypi.org/simple/ --only-binary=:all: --dry-run \
+        --ignore-installed --report - "$@" </dev/null >&3
+    ;;
+npm)
+    top=$(mktemp -d)
+    dir=$top/$2
+    mkdir -- "$dir"
+    printf '%s\n' "$3" >"$dir/package.json"
+    # No .npmrc is read, so a scoped registry cannot redirect any package: the
+    # user and global ones are empty files of their own, since npm refuses to
+    # load one file as both.
+    : >"$top/user.npmrc"
+    : >"$top/global.npmrc"
+    NPM_CONFIG_USERCONFIG=$top/user.npmrc \
+        NPM_CONFIG_GLOBALCONFIG=$top/global.npmrc \
+        npm install --prefix "$dir" --package-lock-only --ignore-scripts \
+        --no-audit --no-fund --registry=https://registry.npmjs.org/ </dev/null
+    cat -- "$dir/package-lock.json" >&3
+    ;;
+esac

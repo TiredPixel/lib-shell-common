@@ -14,15 +14,28 @@
 # TRACK ARG HADOLINT_SHA256_AMD64 sha256:https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64 https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/checksums.sha256
 # TRACK ARG HADOLINT_SHA256_ARM64 sha256:https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-arm64 https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/checksums.sha256
 # TRACK ARG HADOLINT_VERSION github:hadolint/hadolint
-# TRACK ARG MDFORMAT_FRONTMATTER_VERSION pypi:mdformat-frontmatter
-# TRACK ARG MDFORMAT_GFM_VERSION pypi:mdformat-gfm
-# TRACK ARG MDFORMAT_VERSION pypi:mdformat
 # TRACK ARG YQ_SHA256_AMD64 sha256:https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64 https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/checksums-bsd
 # TRACK ARG YQ_SHA256_ARM64 sha256:https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_arm64 https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/checksums-bsd
 # TRACK ARG YQ_VERSION github:mikefarah/yq
+# TRACK LOCK mdformat pypi:mdformat pypi:mdformat-gfm pypi:mdformat-frontmatter
 #
-# dev copies nothing in, so make format runs it on the mounted tree; test adds
-# the tree for the gate. README.md, Building, describes both stages.
+# wheels downloads the wheels Dockerfile.lock/mdformat names, each checked
+# against its hash, for dev to install offline. dev copies nothing in, reading
+# the wheels only through a bind mount, so make format runs it on the mounted
+# tree; test adds the tree for the gate. README.md, Building, describes the
+# stages.
+#===============================================================================
+FROM docker.io/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS wheels
+
+SHELL ["/bin/bash", "-Eeuo", "pipefail", "-O", "inherit_errexit", "-O", "failglob", "-c"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=bind,source=Dockerfile.lock/mdformat,target=/lock \
+    python3 -m pip download --disable-pip-version-check --require-hashes \
+    --no-deps --only-binary=:all: -d /wheels -r /lock/requirements.txt
 #===============================================================================
 FROM docker.io/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS dev
 
@@ -162,15 +175,28 @@ RUN case $(dpkg --print-architecture) in \
 
 # mdformat, which bin/format and bin/lint run on Markdown, from pipx with its
 # gfm and frontmatter plugins injected: Debian 13's mdformat package carries
-# neither.
-ARG MDFORMAT_VERSION=1.0.0
-ARG MDFORMAT_GFM_VERSION=1.0.0
-ARG MDFORMAT_FRONTMATTER_VERSION=2.2.0
-RUN export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
-    && pipx install "mdformat==${MDFORMAT_VERSION}" \
-    && pipx inject mdformat "mdformat-gfm==${MDFORMAT_GFM_VERSION}" \
-        "mdformat-frontmatter==${MDFORMAT_FRONTMATTER_VERSION}" \
-    && mdformat --version | grep -qF "mdformat ${MDFORMAT_VERSION}"
+# neither. Offline, pip can take only the wheels the wheels stage downloaded,
+# so every version is the lock's. pipx's shared venv is made here, from
+# Debian's bundled pip, since pipx would otherwise fetch pip unpinned to make
+# it, and in the same RUN as the inject, since pipx upgrades it from PyPI once
+# its pip is 30 days old. DL3013 asks for each version written here, which the
+# lock alone pins.
+# hadolint ignore=DL3013
+RUN --network=none \
+    --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
+    export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
+    && python3 -m venv "$PIPX_HOME/shared" \
+    && pipx install \
+        --pip-args='--disable-pip-version-check --no-index --find-links=/wheels' \
+        mdformat \
+    && pipx inject \
+        --pip-args='--disable-pip-version-check --no-index --find-links=/wheels' \
+        mdformat mdformat-gfm mdformat-frontmatter \
+    && "$PIPX_HOME/venvs/mdformat/bin/python" -m pip check \
+    && version=$(mdformat --version) \
+    && echo "$version" \
+    && echo "$version" | grep -qF 'mdformat-gfm ' \
+    && echo "$version" | grep -qF 'mdformat_frontmatter '
 
 # uid 1000 so a bind-mounted tree is writable from a host whose user is the
 # usual 1000.
