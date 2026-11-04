@@ -254,6 +254,15 @@ elif [ $# != 8 ] || [ "$1 $2" != "install --prefix" ] || ! [ -d "$3" ] ||
     echo "fake npm: unexpected arguments: $*" >&2
     exit 2
 fi
+# As the real npm does, one file is never loaded as both configurations; each
+# is empty, so no .npmrc redirects a package.
+user=${NPM_CONFIG_USERCONFIG:-} global=${NPM_CONFIG_GLOBALCONFIG:-}
+if [ -z "$user" ] || [ -z "$global" ] || [ "$user" = "$global" ] ||
+    ! [ -f "$user" ] || [ -s "$user" ] || ! [ -f "$global" ] || [ -s "$global" ]; then
+    echo "fake npm: user and global configuration '$user' and '$global'" \
+        "are not two empty files" >&2
+    exit 2
+fi
 echo "fake npm: package.json in ${3##*/}: $(jq -c . "$3/package.json")" >&2
 cp -- "$FAKE_NPM_LOCK" "$3/package-lock.json"
 EOF

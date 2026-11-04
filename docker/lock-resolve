@@ -165,11 +165,17 @@ pypi)
         --ignore-installed --report - "$@" </dev/null >&3
     ;;
 npm)
-    dir=$(mktemp -d)/$2
+    top=$(mktemp -d)
+    dir=$top/$2
     mkdir -- "$dir"
     printf '%s\n' "$3" >"$dir/package.json"
-    # No .npmrc is read, so a scoped registry cannot redirect any package.
-    NPM_CONFIG_USERCONFIG=/dev/null NPM_CONFIG_GLOBALCONFIG=/dev/null \
+    # No .npmrc is read, so a scoped registry cannot redirect any package: the
+    # user and global ones are empty files of their own, since npm refuses to
+    # load one file as both.
+    : >"$top/user.npmrc"
+    : >"$top/global.npmrc"
+    NPM_CONFIG_USERCONFIG=$top/user.npmrc \
+        NPM_CONFIG_GLOBALCONFIG=$top/global.npmrc \
         npm install --prefix "$dir" --package-lock-only --ignore-scripts \
         --no-audit --no-fund --registry=https://registry.npmjs.org/ </dev/null
     cat -- "$dir/package-lock.json" >&3
