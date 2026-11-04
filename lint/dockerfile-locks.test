@@ -149,6 +149,17 @@ pass pip-no-index-local-req "pip install --no-index /w/x.whl file:///w/x.whl x"
 pass pip-no-index-index-url "pip install --no-index -i https://h/ -ihttps://h/ --index-url https://h/ --extra-index-url=https://h/ --proxy http://p/ x"
 refuse pip-hashes-only "pip install --require-hashes x --only-binary :all:" "$no_lock"
 pass pip-binary-spaced "pip install --require-hashes --only-binary :all: -r /l"
+# --only-binary and --no-binary are read in order, item by item, as pip applies
+# them.
+n=0
+for data in "--only-binary=:all: --no-binary=x" "--only-binary :all: --no-binary x" \
+    "--only-binary=:all: --no-binary=:none:,x" "--only-binary=:all: --no-binary=:all:" \
+    "--only-binary=:all: --only-binary=:none:" "--only-binary=:all:,:none:" \
+    "--no-binary=x" "--only-binary=x"; do
+    n=$((n + 1))
+    refuse "pip-binary-overridden-$n" "pip install --require-hashes -r /l $data" "$no_binary"
+done
+pass pip-binary-last "pip install --require-hashes -r /l --no-binary=x --only-binary=:all: && pip install --require-hashes -r /l --only-binary=:all: --no-binary=x,:none: && pip install --require-hashes -r /l --only-binary=:all: --no-binary=x --no-build-isolation"
 refuse pip-lock-only "pip install -r /l" "$no_hashes; $no_binary"
 
 # pipx, offline from wheels into the shared venv made first.

@@ -54,12 +54,12 @@
 # Every other command passes, npm ci and bun ci among them. Not seen: eval,
 # find -exec, any other wrapper, such as exec, nice, timeout, flock or xargs, a
 # wrapper's option value other than -u's or -C's, a command substitution inside
-# double quotes, an option overridden later, as --only-binary=:all: is by
-# --no-binary, abbreviated, grouped or unusual options, an option's
-# value written before the command, a command a variable names, a script piped
-# into a shell, options set in the environment or a configuration file, a
-# lock's own options, such as --find-links in it, any other installer or build
-# frontend, or that yarn 1 ignores --immutable.
+# double quotes, an option overridden later, but for --only-binary and
+# --no-binary, abbreviated, grouped or unusual options, an option's value
+# written before the command, a command a variable names, a script piped into a
+# shell, options set in the environment or a configuration file, a lock's own
+# options, such as --find-links in it, any other installer or build frontend, or
+# that yarn 1 ignores --immutable.
 #
 # A RUN is let through by a comment line among those directly above its first
 # line, the nearest such comment taken, REASON required, so one with no reason
@@ -116,15 +116,36 @@ remote_lock() {
             "hashes too"
 }
 
+# Applies pip option $1, --only-binary or --no-binary, given value $2, to
+# wheels, set while --only-binary :all: holds, and sdists, set while any
+# package may be built, item by item, as pip applies them.
+binary_opt() {
+    local item
+    local -a items
+    IFS=, read -r -a items <<<"$2"
+    for item in "${items[@]}"; do
+        case $1:$item in
+        --only-binary::all:) wheels=1 sdists="" ;;
+        --only-binary::none:) wheels="" ;;
+        --no-binary::none:) sdists="" ;;
+        --no-binary::all:) wheels="" sdists=1 ;;
+        --no-binary:*) sdists=1 ;;
+        esac
+    done
+}
+
 # Checks pip subcommand $1, given the rest.
 check_pip() {
-    local sub=$1 a prev="" hashes="" lock="" binary="" no_index="" link=""
-    local remote_link="" remote_req="" v
+    local sub=$1 a prev="" hashes="" lock="" no_index="" link=""
+    local remote_link="" remote_req="" v wheels="" sdists="" unisolated=""
     shift
     for a in "$@"; do
         case $prev:$a in
         *:--no-index) no_index=1 ;;
         *:--require-hashes) hashes=1 ;;
+        --only-binary:* | --no-binary:*) binary_opt "$prev" "$a" ;;
+        *:--only-binary=* | *:--no-binary=*) binary_opt "${a%%=*}" "${a#*=}" ;;
+        *:--no-build-isolation) unisolated=1 ;;
         -r:* | --requirement:*) remote_lock "$a" ;;
         *:-r | *:--requirement) lock=1 ;;
         *:-r* | *:--requirement=*)
@@ -135,8 +156,6 @@ check_pip() {
         -f:* | --find-links:*) link=$a ;;
         *:--find-links=*) link=${a#*=} ;;
         *:-f?*) link=${a#-f} ;;
-        *:--only-binary=:all: | *:--no-build-isolation) binary=1 ;;
-        --only-binary::all:) binary=1 ;;
         # An index's URL, which --no-index sets aside, or a proxy's.
         -i:* | --index-url:* | --extra-index-url:* | --proxy:*) ;;
         *:-i?* | *:--index-url=* | *:--extra-index-url=* | *:--proxy=*) ;;
@@ -160,7 +179,7 @@ check_pip() {
     fi
     [ -n "$hashes" ] || why "pip $sub without --require-hashes"
     [ -n "$lock" ] || why "pip $sub reads no -r lock"
-    [ -n "$binary" ] ||
+    [ -n "$unisolated" ] || { [ -n "$wheels" ] && [ -z "$sdists" ]; } ||
         why "pip $sub without --only-binary=:all: or --no-build-isolation," \
             "so an sdist's build dependencies are fetched with no hash"
 }
