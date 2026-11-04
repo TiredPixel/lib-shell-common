@@ -122,6 +122,22 @@ pass pip-requirement "pip install --require-hashes --only-binary=:all: --require
 pass pip-joined "pip install --require-hashes --only-binary=:all: -r/l --requirement=/m"
 pass pip-no-isolation "pip install --require-hashes --no-build-isolation -r /l"
 pass pip-no-index "pip install --no-index x"
+pass pip-no-index-local "pip install --no-index -f /w --find-links=file:///w --find-links /w -f/w x"
+# A source whose server chooses what pip installs is refused, in each form.
+n=0
+remote_link="pip install --no-index with a --find-links URL, which fetches with no hash check"
+for data in "-f https://h/" "-fhttps://h/" "--find-links=http://h/" \
+    "--find-links https://h/"; do
+    n=$((n + 1))
+    refuse "pip-no-index-remote-$n" "pip install --no-index -f /w $data x" "$remote_link"
+done
+remote_lock="pip install reads its -r lock from a URL, whose server chooses the hashes too"
+for data in "-r https://h/l" "-rhttps://h/l" "--requirement=https://h/l" \
+    "--requirement https://h/l"; do
+    n=$((n + 1))
+    refuse "pip-remote-lock-$n" "pip install --require-hashes --only-binary=:all: -r /l $data" "$remote_lock"
+done
+pass pip-file-lock "pip install --require-hashes --only-binary=:all: -r file:///l"
 refuse pip-hashes-only "pip install --require-hashes x --only-binary :all:" "$no_lock"
 pass pip-binary-spaced "pip install --require-hashes --only-binary :all: -r /l"
 refuse pip-lock-only "pip install -r /l" "$no_hashes; $no_binary"

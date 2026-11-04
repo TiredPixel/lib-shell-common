@@ -17,8 +17,9 @@
 # its command. Refused:
 #
 #   pip, pip3 or python3 -m pip install, download or wheel
-#       unless the RUN is --network=none or pip is given --no-index; and
-#       unless given --require-hashes, -r FILE, and --no-build-isolation or
+#       unless the RUN is --network=none or pip is given --no-index with no
+#       --find-links URL other than a file: one; and unless given
+#       --require-hashes, -r FILE, FILE no such URL, and --no-build-isolation or
 #       --only-binary=:all:, since pip fetches an sdist's build dependencies
 #       with no hash check
 #   pipx or python3 -m pipx install or inject
@@ -56,8 +57,8 @@
 # --no-binary, abbreviated, grouped or unusual options, an option's
 # value written before the command, a command a variable names, a script piped
 # into a shell, options set in the environment or a configuration file, a
-# --find-links URL beside --no-index, any other installer or build frontend, or
-# that yarn 1 ignores --immutable.
+# lock's own options, such as --find-links in it, any other installer or build
+# frontend, or that yarn 1 ignores --immutable.
 #
 # A RUN is let through by a comment line among those directly above its first
 # line, the nearest such comment taken, REASON required, so one with no reason
@@ -101,20 +102,53 @@ why() {
 
 assignment='^[A-Za-z_][A-Za-z0-9_]*\+?='
 
+# Whether $1 is a URL other than a file: one.
+remote() {
+    [[ $1 == *://* && $1 != file://* ]]
+}
+
+# Refuses lock $1 given to pip -r where it is a URL, since whoever serves it
+# chooses its hashes too.
+remote_lock() {
+    ! remote "$1" ||
+        why "pip $sub reads its -r lock from a URL, whose server chooses the" \
+            "hashes too"
+}
+
 # Checks pip subcommand $1, given the rest.
 check_pip() {
-    local sub=$1 a prev="" hashes="" lock="" binary=""
+    local sub=$1 a prev="" hashes="" lock="" binary="" no_index="" link=""
+    local remote_link=""
     shift
     for a in "$@"; do
         case $prev:$a in
-        *:--no-index) return 0 ;;
+        *:--no-index) no_index=1 ;;
         *:--require-hashes) hashes=1 ;;
-        *:-r* | *:--requirement*) lock=1 ;;
+        -r:* | --requirement:*) remote_lock "$a" ;;
+        *:-r | *:--requirement) lock=1 ;;
+        *:-r* | *:--requirement=*)
+            lock=1
+            a=${a#--requirement=}
+            remote_lock "${a#-r}"
+            ;;
+        -f:* | --find-links:*) link=$a ;;
+        *:--find-links=*) link=${a#*=} ;;
+        *:-f?*) link=${a#-f} ;;
         *:--only-binary=:all: | *:--no-build-isolation) binary=1 ;;
         --only-binary::all:) binary=1 ;;
         esac
+        if [ -n "$link" ]; then
+            ! remote "$link" || remote_link=1
+            link=""
+        fi
         prev=$a
     done
+    if [ -n "$no_index" ]; then
+        [ -z "$remote_link" ] ||
+            why "pip $sub --no-index with a --find-links URL, which fetches" \
+                "with no hash check"
+        return 0
+    fi
     [ -n "$hashes" ] || why "pip $sub without --require-hashes"
     [ -n "$lock" ] || why "pip $sub reads no -r lock"
     [ -n "$binary" ] ||
