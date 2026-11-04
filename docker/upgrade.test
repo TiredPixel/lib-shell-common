@@ -2288,33 +2288,27 @@ if expect lock-link-other-unrecorded 0 ""; then
     holds lock-link-other-unrecorded "$d/lib/Dockerfile" $'# TRACK FROM r/x:1\nFROM r/x@'"$new"
 fi
 
-# A lock file that is a symbolic link stays one, and the file it names is
-# written and recorded.
+# A lock's directory, its NAME directory or a lock file that is a symbolic link
+# is refused before anything is looked up, and what it names is left alone.
 lockcase lock-file-link "$pdf"
 mkdir -p "$d/Dockerfile.lock/m" "$d/shared"
 printf 'm-d==1.0 --hash=sha256:%s\n' "$hd" >"$d/shared/req.txt"
 ln -s ../../shared/req.txt "$d/Dockerfile.lock/m/requirements.txt"
-commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
-if expect lock-file-link 0 ""; then
-    holds lock-file-link "$d/shared/req.txt" "$req"
-    [ -L "$d/Dockerfile.lock/m/requirements.txt" ] ||
-        failed+=("lock-file-link: the link was replaced")
-    moves=("LOCK m m-d 1.0 -> 2.0.1" "LOCK m: 1 dependency moved")
-    recorded lock-file-link lock-file-link/shared/req.txt
-fi
-
-# The file such a link names is checked for changes not committed, as the lock's
-# directory is, before anything is looked up.
-commit_all "$d"
-printf '# edit\n' >>"$d/shared/req.txt"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
-if expect lock-file-link-dirty 1 "upgrade: $d/shared/req.txt: has changes not committed; commit or stash them first" \
+lockgo
+if expect lock-file-link 1 "upgrade: $d/Dockerfile.lock/m/requirements.txt: is a symbolic link, which a lock is never written through" \
     "fake "; then
-    [ ! -e "$work/lockrec" ] || failed+=("lock-file-link-dirty: a record was written")
+    holds lock-file-link "$d/shared/req.txt" "m-d==1.0 --hash=sha256:$hd"
 fi
+rm -- "$d/Dockerfile.lock/m/requirements.txt"
+rmdir -- "$d/Dockerfile.lock/m"
+ln -s ../shared "$d/Dockerfile.lock/m"
+lockgo
+expect lock-name-link 1 "upgrade: $d/Dockerfile.lock/m: is a symbolic link" "fake " || true
+rm -- "$d/Dockerfile.lock/m"
+rmdir -- "$d/Dockerfile.lock"
+ln -s shared "$d/Dockerfile.lock"
+lockgo
+expect lock-dir-link 1 "upgrade: $d/Dockerfile.lock: is a symbolic link" "fake " || true
 
 # lock-resolve refuses what docker/upgrade would never give it.
 for given in "" pypi "npm a" "npm a b c" "npm .a b" "gem a"; do

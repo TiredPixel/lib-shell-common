@@ -39,7 +39,8 @@
 #       [A-Za-z0-9_][A-Za-z0-9_.-]*, and a line names one registry, each
 #       PACKAGE once, compared as pip or npm would. Nothing of the lock already
 #       there is kept, so an edit made to it by hand is undone, as the diff
-#       shows
+#       shows. BASENAME.lock, its NAME directory and the lock's files must not
+#       be symbolic links, since one would carry the write elsewhere
 #
 # A TRACK LOCK with stage=STAGE resolves in the image of the FROM line naming
 # that stage, AS STAGE, both read in any case, as Docker reads them: the digest
@@ -149,11 +150,10 @@
 # reads otherwise, or the lock changed and no move is itemised, the line is
 # LOCK NAME: files changed. Where nothing moved, it is empty. Since the commit
 # takes each path whole, the run first fails where FILE holds an earlier run's
-# record, or where the Dockerfile, followed through any symbolic link, its
-# BASENAME.lock directory, or a file a lock file there links to outside it,
-# differs from what git has committed, or where the Dockerfile is a symbolic
-# link into another repository, such as a submodule, where the commit cannot
-# add it.
+# record, or where the Dockerfile, followed through any symbolic link, or its
+# BASENAME.lock directory differs from what git has committed, or where the
+# Dockerfile is a symbolic link into another repository, such as a submodule,
+# where the commit cannot add it.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -801,7 +801,6 @@ declare -A was_unread=()
 declare -A versions=()
 locked="^([a-z0-9]([a-z0-9-]*[a-z0-9])?)==($pypi_version)( --hash=sha256:[0-9a-f]{64})+\$"
 for name in "${lock_names[@]}"; do
-    dir=$(readlink -m -- "$lockdir/$name")
     was_keys[$name]=""
     was_roots[$name]=""
     if [ "${lock_kinds[$name]}" = pypi ]; then
@@ -809,18 +808,16 @@ for name in "${lock_names[@]}"; do
     else
         files=(package.json package-lock.json)
     fi
+    # A link would carry the write out of the lock's directory, even out of
+    # the repository, so none is followed.
+    for path in "$lockdir" "$lockdir/$name" "${files[@]/#/$lockdir/$name/}"; do
+        [ ! -L "$path" ] ||
+            refuse "$path" "is a symbolic link, which a lock is never written" \
+                "through"
+    done
+    dir=$(readlink -m -- "$lockdir/$name")
     for file in "${files[@]}"; do
-        path=$(readlink -m -- "$dir/$file")
-        lock_file[$name$'\t'$file]=$path
-        # A lock file linking out of the lock's directory is written where it
-        # points, which the check on the directory does not reach.
-        if [ -n "$record" ] && [[ "$path" != "$dir/"* ]]; then
-            dirty=$(git -C "$(dirname -- "$path")" status --porcelain \
-                -- ":(literal)$(basename -- "$path")")
-            [ -z "$dirty" ] ||
-                refuse "$path" "has changes not committed; commit or stash" \
-                    "them first"
-        fi
+        lock_file[$name$'\t'$file]=$dir/$file
     done
     old=$dir/${files[-1]}
     [ -e "$old" ] || continue
