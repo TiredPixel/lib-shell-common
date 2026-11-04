@@ -601,12 +601,16 @@ check_file() {
             fi
         done
         [ "$keyword" = RUN ] || continue
-        # Its heredocs are its script where its command is a heredoc or a shell.
+        # Its heredocs are its script where it has no command but them, or its
+        # command, past any heredocs, is a shell; otherwise they are only that
+        # command's input, as in RUN <<EOF cat >file.
+        script=1
         for word in "${words[@]:1}"; do
             [[ $word != --* ]] || continue
+            [[ ! $word =~ $heredoc ]] || continue
             case ${word##*/} in
-            sh | bash | dash | ash) script=1 ;;
-            *) [[ ! $word =~ $heredoc ]] || script=1 ;;
+            sh | bash | dash | ash) ;;
+            *) script="" ;;
             esac
             break
         done

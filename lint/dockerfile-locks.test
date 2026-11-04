@@ -347,6 +347,9 @@ FROM x
 RUN cat <<EOF >/etc/x
 npm i
 EOF
+RUN <<EOF cat >/etc/y
+npm i
+EOF
 COPY <<EOF /x
 RUN npm i
 EOF
