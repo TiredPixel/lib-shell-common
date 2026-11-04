@@ -38,10 +38,11 @@
 #   yarn alone, but for its version or help, or yarn install, pnpm install or
 #   i, bun install or i, and uv sync, but given yarn's --immutable or
 #   --frozen-lockfile, pnpm's or bun's --frozen-lockfile, or uv's --locked or
-#   --frozen; npx given a command, npm exec or x, but given --no; yarn, pnpm or
-#   bun add, uv pip install or sync, uv add, uv tool install, uvx given a
-#   command, poetry install or add, pipenv install or sync, pdm install, add or
-#   sync, and easy_install
+#   --frozen; npx given a command, npm exec or x, but given --no; npm init or
+#   create given an initializer, which runs npm exec; yarn, pnpm or bun add, uv
+#   pip install or sync, uv add, uv tool install, uvx given a command, poetry
+#   install or add, pipenv install or sync, pdm install, add or sync, and
+#   easy_install
 #       unless the RUN is --network=none, since what each fetches is not
 #       checked here
 #   python3 -m build or pyproject-build but given -n or --no-isolation, uv
@@ -220,16 +221,41 @@ has() {
 # ambiguous prefix, which npm refuses, takes the first.
 npm_command() {
     local pair
+    # c is config's own alias, though a prefix of create.
+    if [ "$1" = c ]; then
+        echo config
+        return
+    fi
     for pair in install:install isntall:install add:install \
         install-test:install-test it:install-test update:update \
         upgrade:update udpate:update link:link ln:link dedupe:dedupe \
-        ddp:dedupe exec:exec x:exec; do
+        ddp:dedupe exec:exec x:exec init:init create:init innit:init; do
         if [[ ${pair%:*} == "$1"* ]]; then
             echo "${pair#*:}"
             return
         fi
     done
     echo "$1"
+}
+
+# Prints the initializer npm init, given npm's arguments $@, runs through npm
+# exec, if any: the second word that is neither an option nor -w's value.
+npm_initializer() {
+    local a skip="" seen=""
+    for a in "$@"; do
+        if [ -n "$skip" ]; then
+            skip=""
+        elif [ "$a" = -w ] || [ "$a" = --workspace ]; then
+            skip=1
+        elif [[ $a == -* ]]; then
+            continue
+        elif [ -n "$seen" ]; then
+            echo "$a"
+            return
+        else
+            seen=1
+        fi
+    done
 }
 
 # Checks command $1, given the rest.
@@ -284,6 +310,10 @@ check_named() {
     fi
     [ "$name" != npm ] || [ ${#pos[@]} -eq 0 ] ||
         line="npm $(npm_command "${pos[0]}") "
+    if [ "$line" = "npm init " ]; then
+        a=$(npm_initializer "$@")
+        [ -z "$a" ] || line+="$a "
+    fi
     case $line in
     "pip install "* | "pip download "* | "pip wheel "*)
         [ -n "$offline" ] || check_pip "${pos[0]}" "$@"
@@ -318,7 +348,7 @@ check_named() {
             "during the build is committed nowhere"
         ;;
     "yarn install "* | "pnpm install "* | "pnpm i "* | "bun install "* | \
-        "bun i "* | "uv sync "* | "npx "?* | "npm exec "* | \
+        "bun i "* | "uv sync "* | "npx "?* | "npm exec "* | "npm init "?* | \
         "yarn add "* | "pnpm add "* | "bun add "* | "uv pip install "* | \
         "uv pip sync "* | "uv add "* | "uv tool install "* | "uvx "?* | \
         "poetry install "* | "poetry add "* | "pipenv install "* | \

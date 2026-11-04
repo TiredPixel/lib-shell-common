@@ -207,6 +207,12 @@ done
 refuse npm-x "npm x semistandard" "npm exec$fetch_tail"
 refuse npm-exe "npm exe semistandard" "npm exec$fetch_tail"
 pass npm-ci "npm ci && npm run build && npm test"
+# npm init given an initializer runs npm exec, by each name npm gives init.
+for c in init create innit ini cr; do
+    twin "npm-$c-initializer" "npm $c -y vite" "npm init vite$fetch_tail"
+done
+twin npm-init-workspace "npm --no-save init -w packages/a @scope" "npm init @scope$fetch_tail"
+pass npm-init-bare "npm init && npm init -y && npm init -w packages/a && npm c set a=b"
 pass npm-other "npm un x && npm uninstall x && npm ls && npm ll && npm list && npm cit && npm install-ci-test && npm sit && npm ic && npm install-clean && npm isntall-clean"
 
 # Lock generators.
