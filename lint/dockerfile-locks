@@ -18,7 +18,7 @@
 #
 #   pip, pip3 or python3 -m pip install, download or wheel
 #       unless the RUN is --network=none or pip is given --no-index with no
-#       --find-links or requirement URL other than a file: one; and unless given
+#       --find-links URL other than a file: one; and unless given
 #       --require-hashes, -r FILE, FILE no such URL, and --no-build-isolation or
 #       --only-binary=:all:, since pip fetches an sdist's build dependencies
 #       with no hash check
@@ -27,8 +27,8 @@
 #       and --find-links, and python3 -m venv has made a directory ending in
 #       /shared earlier in the RUN, pipx's shared venv, which pipx would
 #       otherwise make with pip from PyPI; and pipx --preinstall always
-#   npm install, update, install-test, link or dedupe, by any alias npm gives
-#   them, such as i, add, up or ddp, or any prefix of one, as npm takes it
+#   npm install, update, install-test, link or dedupe, or any alias npm gives
+#   them, such as i, add, up or ddp
 #       unless the RUN is --network=none, since only npm ci installs a lock as
 #       given
 #   pip lock, pip-compile, uv pip compile, uv lock, uv export, poetry lock or
@@ -38,11 +38,10 @@
 #   yarn alone, but for its version or help, or yarn install, pnpm install or
 #   i, bun install or i, and uv sync, but given yarn's --immutable or
 #   --frozen-lockfile, pnpm's or bun's --frozen-lockfile, or uv's --locked or
-#   --frozen; npx given a command, npm exec or x, but given --no, the last of
-#   --no and --yes before the command it runs or --; npm init or create given
-#   an initializer, which runs npm exec; yarn, pnpm or bun add, uv pip install
-#   or sync, uv add, uv tool install, uvx given a command, poetry install or
-#   add, pipenv install or sync, pdm install, add or sync, and easy_install
+#   --frozen; npx given a command, npm exec or x, but given --no; yarn, pnpm or
+#   bun add, uv pip install or sync, uv add, uv tool install, uvx given a
+#   command, poetry install or add, pipenv install or sync, pdm install, add or
+#   sync, and easy_install
 #       unless the RUN is --network=none, since what each fetches is not
 #       checked here
 #   python3 -m build or pyproject-build but given -n or --no-isolation, uv
@@ -51,15 +50,21 @@
 #       unless the RUN is --network=none, since an isolated build fetches its
 #       build dependencies with no hash check
 #
-# Every other command passes, npm ci and bun ci among them. Not seen: eval,
+# Every other command passes, npm ci and bun ci among them. This catches the
+# unlocked installs a Dockerfile's author writes by mistake, not those written
+# to evade it, which a suppression comment would pass anyway. Not seen: eval,
 # find -exec, any other wrapper, such as exec, nice, timeout, flock or xargs, a
 # wrapper's option value other than -u's or -C's, a command substitution inside
-# double quotes, an option overridden later, but for --only-binary and
-# --no-binary, abbreviated, grouped or unusual options, an option's value
-# written before the command, a command a variable names, a script piped into a
-# shell, options set in the environment or a configuration file, a lock's own
-# options, such as --find-links in it, any other installer or build frontend, or
-# that yarn 1 ignores --immutable.
+# double quotes, an option overridden later, as --only-binary=:all: is by
+# --no-binary or npx's --no by --yes, abbreviated, grouped or unusual options,
+# npm's command prefixes, such as upd for update, an option's value written
+# before the command, a command a variable names, a script piped into a shell,
+# a requirement pip reads from a URL beside --no-index, a lock from standard
+# input, npm init given an initializer, options set in the environment or a
+# configuration file, a lock's own options, such as --find-links in it, any
+# other installer or build frontend, that yarn 1 ignores --immutable, and that
+# bun's --frozen-lockfile and bun ci install with no lock where none is
+# committed.
 #
 # A RUN is let through by a comment line among those directly above its first
 # line, the nearest such comment taken, REASON required, so one with no reason
@@ -116,36 +121,15 @@ remote_lock() {
             "hashes too"
 }
 
-# Applies pip option $1, --only-binary or --no-binary, given value $2, to
-# wheels, set while --only-binary :all: holds, and sdists, set while any
-# package may be built, item by item, as pip applies them.
-binary_opt() {
-    local item
-    local -a items
-    IFS=, read -r -a items <<<"$2"
-    for item in "${items[@]}"; do
-        case $1:$item in
-        --only-binary::all:) wheels=1 sdists="" ;;
-        --only-binary::none:) wheels="" ;;
-        --no-binary::none:) sdists="" ;;
-        --no-binary::all:) wheels="" sdists=1 ;;
-        --no-binary:*) sdists=1 ;;
-        esac
-    done
-}
-
 # Checks pip subcommand $1, given the rest.
 check_pip() {
-    local sub=$1 a prev="" hashes="" lock="" no_index="" link=""
-    local remote_link="" remote_req="" v wheels="" sdists="" unisolated=""
+    local sub=$1 a prev="" hashes="" lock="" binary="" no_index="" link=""
+    local remote_link="" v
     shift
     for a in "$@"; do
         case $prev:$a in
         *:--no-index) no_index=1 ;;
         *:--require-hashes) hashes=1 ;;
-        --only-binary:* | --no-binary:*) binary_opt "$prev" "$a" ;;
-        *:--only-binary=* | *:--no-binary=*) binary_opt "${a%%=*}" "${a#*=}" ;;
-        *:--no-build-isolation) unisolated=1 ;;
         -r:* | --requirement:*) remote_lock "$a" ;;
         *:-r | *:--requirement) lock=1 ;;
         *:-r* | *:--requirement=*)
@@ -156,11 +140,8 @@ check_pip() {
         -f:* | --find-links:*) link=$a ;;
         *:--find-links=*) link=${a#*=} ;;
         *:-f?*) link=${a#-f} ;;
-        # An index's URL, which --no-index sets aside, or a proxy's.
-        -i:* | --index-url:* | --extra-index-url:* | --proxy:*) ;;
-        *:-i?* | *:--index-url=* | *:--extra-index-url=* | *:--proxy=*) ;;
-        # A requirement from a URL, as an archive, NAME @ URL or VCS+URL.
-        *) ! remote "$a" || remote_req=1 ;;
+        *:--only-binary=:all: | *:--no-build-isolation) binary=1 ;;
+        --only-binary::all:) binary=1 ;;
         esac
         if [ -n "$link" ]; then
             ! remote "$link" || remote_link=1
@@ -172,14 +153,11 @@ check_pip() {
         [ -z "$remote_link" ] ||
             why "pip $sub --no-index with a --find-links URL, which fetches" \
                 "with no hash check"
-        [ -z "$remote_req" ] ||
-            why "pip $sub --no-index with a requirement from a URL, which" \
-                "fetches with no hash check"
         return 0
     fi
     [ -n "$hashes" ] || why "pip $sub without --require-hashes"
     [ -n "$lock" ] || why "pip $sub reads no -r lock"
-    [ -n "$unisolated" ] || { [ -n "$wheels" ] && [ -z "$sdists" ]; } ||
+    [ -n "$binary" ] ||
         why "pip $sub without --only-binary=:all: or --no-build-isolation," \
             "so an sdist's build dependencies are fetched with no hash"
 }
@@ -235,70 +213,6 @@ has() {
     return 1
 }
 
-# Prints the npm command that fetches, which npm command name $1 names, as an
-# alias or a prefix of one, as npm takes any unambiguous prefix; else $1. An
-# ambiguous prefix, which npm refuses, takes the first.
-npm_command() {
-    local pair
-    # c is config's own alias, though a prefix of create.
-    if [ "$1" = c ]; then
-        echo config
-        return
-    fi
-    for pair in install:install isntall:install add:install \
-        install-test:install-test it:install-test update:update \
-        upgrade:update udpate:update link:link ln:link dedupe:dedupe \
-        ddp:dedupe exec:exec x:exec init:init create:init innit:init; do
-        if [[ ${pair%:*} == "$1"* ]]; then
-            echo "${pair#*:}"
-            return
-        fi
-    done
-    echo "$1"
-}
-
-# Prints the initializer npm init, given npm's arguments $@, runs through npm
-# exec, if any: the second word that is neither an option nor -w's value.
-npm_initializer() {
-    local a skip="" seen=""
-    for a in "$@"; do
-        if [ -n "$skip" ]; then
-            skip=""
-        elif [ "$a" = -w ] || [ "$a" = --workspace ]; then
-            skip=1
-        elif [[ $a == -* ]]; then
-            continue
-        elif [ -n "$seen" ]; then
-            echo "$a"
-            return
-        else
-            seen=1
-        fi
-    done
-}
-
-# Whether npx, or npm exec, $1 being npx or npm, given the rest, is kept from
-# installing: its options read in order, up to the command it runs or --, the
-# last of --no and --yes holding. npm's own command word is passed over.
-npx_offline() {
-    local a no="" word=""
-    [ "$1" != npm ] || word=1
-    shift
-    for a in "$@"; do
-        case $a in
-        --) break ;;
-        --no | --no-yes | --yes=false) no=1 ;;
-        --yes | -y | --yes=true) no="" ;;
-        -*) ;;
-        *)
-            [ -n "$word" ] || break
-            word=""
-            ;;
-        esac
-    done
-    [ -n "$no" ]
-}
-
 # Checks command $1, given the rest.
 check_named() {
     local name=$1 a c="" line n=1
@@ -349,12 +263,6 @@ check_named() {
         done
         line="yarn install "
     fi
-    [ "$name" != npm ] || [ ${#pos[@]} -eq 0 ] ||
-        line="npm $(npm_command "${pos[0]}") "
-    if [ "$line" = "npm init " ]; then
-        a=$(npm_initializer "$@")
-        [ -z "$a" ] || line+="$a "
-    fi
     case $line in
     "pip install "* | "pip download "* | "pip wheel "*)
         [ -n "$offline" ] || check_pip "${pos[0]}" "$@"
@@ -373,8 +281,14 @@ check_named() {
     esac
     [ -z "$offline" ] || return 0
     case $line in
-    "npm install "* | "npm update "* | "npm install-test "* | "npm link "* | \
-        "npm dedupe "*)
+    # Each npm command that fetches and its aliases, typos such as isntall among
+    # them.
+    "npm install "* | "npm i "* | "npm in "* | "npm ins "* | "npm inst "* | \
+        "npm insta "* | "npm instal "* | "npm isnt "* | "npm isnta "* | \
+        "npm isntal "* | "npm isntall "* | "npm add "* | "npm update "* | \
+        "npm u "* | "npm up "* | "npm upgrade "* | "npm udpate "* | \
+        "npm install-test "* | "npm it "* | "npm link "* | "npm ln "* | \
+        "npm dedupe "* | "npm ddp "*)
         why "npm ${pos[0]} resolves versions itself, where npm ci installs a" \
             "lock as given"
         ;;
@@ -389,7 +303,7 @@ check_named() {
             "during the build is committed nowhere"
         ;;
     "yarn install "* | "pnpm install "* | "pnpm i "* | "bun install "* | \
-        "bun i "* | "uv sync "* | "npx "?* | "npm exec "* | "npm init "?* | \
+        "bun i "* | "uv sync "* | "npx "?* | "npm exec "* | "npm x "* | \
         "yarn add "* | "pnpm add "* | "bun add "* | "uv pip install "* | \
         "uv pip sync "* | "uv add "* | "uv tool install "* | "uvx "?* | \
         "poetry install "* | "poetry add "* | "pipenv install "* | \
@@ -407,8 +321,8 @@ check_named() {
             ! has --locked "$@" || return 0
             ! has --frozen "$@" || return 0
             ;;
-        "npx "* | "npm exec "*)
-            ! npx_offline "$name" "$@" || return 0
+        "npx "* | "npm exec "* | "npm x "*)
+            ! has --no "$@" || return 0
             ;;
         esac
         why "${line% } outside a RUN --network=none, since what it fetches is" \

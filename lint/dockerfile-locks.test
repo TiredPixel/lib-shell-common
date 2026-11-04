@@ -138,28 +138,8 @@ for data in "-r https://h/l" "-rhttps://h/l" "--requirement=https://h/l" \
     refuse "pip-remote-lock-$n" "pip install --require-hashes --only-binary=:all: -r /l $data" "$remote_lock"
 done
 pass pip-file-lock "pip install --require-hashes --only-binary=:all: -r file:///l"
-remote_req="pip install --no-index with a requirement from a URL, which fetches with no hash check"
-for data in "https://h/x-1-py3-none-any.whl" "x @ https://h/x.whl" \
-    "x@https://h/x.whl" "git+https://h/x.git" "-e git+ssh://h/x.git" \
-    "-egit+https://h/x.git"; do
-    n=$((n + 1))
-    refuse "pip-no-index-remote-req-$n" "pip install --no-index $data" "$remote_req"
-done
-pass pip-no-index-local-req "pip install --no-index /w/x.whl file:///w/x.whl x"
-pass pip-no-index-index-url "pip install --no-index -i https://h/ -ihttps://h/ --index-url https://h/ --extra-index-url=https://h/ --proxy http://p/ x"
 refuse pip-hashes-only "pip install --require-hashes x --only-binary :all:" "$no_lock"
 pass pip-binary-spaced "pip install --require-hashes --only-binary :all: -r /l"
-# --only-binary and --no-binary are read in order, item by item, as pip applies
-# them.
-n=0
-for data in "--only-binary=:all: --no-binary=x" "--only-binary :all: --no-binary x" \
-    "--only-binary=:all: --no-binary=:none:,x" "--only-binary=:all: --no-binary=:all:" \
-    "--only-binary=:all: --only-binary=:none:" "--only-binary=:all:,:none:" \
-    "--no-binary=x" "--only-binary=x"; do
-    n=$((n + 1))
-    refuse "pip-binary-overridden-$n" "pip install --require-hashes -r /l $data" "$no_binary"
-done
-pass pip-binary-last "pip install --require-hashes -r /l --no-binary=x --only-binary=:all: && pip install --require-hashes -r /l --only-binary=:all: --no-binary=x,:none: && pip install --require-hashes -r /l --only-binary=:all: --no-binary=x --no-build-isolation"
 refuse pip-lock-only "pip install -r /l" "$no_hashes; $no_binary"
 
 # pipx, offline from wheels into the shared venv made first.
@@ -209,21 +189,12 @@ pass pipx-other "pipx list && pipx --version"
 # npm.
 twin npm-install "npm install" "$npm_install"
 refuse npm-add "npm --no-save add x" "${npm_install/install/add}"
-# Each alias npm gives a command that fetches, and a prefix of one, as npm
-# takes any unambiguous prefix.
-for c in i in ins inst insta instal isnt isnta isntal isntall ad install-t it \
-    u up upd upgrade udpate lin ln dedu ddp; do
+# Each alias npm gives a command that fetches.
+for c in i in ins inst insta instal isnt isnta isntal isntall u up upgrade \
+    udpate update install-test it link ln dedupe ddp; do
     refuse "npm-$c" "npm $c x" "${npm_install/install/$c}"
 done
-refuse npm-x "npm x semistandard" "npm exec$fetch_tail"
-refuse npm-exe "npm exe semistandard" "npm exec$fetch_tail"
 pass npm-ci "npm ci && npm run build && npm test"
-# npm init given an initializer runs npm exec, by each name npm gives init.
-for c in init create innit ini cr; do
-    twin "npm-$c-initializer" "npm $c -y vite" "npm init vite$fetch_tail"
-done
-twin npm-init-workspace "npm --no-save init -w packages/a @scope" "npm init @scope$fetch_tail"
-pass npm-init-bare "npm init && npm init -y && npm init -w packages/a && npm c set a=b"
 pass npm-other "npm un x && npm uninstall x && npm ls && npm ll && npm list && npm cit && npm install-ci-test && npm sit && npm ic && npm install-clean && npm isntall-clean"
 
 # Lock generators.
@@ -236,7 +207,7 @@ done
 for c in "yarn install" "pnpm install" "pnpm i" "bun install" "bun i" \
     "uv sync" "yarn add" "pnpm add" "bun add" "uv pip install" \
     "uv pip sync" "uv add" "uv tool install" "uvx ruff" "npx semistandard" \
-    "npm exec" "poetry install" "poetry add" "pipenv install" \
+    "npm exec" "npm x" "poetry install" "poetry add" "pipenv install" \
     "pipenv sync" "pdm install" "pdm add" "pdm sync" easy_install; do
     twin "${c// /-}" "$c" "$c$fetch_tail"
 done
@@ -266,17 +237,8 @@ for c in "yarn install --immutable" "yarn install --frozen-lockfile" \
     "yarn --immutable" "pnpm install --frozen-lockfile" \
     "pnpm i --frozen-lockfile" "bun install --frozen-lockfile" \
     "bun i --frozen-lockfile" "uv sync --locked" "uv sync --frozen" \
-    "npx --no tsc" "npm exec --no -- tsc" "npm x --no tsc" \
-    "npx -y --no tsc" "npm --no exec tsc" "npx --yes=false tsc"; do
+    "npx --no tsc" "npm exec --no -- tsc" "npm x --no tsc"; do
     pass "${c// /-}" "$c"
-done
-# npx's --no holds only as the last of --no and --yes among its own options,
-# before the command it runs or --.
-for data in "npx --no --yes tsc|npx tsc" "npx --no -y tsc|npx tsc" \
-    "npx tsc --no|npx tsc" "npx -- tsc --no|npx tsc" \
-    "npm exec tsc -- --no|npm exec" "npm --no exec --yes tsc|npm exec"; do
-    c=${data%|*}
-    refuse "${c// /-}" "$c" "${data#*|}$fetch_tail"
 done
 
 # Splitting into simple commands.
