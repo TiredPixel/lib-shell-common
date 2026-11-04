@@ -247,9 +247,10 @@ check_named() {
         why "npm ${pos[0]} resolves versions itself, where npm ci installs a" \
             "lock as given"
         ;;
-    "pyproject-build "* | "uv build "* | "pdm build "* | "hatch build "*)
-        check_build "${line% }" "$@"
-        ;;
+    "pyproject-build "*) check_build pyproject-build "$@" ;;
+    "uv build "*) check_build "uv build" "$@" ;;
+    "pdm build "*) check_build "pdm build" "$@" ;;
+    "hatch build "*) check_build "hatch build" "$@" ;;
     "pip lock "* | "pip-compile "* | "uv pip compile "* | "uv lock "* | \
         "uv export "* | "poetry lock "* | "poetry export "* | \
         "pipenv lock "* | "pdm lock "* | "pdm export "*)

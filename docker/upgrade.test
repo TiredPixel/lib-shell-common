@@ -2305,6 +2305,17 @@ if expect lock-file-link 0 ""; then
     recorded lock-file-link lock-file-link/shared/req.txt
 fi
 
+# The file such a link names is checked for changes not committed, as the lock's
+# directory is, before anything is looked up.
+commit_all "$d"
+printf '# edit\n' >>"$d/shared/req.txt"
+rm -f -- "$work/lockrec"
+lockgo --record "$work/lockrec"
+if expect lock-file-link-dirty 1 "upgrade: $d/shared/req.txt: has changes not committed; commit or stash them first" \
+    "fake "; then
+    [ ! -e "$work/lockrec" ] || failed+=("lock-file-link-dirty: a record was written")
+fi
+
 # lock-resolve refuses what docker/upgrade would never give it.
 for given in "" pypi "npm a" "npm a b c" "npm .a b" "gem a"; do
     read -r -a words <<<"$given"

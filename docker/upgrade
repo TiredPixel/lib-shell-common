@@ -149,10 +149,11 @@
 # reads otherwise, or the lock changed and no move is itemised, the line is
 # LOCK NAME: files changed. Where nothing moved, it is empty. Since the commit
 # takes each path whole, the run first fails where FILE holds an earlier run's
-# record, or where the Dockerfile, followed through any symbolic link, or its
-# BASENAME.lock directory differs from what git has committed, or where the
-# Dockerfile is a symbolic link into another repository, such as a submodule,
-# where the commit cannot add it.
+# record, or where the Dockerfile, followed through any symbolic link, its
+# BASENAME.lock directory, or a file a lock file there links to outside it,
+# differs from what git has committed, or where the Dockerfile is a symbolic
+# link into another repository, such as a submodule, where the commit cannot
+# add it.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -809,7 +810,17 @@ for name in "${lock_names[@]}"; do
         files=(package.json package-lock.json)
     fi
     for file in "${files[@]}"; do
-        lock_file[$name$'\t'$file]=$(readlink -m -- "$dir/$file")
+        path=$(readlink -m -- "$dir/$file")
+        lock_file[$name$'\t'$file]=$path
+        # A lock file linking out of the lock's directory is written where it
+        # points, which the check on the directory does not reach.
+        if [ -n "$record" ] && [[ "$path" != "$dir/"* ]]; then
+            dirty=$(git -C "$(dirname -- "$path")" status --porcelain \
+                -- ":(literal)$(basename -- "$path")")
+            [ -z "$dirty" ] ||
+                refuse "$path" "has changes not committed; commit or stash" \
+                    "them first"
+        fi
     done
     old=$dir/${files[-1]}
     [ -e "$old" ] || continue
