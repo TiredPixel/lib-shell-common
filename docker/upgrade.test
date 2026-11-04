@@ -2319,6 +2319,23 @@ ln -s shared "$d/Dockerfile.lock"
 lockgo
 expect lock-dir-link 1 "upgrade: $d/Dockerfile.lock: is a symbolic link" "fake " || true
 
+# Nor is a lock written in a repository nested in the Dockerfile's, such as a
+# submodule, at its NAME directory or at the lock's directory.
+lockcase lock-name-nested "$pdf"
+commit_all "$d"
+mkdir -p "$d/Dockerfile.lock/m"
+"$REAL_GIT" -C "$d/Dockerfile.lock/m" init -q
+lockgo
+if expect lock-name-nested 1 "upgrade: $d/Dockerfile.lock/m: is in the repository $d/Dockerfile.lock/m, not $d, which a lock is never written in" \
+    "fake "; then
+    [ ! -e "$d/Dockerfile.lock/m/requirements.txt" ] ||
+        failed+=("lock-name-nested: the lock was written")
+fi
+rm -rf -- "$d/Dockerfile.lock/m/.git"
+"$REAL_GIT" -C "$d/Dockerfile.lock" init -q
+lockgo
+expect lock-dir-nested 1 "upgrade: $d/Dockerfile.lock: is in the repository $d/Dockerfile.lock, not $d" "fake " || true
+
 # lock-resolve refuses what docker/upgrade would never give it.
 for given in "" pypi "npm a" "npm a b c" "npm .a b" "gem a"; do
     read -r -a words <<<"$given"

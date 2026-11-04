@@ -40,7 +40,8 @@
 #       PACKAGE once, compared as pip or npm would. Nothing of the lock already
 #       there is kept, so an edit made to it by hand is undone, as the diff
 #       shows. BASENAME.lock, its NAME directory and the lock's files must not
-#       be symbolic links, since one would carry the write elsewhere
+#       be symbolic links, nor either directory in a submodule or another
+#       repository nested there, since either would carry the write elsewhere
 #
 # A TRACK LOCK with stage=STAGE resolves in the image of the FROM line naming
 # that stage, AS STAGE, both read in any case, as Docker reads them: the digest
@@ -800,6 +801,12 @@ declare -A was_roots=()
 declare -A was_unread=()
 declare -A versions=()
 locked="^([a-z0-9]([a-z0-9-]*[a-z0-9])?)==($pypi_version)( --hash=sha256:[0-9a-f]{64})+\$"
+# The repository holding the Dockerfile as named, where there is one.
+home=""
+if [ ${#lock_names[@]} -gt 0 ]; then
+    home=$(git -C "$(dirname -- "$dockerfile")" rev-parse --show-toplevel \
+        2>/dev/null) || home=""
+fi
 for name in "${lock_names[@]}"; do
     was_keys[$name]=""
     was_roots[$name]=""
@@ -814,6 +821,16 @@ for name in "${lock_names[@]}"; do
         [ ! -L "$path" ] ||
             refuse "$path" "is a symbolic link, which a lock is never written" \
                 "through"
+    done
+    # Nor is a lock written in a submodule or another repository nested there.
+    for path in "$lockdir" "$lockdir/$name"; do
+        if [ -z "$home" ] || [ ! -d "$path" ]; then
+            continue
+        fi
+        there=$(git -C "$path" rev-parse --show-toplevel)
+        [ "$there" = "$home" ] ||
+            refuse "$path" "is in the repository $there, not $home, which a" \
+                "lock is never written in"
     done
     dir=$(readlink -m -- "$lockdir/$name")
     for file in "${files[@]}"; do
