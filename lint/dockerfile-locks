@@ -27,8 +27,8 @@
 #       and --find-links, and python3 -m venv has made a directory ending in
 #       /shared earlier in the RUN, pipx's shared venv, which pipx would
 #       otherwise make with pip from PyPI; and pipx --preinstall always
-#   npm install, i, in, add, update, up, upgrade, install-test, it, link, ln,
-#   dedupe or ddp
+#   npm install, update, install-test, link or dedupe, by any alias npm gives
+#   them, such as i, add, up or ddp, or any prefix of one, as npm takes it
 #       unless the RUN is --network=none, since only npm ci installs a lock as
 #       given
 #   pip lock, pip-compile, uv pip compile, uv lock, uv export, poetry lock or
@@ -215,6 +215,23 @@ has() {
     return 1
 }
 
+# Prints the npm command that fetches, which npm command name $1 names, as an
+# alias or a prefix of one, as npm takes any unambiguous prefix; else $1. An
+# ambiguous prefix, which npm refuses, takes the first.
+npm_command() {
+    local pair
+    for pair in install:install isntall:install add:install \
+        install-test:install-test it:install-test update:update \
+        upgrade:update udpate:update link:link ln:link dedupe:dedupe \
+        ddp:dedupe exec:exec x:exec; do
+        if [[ ${pair%:*} == "$1"* ]]; then
+            echo "${pair#*:}"
+            return
+        fi
+    done
+    echo "$1"
+}
+
 # Checks command $1, given the rest.
 check_named() {
     local name=$1 a c="" line n=1
@@ -265,6 +282,8 @@ check_named() {
         done
         line="yarn install "
     fi
+    [ "$name" != npm ] || [ ${#pos[@]} -eq 0 ] ||
+        line="npm $(npm_command "${pos[0]}") "
     case $line in
     "pip install "* | "pip download "* | "pip wheel "*)
         [ -n "$offline" ] || check_pip "${pos[0]}" "$@"
@@ -283,9 +302,8 @@ check_named() {
     esac
     [ -z "$offline" ] || return 0
     case $line in
-    "npm install "* | "npm i "* | "npm in "* | "npm add "* | "npm update "* | \
-        "npm up "* | "npm upgrade "* | "npm install-test "* | "npm it "* | \
-        "npm link "* | "npm ln "* | "npm dedupe "* | "npm ddp "*)
+    "npm install "* | "npm update "* | "npm install-test "* | "npm link "* | \
+        "npm dedupe "*)
         why "npm ${pos[0]} resolves versions itself, where npm ci installs a" \
             "lock as given"
         ;;
@@ -300,7 +318,7 @@ check_named() {
             "during the build is committed nowhere"
         ;;
     "yarn install "* | "pnpm install "* | "pnpm i "* | "bun install "* | \
-        "bun i "* | "uv sync "* | "npx "?* | "npm exec "* | "npm x "* | \
+        "bun i "* | "uv sync "* | "npx "?* | "npm exec "* | \
         "yarn add "* | "pnpm add "* | "bun add "* | "uv pip install "* | \
         "uv pip sync "* | "uv add "* | "uv tool install "* | "uvx "?* | \
         "poetry install "* | "poetry add "* | "pipenv install "* | \
@@ -318,7 +336,7 @@ check_named() {
             ! has --locked "$@" || return 0
             ! has --frozen "$@" || return 0
             ;;
-        "npx "* | "npm exec "* | "npm x "*)
+        "npx "* | "npm exec "*)
             ! has --no "$@" || return 0
             ;;
         esac

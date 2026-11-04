@@ -198,7 +198,16 @@ pass pipx-other "pipx list && pipx --version"
 # npm.
 twin npm-install "npm install" "$npm_install"
 refuse npm-add "npm --no-save add x" "${npm_install/install/add}"
+# Each alias npm gives a command that fetches, and a prefix of one, as npm
+# takes any unambiguous prefix.
+for c in i in ins inst insta instal isnt isnta isntal isntall ad install-t it \
+    u up upd upgrade udpate lin ln dedu ddp; do
+    refuse "npm-$c" "npm $c x" "${npm_install/install/$c}"
+done
+refuse npm-x "npm x semistandard" "npm exec$fetch_tail"
+refuse npm-exe "npm exe semistandard" "npm exec$fetch_tail"
 pass npm-ci "npm ci && npm run build && npm test"
+pass npm-other "npm un x && npm uninstall x && npm ls && npm ll && npm list && npm cit && npm install-ci-test && npm sit && npm ic && npm install-clean && npm isntall-clean"
 
 # Lock generators.
 for c in "pip lock" pip-compile "uv pip compile" "uv lock" "uv export" \
@@ -210,7 +219,7 @@ done
 for c in "yarn install" "pnpm install" "pnpm i" "bun install" "bun i" \
     "uv sync" "yarn add" "pnpm add" "bun add" "uv pip install" \
     "uv pip sync" "uv add" "uv tool install" "uvx ruff" "npx semistandard" \
-    "npm exec" "npm x" "poetry install" "poetry add" "pipenv install" \
+    "npm exec" "poetry install" "poetry add" "pipenv install" \
     "pipenv sync" "pdm install" "pdm add" "pdm sync" easy_install; do
     twin "${c// /-}" "$c" "$c$fetch_tail"
 done
