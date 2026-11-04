@@ -34,12 +34,13 @@
 #   export, pipenv lock, and pdm lock or export
 #       unless the RUN is --network=none, since a lock resolved during the
 #       build is committed nowhere
-#   yarn alone or yarn install, pnpm install or i, bun install or i, and uv
-#   sync, but given yarn's --immutable or --frozen-lockfile, pnpm's or bun's
-#   --frozen-lockfile, or uv's --locked or --frozen; npx given a command, npm
-#   exec or x, but given --no; yarn, pnpm or bun add, uv pip install or sync, uv
-#   add, uv tool install, uvx given a command, poetry install or add, pipenv
-#   install or sync, pdm install, add or sync, and easy_install
+#   yarn alone, but for its version or help, or yarn install, pnpm install or
+#   i, bun install or i, and uv sync, but given yarn's --immutable or
+#   --frozen-lockfile, pnpm's or bun's --frozen-lockfile, or uv's --locked or
+#   --frozen; npx given a command, npm exec or x, but given --no; yarn, pnpm or
+#   bun add, uv pip install or sync, uv add, uv tool install, uvx given a
+#   command, poetry install or add, pipenv install or sync, pdm install, add or
+#   sync, and easy_install
 #       unless the RUN is --network=none, since what each fetches is not
 #       checked here
 #   python3 -m build or pyproject-build but given -n or --no-isolation, uv
@@ -215,7 +216,13 @@ check_named() {
     for a in "${pos[@]:0:n}"; do
         line+="$a "
     done
-    [ "$line" != "yarn " ] || line="yarn install "
+    # yarn given no command installs, unless asked only for its version or help.
+    if [ "$line" = "yarn " ]; then
+        for a in --version -v --help -h; do
+            ! has "$a" "$@" || return 0
+        done
+        line="yarn install "
+    fi
     case $line in
     "pip install "* | "pip download "* | "pip wheel "*)
         [ -n "$offline" ] || check_pip "${pos[0]}" "$@"

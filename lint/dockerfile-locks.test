@@ -204,6 +204,7 @@ refuse named-alone "npx prettier --check . && uv pip install --system x y" \
 refuse easy-install-version "easy_install-3.8 x" "easy_install x$fetch_tail"
 refuse frozen-other-command "pnpm add --frozen-lockfile x" "pnpm add$fetch_tail"
 pass runners-bare "uvx --version && npx --version"
+pass yarn-info "yarn --version && yarn -v && yarn --help && yarn -h && yarn --silent -v"
 pass tools-other "yarn build && pnpm run test && uv --version && bun ci"
 
 # The frozen forms, which install the committed lock or fail, and the runners
