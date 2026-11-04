@@ -138,6 +138,15 @@ for data in "-r https://h/l" "-rhttps://h/l" "--requirement=https://h/l" \
     refuse "pip-remote-lock-$n" "pip install --require-hashes --only-binary=:all: -r /l $data" "$remote_lock"
 done
 pass pip-file-lock "pip install --require-hashes --only-binary=:all: -r file:///l"
+remote_req="pip install --no-index with a requirement from a URL, which fetches with no hash check"
+for data in "https://h/x-1-py3-none-any.whl" "x @ https://h/x.whl" \
+    "x@https://h/x.whl" "git+https://h/x.git" "-e git+ssh://h/x.git" \
+    "-egit+https://h/x.git"; do
+    n=$((n + 1))
+    refuse "pip-no-index-remote-req-$n" "pip install --no-index $data" "$remote_req"
+done
+pass pip-no-index-local-req "pip install --no-index /w/x.whl file:///w/x.whl x"
+pass pip-no-index-index-url "pip install --no-index -i https://h/ -ihttps://h/ --index-url https://h/ --extra-index-url=https://h/ --proxy http://p/ x"
 refuse pip-hashes-only "pip install --require-hashes x --only-binary :all:" "$no_lock"
 pass pip-binary-spaced "pip install --require-hashes --only-binary :all: -r /l"
 refuse pip-lock-only "pip install -r /l" "$no_hashes; $no_binary"

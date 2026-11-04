@@ -18,7 +18,7 @@
 #
 #   pip, pip3 or python3 -m pip install, download or wheel
 #       unless the RUN is --network=none or pip is given --no-index with no
-#       --find-links URL other than a file: one; and unless given
+#       --find-links or requirement URL other than a file: one; and unless given
 #       --require-hashes, -r FILE, FILE no such URL, and --no-build-isolation or
 #       --only-binary=:all:, since pip fetches an sdist's build dependencies
 #       with no hash check
@@ -118,7 +118,7 @@ remote_lock() {
 # Checks pip subcommand $1, given the rest.
 check_pip() {
     local sub=$1 a prev="" hashes="" lock="" binary="" no_index="" link=""
-    local remote_link=""
+    local remote_link="" remote_req="" v
     shift
     for a in "$@"; do
         case $prev:$a in
@@ -128,14 +128,19 @@ check_pip() {
         *:-r | *:--requirement) lock=1 ;;
         *:-r* | *:--requirement=*)
             lock=1
-            a=${a#--requirement=}
-            remote_lock "${a#-r}"
+            v=${a#--requirement=}
+            remote_lock "${v#-r}"
             ;;
         -f:* | --find-links:*) link=$a ;;
         *:--find-links=*) link=${a#*=} ;;
         *:-f?*) link=${a#-f} ;;
         *:--only-binary=:all: | *:--no-build-isolation) binary=1 ;;
         --only-binary::all:) binary=1 ;;
+        # An index's URL, which --no-index sets aside, or a proxy's.
+        -i:* | --index-url:* | --extra-index-url:* | --proxy:*) ;;
+        *:-i?* | *:--index-url=* | *:--extra-index-url=* | *:--proxy=*) ;;
+        # A requirement from a URL, as an archive, NAME @ URL or VCS+URL.
+        *) ! remote "$a" || remote_req=1 ;;
         esac
         if [ -n "$link" ]; then
             ! remote "$link" || remote_link=1
@@ -147,6 +152,9 @@ check_pip() {
         [ -z "$remote_link" ] ||
             why "pip $sub --no-index with a --find-links URL, which fetches" \
                 "with no hash check"
+        [ -z "$remote_req" ] ||
+            why "pip $sub --no-index with a requirement from a URL, which" \
+                "fetches with no hash check"
         return 0
     fi
     [ -n "$hashes" ] || why "pip $sub without --require-hashes"
