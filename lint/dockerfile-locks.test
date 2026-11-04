@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+#
+# Tests lint/dockerfile-locks on Dockerfiles written to a scratch directory,
+# each case's own, with the real jq. Nothing is built, since the lint only reads
+# the file.
+#
+# Run: lint/dockerfile-locks.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+locks=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/dockerfile-locks
+work=$(mktemp -d)
+trap 'chmod -R u+rwx -- "$work" && rm -rf -- "$work"' EXIT
+
+failed=()
+
+# Runs dockerfile-locks in $work with the arguments from $4 on, and $PREPATH,
+# where set, in front of PATH, and checks its status is $2, its stdout is empty
+# and its stderr is $3 exactly.
+run() {
+    local name=$1 status=$2 err=$3 rc=0
+    shift 3
+    (
+        cd "$work" && PATH=${PREPATH:+$PREPATH:}$PATH && "$locks" "$@"
+    ) >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+    elif [ -s "$work/out" ]; then
+        failed+=("$name: stdout is: $(<"$work/out")")
+    elif [ "$(<"$work/err")" != "$err" ]; then
+        failed+=("$name: stderr is: $(<"$work/err")")
+    fi
+}
+
+# Writes stdin to $work/Dockerfile and checks dockerfile-locks on it as run
+# does, its status $2 and its stderr $3.
+check() {
+    cat >"$work/Dockerfile"
+    run "$1" "$2" "$3" Dockerfile
+}
+
+# Checks commands $2 in a RUN let through.
+pass() {
+    check "$1" 0 "" < <(printf 'FROM x\nRUN %s\n' "$2")
+}
+
+# Checks commands $2 in a RUN refused, at Dockerfile:2, for reasons $3.
+refuse() {
+    check "$1" 1 "Dockerfile:2: $3" < <(printf 'FROM x\nRUN %s\n' "$2")
+}
+
+# Checks commands $2 refused as refuse does, and let through in a RUN
+# --network=none.
+twin() {
+    refuse "$@"
+    check "$1-offline" 0 "" < <(printf 'FROM x\nRUN --network=none %s\n' "$2")
+}
+
+pipx_args="--pip-args='--disable-pip-version-check --no-index --find-links=/wheels'"
+usage="Usage: dockerfile-locks [--] DOCKERFILE..."
+no_hashes="pip install without --require-hashes"
+no_lock="pip install reads no -r lock"
+no_binary="pip install without --only-binary=:all: or --no-build-isolation, so an sdist's build dependencies are fetched with no hash"
+pip_all="$no_hashes; $no_lock; $no_binary"
+locked="--require-hashes --only-binary=:all: -r /lock/requirements.txt"
+fetch_tail=" outside a RUN --network=none, since what it fetches is not checked here"
+lock_tail=" outside a RUN --network=none, since a lock resolved during the build is committed nowhere"
+npm_install="npm install resolves versions itself, where npm ci installs a lock as given"
+online="pipx install outside a RUN --network=none"
+no_shared="pipx install with no python3 -m venv making its shared venv, a directory ending in /shared, earlier in this RUN"
+venv="python3 -m venv \"\$PIPX_HOME/shared\""
+
+# Arguments.
+run no-arguments 2 "$usage"
+run option 2 "$usage" -x
+run option-after-file 2 "$usage" Dockerfile --help
+run only-separator 2 "$usage" --
+run missing 3 "dockerfile-locks: nope: no such file" nope
+printf 'FROM x\n' >"$work/-dash"
+run separator 0 "" -- -dash
+if [ "$(id -u)" -ne 0 ]; then
+    printf 'FROM x\n' >"$work/locked"
+    chmod 000 "$work/locked"
+    run unreadable 3 "dockerfile-locks: locked: cannot be read" locked
+fi
+printf 'FROM x\nRUN npm install\n' >"$work/a.Dockerfile"
+printf 'FROM x\n\nRUN npm i\n' >"$work/b.Dockerfile"
+run files 1 "a.Dockerfile:2: $npm_install"$'\n'"b.Dockerfile:3: ${npm_install/install/i}" \
+    a.Dockerfile b.Dockerfile
+
+# The form this repository's image takes: a wheels stage fetching the lock with
+# hashes, and pipx installing offline from it into a shared venv made first.
+check two-stage 0 "" <<DOCKERFILE
+FROM docker.io/library/debian@sha256:0 AS wheels
+RUN --mount=type=bind,source=Dockerfile.lock/mdformat,target=/lock \\
+    python3 -m pip download --disable-pip-version-check --require-hashes \\
+        --no-deps --only-binary=:all: -d /wheels -r /lock/requirements.txt
+FROM docker.io/library/debian@sha256:0 AS dev
+RUN --network=none \\
+    --mount=type=bind,from=wheels,source=/wheels,target=/wheels \\
+    export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \\
+    && $venv \\
+    && pipx install $pipx_args mdformat \\
+    && pipx inject $pipx_args mdformat mdformat-gfm mdformat-frontmatter
+RUN npm ci --prefix /opt/js --ignore-scripts
+DOCKERFILE
+
+pass nothing "apt-get update && apt-get install -y pipx"
+
+# pip, by each name, and each subcommand that fetches.
+twin pip "pip install mdformat" "$pip_all"
+refuse pip3-path "/opt/venv/bin/pip3.13 install mdformat" "$pip_all"
+refuse python-m-pip "python3 -I -m pip install mdformat" "$pip_all"
+refuse pip-download "pip download x" "${pip_all//install/download}"
+refuse pip-wheel "pip wheel x" "${pip_all//install/wheel}"
+pass pip-other "pip list && pip --version && pip"
+pass python-script "python3 -c 'import pip' && python3 pip install x && python3 -m"
+
+# pip's hashed lock, its options in each form read.
+pass pip-locked "pip install $locked"
+pass pip-requirement "pip install --require-hashes --only-binary=:all: --requirement /l"
+pass pip-joined "pip install --require-hashes --only-binary=:all: -r/l --requirement=/m"
+pass pip-no-isolation "pip install --require-hashes --no-build-isolation -r /l"
+pass pip-no-index "pip install --no-index x"
+refuse pip-hashes-only "pip install --require-hashes x --only-binary :all:" "$no_lock"
+pass pip-binary-spaced "pip install --require-hashes --only-binary :all: -r /l"
+refuse pip-lock-only "pip install -r /l" "$no_hashes; $no_binary"
+
+# pipx, offline from wheels into the shared venv made first.
+check pipx 0 "" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && pipx install $pipx_args mdformat
+DOCKERFILE
+
+check pipx-separate 0 "" <<'DOCKERFILE'
+FROM x
+RUN --network=none python3 -m venv /opt/pipx/shared/ \
+    && python3 -m pipx install --pip-args="--no-index -f /wheels" mdformat
+DOCKERFILE
+
+check pipx-online 1 "Dockerfile:2: $online" <<DOCKERFILE
+FROM x
+RUN $venv && pipx install $pipx_args mdformat
+DOCKERFILE
+
+check pipx-no-pip-args 1 "Dockerfile:2: pipx inject --pip-args lacks --no-index; pipx inject --pip-args lacks --find-links" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && pipx inject mdformat mdformat-gfm
+DOCKERFILE
+
+check pipx-pip-args-spaced 0 "" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && pipx install --pip-args '--no-index --find-links=/w' mdformat
+DOCKERFILE
+
+check pipx-no-venv 1 "Dockerfile:2: $no_shared" <<DOCKERFILE
+FROM x
+RUN --network=none pipx install $pipx_args mdformat
+DOCKERFILE
+
+check pipx-venv-after 1 "Dockerfile:2: $no_shared" <<DOCKERFILE
+FROM x
+RUN --network=none pipx install $pipx_args mdformat && $venv
+DOCKERFILE
+
+check pipx-preinstall 1 "Dockerfile:2: pipx --preinstall runs pip without the --pip-args" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && pipx install $pipx_args --preinstall=pip mdformat
+DOCKERFILE
+
+pass pipx-other "pipx list && pipx --version"
+
+# npm.
+twin npm-install "npm install" "$npm_install"
+refuse npm-add "npm --no-save add x" "${npm_install/install/add}"
+pass npm-ci "npm ci && npm run build && npm test"
+
+# Lock generators.
+for c in "pip lock" pip-compile "uv pip compile" "uv lock" "uv export" \
+    "poetry lock" "poetry export" "pipenv lock" "pdm lock" "pdm export"; do
+    twin "${c// /-}" "$c" "$c$lock_tail"
+done
+
+# Other tools' installs, each named by the tool and its command alone.
+for c in "yarn install" "pnpm install" "pnpm i" "bun install" "bun i" \
+    "uv sync" "yarn add" "pnpm add" "bun add" "uv pip install" \
+    "uv pip sync" "uv add" "uv tool install" "uvx ruff" "npx semistandard" \
+    "npm exec" "npm x" "poetry install" "poetry add" "pipenv install" \
+    "pipenv sync" "pdm install" "pdm add" "pdm sync" easy_install; do
+    twin "${c// /-}" "$c" "$c$fetch_tail"
+done
+twin yarn yarn "yarn install$fetch_tail"
+
+# Build frontends, isolated by default, and their switches building without.
+build_tail=" outside a RUN --network=none, since it fetches build dependencies with no hash check"
+for c in "python3 -m build" pyproject-build "uv build" "pdm build" \
+    "hatch build"; do
+    twin "${c// /-}" "$c --wheel" "$c$build_tail"
+done
+pass build-no-isolation "python3 -m build -n && python3 -m build --no-isolation && pyproject-build -n && uv build --no-build-isolation && pdm build --no-isolation"
+pass build-script "./build && make build"
+refuse named-alone "npx prettier --check . && uv pip install --system x y" \
+    "npx prettier$fetch_tail; uv pip install$fetch_tail"
+refuse easy-install-version "easy_install-3.8 x" "easy_install x$fetch_tail"
+refuse frozen-other-command "pnpm add --frozen-lockfile x" "pnpm add$fetch_tail"
+pass runners-bare "uvx --version && npx --version"
+pass tools-other "yarn build && pnpm run test && uv --version && bun ci"
+
+# The frozen forms, which install the committed lock or fail, and the runners
+# kept from fetching.
+for c in "yarn install --immutable" "yarn install --frozen-lockfile" \
+    "yarn --immutable" "pnpm install --frozen-lockfile" \
+    "pnpm i --frozen-lockfile" "bun install --frozen-lockfile" \
+    "bun i --frozen-lockfile" "uv sync --locked" "uv sync --frozen" \
+    "npx --no tsc" "npm exec --no -- tsc" "npm x --no tsc"; do
+    pass "${c// /-}" "$c"
+done
+
+# Splitting into simple commands.
+for c in "true;npm i" "true||npm i" "true|npm i" "true&npm i" "(npm i)" \
+    "{ npm i; }" "echo \`npm i\`" "x=\$(npm i)" "! npm i" \
+    "if npm i; then :; fi" "while npm i; do :; done"; do
+    refuse "split $c" "$c" "${npm_install/install/i}"
+done
+
+# Quoting.
+refuse quoted-command "'n'\"p\"m i" "${npm_install/install/i}"
+refuse escaped-command "n\\pm i" "${npm_install/install/i}"
+refuse double-quote-escape 'echo "a \" b \\" && npm i' "${npm_install/install/i}"
+pass quoted-separator "echo 'a; npm i' \"b && npm i\""
+pass empty-word "'' npm i"
+pass comment "echo x # && npm i"
+refuse hash-in-word "echo a#b && npm i" "${npm_install/install/i}"
+pass quote-no-end "echo 'a && npm i"
+
+# Assignments and wrappers.
+for c in "A=1 B+=2 npm i" "sudo -E -u x npm i" "env -i -u A -C /d B=1 npm i" \
+    "/usr/bin/env npm i"; do
+    refuse "wrapper $c" "$c" "${npm_install/install/i}"
+done
+
+# Shells.
+for c in "sh -c 'npm i'" "bash -euo pipefail -c 'npm i'" "/bin/bash -ec 'npm i'" \
+    "dash --norc -c 'npm i'"; do
+    refuse "shell $c" "$c" "${npm_install/install/i}"
+done
+pass shell-script "bash npm i && sh -c"
+
+# The exec form, read with jq; anything else is the shell form.
+refuse exec-form '["npm", "install"]' "$npm_install"
+refuse exec-form-shell '["sh", "-c", "npm i"]' "${npm_install/install/i}"
+refuse shell-form-bracket "[ -f x ] && npm i" "${npm_install/install/i}"
+pass exec-form-not-strings '[1]'
+
+mkdir "$work/badjq"
+printf '#!/usr/bin/env bash\nset -Eeuo pipefail\nshopt -s inherit_errexit failglob\nexit 3\n' \
+    >"$work/badjq/jq"
+chmod +x "$work/badjq/jq"
+printf 'FROM x\nRUN ["npm", "install"]\n' >"$work/Dockerfile"
+PREPATH=$work/badjq run exec-form-jq-fails 3 \
+    "dockerfile-locks: Dockerfile:2: jq failed reading the exec form" \
+    Dockerfile
+
+# Heredocs: a body that is the RUN's script, or a shell's, is read, any other
+# passed over.
+check heredoc-script 1 "Dockerfile:2: $npm_install
+Dockerfile:8: ${npm_install/install/i}" <<'DOCKERFILE'
+FROM x
+RUN <<EOF
+echo "a\
+b"
+npm \
+install
+EOF
+RUN <<EOF bash <<'EOF2'
+EOF
+npm i
+EOF2
+RUN --network=none <<EOF
+npm i
+EOF
+DOCKERFILE
+
+check heredoc-shell 1 "Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
+FROM x
+RUN --mount=type=cache,target=/x /bin/bash <<-"EOF"
+	npm i
+	EOF
+DOCKERFILE
+
+check heredoc-other 0 "" <<'DOCKERFILE'
+FROM x
+RUN cat <<EOF >/etc/x
+npm i
+EOF
+COPY <<EOF /x
+RUN npm i
+EOF
+DOCKERFILE
+
+check heredoc-no-end 3 "dockerfile-locks: Dockerfile: a heredoc's body has no end line EOF" <<'DOCKERFILE'
+FROM x
+RUN <<EOF
+npm i
+DOCKERFILE
+
+# Instructions, on logical lines.
+check continued 1 "Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
+FROM x
+RUN apt-get update \
+# a comment inside, skipped
+    && npm i
+DOCKERFILE
+
+check escape-directive 1 "Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
+# syntax=docker/dockerfile:1
+# escape=`
+FROM x
+RUN true `
+    && npm i
+DOCKERFILE
+
+check continued-at-end 1 "Dockerfile:2: ${npm_install/install/i}" < <(printf 'FROM x\nrun npm i \\\n')
+
+check onbuild 1 "Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
+FROM x
+onbuild RUN npm i
+ONBUILD
+DOCKERFILE
+
+# The suppression.
+check ignore 0 "" <<'DOCKERFILE'
+FROM x
+# dockerfile-locks ignore: a scratch stage, never shipped
+# hadolint ignore=DL3016
+RUN npm i
+DOCKERFILE
+
+check ignore-no-reason 1 "Dockerfile:3: dockerfile-locks ignore has no reason" \
+    < <(printf 'FROM x\n# dockerfile-locks ignore: not the nearest\n# dockerfile-locks ignore:\t \nRUN npm i\n')
+
+check ignore-detached 1 "Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
+FROM x
+# dockerfile-locks ignore: a blank line between
+
+RUN npm i
+DOCKERFILE
+
+if [ ${#failed[@]} -gt 0 ]; then
+    for f in "${failed[@]}"; do
+        failed_case=${f%%: *}
+        while IFS= read -r failed_line <&3; do
+            echo "${0##*/}: $failed_case: $failed_line" >&2
+        done 3<<<"${f#"$failed_case: "}"
+    done
+    exit 1
+fi

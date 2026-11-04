@@ -105,4 +105,5 @@ dockerfmt_args=(--newline)
 mdformat_args=(--wrap no)
 
 # No formatter or linter exists for what else is tracked: the .dockerignore,
-# .gitignore, .dockerrepo, checkmake.ini and the LICENSE.
+# .gitignore, .dockerrepo, checkmake.ini, the LICENSE and
+# Dockerfile.lock/mdformat/requirements.txt, which docker/upgrade writes.

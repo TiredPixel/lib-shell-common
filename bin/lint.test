@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
 # Tests bin/lint in a scratch tree beside a stub bin/files, so the case decides
-# which files it lists, independent of the real list, and a stub lint/yaml-keys,
-# with every tool it runs faked on PATH. Each fake logs its name and arguments,
-# each shell-quoted, and exits 7 where FAKE_FAIL names it, or on the one call
-# whose log line FAKE_FAIL holds whole; the stub yaml-keys logs the names it
-# reads in place of arguments. A case checks the whole log, so a tool given any
-# argument other than those expected fails it.
+# which files it lists, independent of the real list, and stubs of
+# lint/yaml-keys and lint/dockerfile-locks, with every tool it runs faked on
+# PATH. Each fake, the dockerfile-locks stub among them, logs its name and
+# arguments, each shell-quoted, and exits 7 where FAKE_FAIL names it, or on the
+# one call whose log line FAKE_FAIL holds whole; the stub yaml-keys logs the
+# names it reads in place of arguments. A case checks the whole log, so a tool
+# given any argument other than those expected fails it.
 #
 # Run: bin/lint.test. Reports each case that failed on stderr, and exits 1 if
 # any did.
@@ -76,6 +77,7 @@ if [ "${FAKE_FAIL-}" = yaml-keys ]; then
 fi
 EOF
 chmod +x "$t/lint/yaml-keys"
+cp -- "$work/path/fake" "$t/lint/dockerfile-locks"
 
 # A log line as a fake writes it, for command $1 with the rest as arguments.
 line() {
@@ -98,6 +100,7 @@ expected() {
     fi
     line dockerfmt --fake-dockerfmt --check Dockerfile
     line hadolint Dockerfile
+    line dockerfile-locks Dockerfile
     line mdformat --fake-mdformat --check README.md
     line checkmake Makefile
     line dotenv-linter check .env.example
@@ -159,6 +162,7 @@ declare -A section=(
     [actionlint]="bin/lint: checking 2 workflow(s)"
     [dockerfmt]="bin/lint: checking 1 Dockerfile(s)"
     [hadolint]="bin/lint: checking 1 Dockerfile(s)"
+    ["dockerfile-locks"]="bin/lint: checking 1 Dockerfile(s)"
     [mdformat]="bin/lint: checking 1 Markdown file(s)"
     [checkmake]="bin/lint: checking 1 Makefile(s)"
     ["dotenv-linter"]="bin/lint: checking 1 dotenv file(s)"
@@ -190,7 +194,7 @@ FAKE_WORKFLOWS=1 check workflows 0 "$(expected 1)" "$(progress 1)"
 # Any failing check ends the run with its status, running nothing after it.
 all=$(expected 1)
 said=$(progress 1)
-for tool in "${tools[@]}" yaml-keys; do
+for tool in "${tools[@]}" yaml-keys dockerfile-locks; do
     want=$(upto "$tool" "$all")
     heard=$(upto "${section[$tool]}" "$said")
     FAKE_WORKFLOWS=1 FAKE_FAIL=$tool check "fails-$tool" 7 "$want" "$heard"

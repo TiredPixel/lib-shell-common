@@ -1,0 +1,539 @@
+#!/usr/bin/env bash
+#
+# Usage: lint/dockerfile-locks [--] DOCKERFILE...
+#
+# Refuse each RUN or ONBUILD RUN in each DOCKERFILE that runs an installer from
+# PyPI or npm in a way that can fetch what no hashed lock pins, or resolves a
+# lock during the build. Each refused RUN is named on stderr as FILE:LINE: and
+# why, LINE its first line, and the run exits 1; a usage error exits 2; a file
+# that cannot be read, whose heredoc has no end line, or whose exec-form RUN jq
+# fails to read, exits 3.
+#
+# A RUN's shell or exec form, the heredoc that is its script, as in RUN <<EOF or
+# RUN bash <<EOF, and the script a shell's -c gives are split into simple
+# commands at ; & | ( ) ` and newlines. Leading assignments, reserved words such
+# as if or {, and the wrappers sudo and env are passed, with their options, -u
+# and -C taking a value. The first word that is not an option after a tool is
+# its command. Refused:
+#
+#   pip, pip3 or python3 -m pip install, download or wheel
+#       unless the RUN is --network=none or pip is given --no-index; and
+#       unless given --require-hashes, -r FILE, and --no-build-isolation or
+#       --only-binary=:all:, since pip fetches an sdist's build dependencies
+#       with no hash check
+#   pipx or python3 -m pipx install or inject
+#       unless the RUN is --network=none, --pip-args ARGS carries --no-index
+#       and --find-links, and python3 -m venv has made a directory ending in
+#       /shared earlier in the RUN, pipx's shared venv, which pipx would
+#       otherwise make with pip from PyPI; and pipx --preinstall always
+#   npm install, i, in, add, update, up, upgrade, install-test, it, link, ln,
+#   dedupe or ddp
+#       unless the RUN is --network=none, since only npm ci installs a lock as
+#       given
+#   pip lock, pip-compile, uv pip compile, uv lock, uv export, poetry lock or
+#   export, pipenv lock, and pdm lock or export
+#       unless the RUN is --network=none, since a lock resolved during the
+#       build is committed nowhere
+#   yarn alone or yarn install, pnpm install or i, bun install or i, and uv
+#   sync, but given yarn's --immutable or --frozen-lockfile, pnpm's or bun's
+#   --frozen-lockfile, or uv's --locked or --frozen; npx given a command, npm
+#   exec or x, but given --no; yarn, pnpm or bun add, uv pip install or sync, uv
+#   add, uv tool install, uvx given a command, poetry install or add, pipenv
+#   install or sync, pdm install, add or sync, and easy_install
+#       unless the RUN is --network=none, since what each fetches is not
+#       checked here
+#   python3 -m build or pyproject-build but given -n or --no-isolation, uv
+#   build but given --no-build-isolation, pdm build but given --no-isolation,
+#   and hatch build
+#       unless the RUN is --network=none, since an isolated build fetches its
+#       build dependencies with no hash check
+#
+# Every other command passes, npm ci and bun ci among them. Not seen: eval,
+# find -exec, any other wrapper, such as exec, nice, timeout, flock or xargs, a
+# wrapper's option value other than -u's or -C's, a command substitution inside
+# double quotes, an option overridden later, as --only-binary=:all: is by
+# --no-binary, abbreviated, grouped or unusual options, an option's
+# value written before the command, a command a variable names, a script piped
+# into a shell, options set in the environment or a configuration file, a
+# --find-links URL beside --no-index, any other installer or build frontend, or
+# that yarn 1 ignores --immutable.
+#
+# A RUN is let through by a comment line among those directly above its first
+# line, the nearest such comment taken, REASON required, so one with no reason
+# is itself refused:
+#
+#   # dockerfile-locks ignore: REASON
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=${0##*/}
+
+usage() {
+    echo "Usage: $prog [--] DOCKERFILE..." >&2
+    exit 2
+}
+
+files=()
+while [ $# -gt 0 ]; do
+    case $1 in
+    --)
+        shift
+        files+=("$@")
+        break
+        ;;
+    -*) usage ;;
+    *) files+=("$1") ;;
+    esac
+    shift
+done
+[ ${#files[@]} -gt 0 ] || usage
+
+die() {
+    echo "$prog: $*" >&2
+    exit 3
+}
+
+# Adds to reasons, why the RUN being read is refused, its arguments joined.
+why() {
+    reasons+=("$*")
+}
+
+assignment='^[A-Za-z_][A-Za-z0-9_]*\+?='
+
+# Checks pip subcommand $1, given the rest.
+check_pip() {
+    local sub=$1 a prev="" hashes="" lock="" binary=""
+    shift
+    for a in "$@"; do
+        case $prev:$a in
+        *:--no-index) return 0 ;;
+        *:--require-hashes) hashes=1 ;;
+        *:-r* | *:--requirement*) lock=1 ;;
+        *:--only-binary=:all: | *:--no-build-isolation) binary=1 ;;
+        --only-binary::all:) binary=1 ;;
+        esac
+        prev=$a
+    done
+    [ -n "$hashes" ] || why "pip $sub without --require-hashes"
+    [ -n "$lock" ] || why "pip $sub reads no -r lock"
+    [ -n "$binary" ] ||
+        why "pip $sub without --only-binary=:all: or --no-build-isolation," \
+            "so an sdist's build dependencies are fetched with no hash"
+}
+
+# Checks pipx subcommand $1, given the rest.
+check_pipx() {
+    local sub=$1 a prev="" pip_args=""
+    shift
+    for a in "$@"; do
+        case $prev:$a in
+        *:--preinstall*)
+            why "pipx --preinstall runs pip without the --pip-args"
+            ;;
+        *:--pip-args=*) pip_args=" ${a#*=}" ;;
+        --pip-args:*) pip_args=" $a" ;;
+        esac
+        prev=$a
+    done
+    [ -n "$offline" ] || why "pipx $sub outside a RUN --network=none"
+    [[ $pip_args == *" --no-index"* ]] ||
+        why "pipx $sub --pip-args lacks --no-index"
+    [[ $pip_args == *" --find-links"* || $pip_args == *" -f"* ]] ||
+        why "pipx $sub --pip-args lacks --find-links"
+    [ -n "$shared" ] || why "pipx $sub with no python3 -m venv making its" \
+        "shared venv, a directory ending in /shared, earlier in this RUN"
+}
+
+# Checks build frontend $1, given the rest: an isolated build fetches its build
+# dependencies, such as setuptools, with no hash check.
+check_build() {
+    local what=$1
+    shift
+    [ -z "$offline" ] || return 0
+    case $what in
+    "python3 -m build" | pyproject-build)
+        ! has -n "$@" || return 0
+        ! has --no-isolation "$@" || return 0
+        ;;
+    "uv build") ! has --no-build-isolation "$@" || return 0 ;;
+    "pdm build") ! has --no-isolation "$@" || return 0 ;;
+    esac
+    why "$what outside a RUN --network=none, since it fetches build" \
+        "dependencies with no hash check"
+}
+
+# Whether option $1 is among the rest.
+has() {
+    local o=$1 a
+    shift
+    for a in "$@"; do
+        [ "$a" != "$o" ] || return 0
+    done
+    return 1
+}
+
+# Checks command $1, given the rest.
+check_named() {
+    local name=$1 a c="" line n=1
+    local -a pos=()
+    shift
+    case $name in
+    sh | bash | dash | ash)
+        while [[ ${1-} == -* ]]; do
+            case $1 in
+            --*) ;;
+            # -o and -O take the next word.
+            *[oO]) shift || : ;;
+            *c*) c=1 ;;
+            esac
+            shift || :
+        done
+        [ -z "$c" ] || [ $# -eq 0 ] || check_script "$1"
+        return 0
+        ;;
+    esac
+    if [[ $name =~ ^python[0-9.]*$ ]]; then
+        while [[ ${1-} == -* && $1 != -m ]]; do
+            shift
+        done
+        [ $# -ge 2 ] || return 0
+        if [ "$1" = -m ] && [ "$2" = build ]; then
+            check_build "python3 -m build" "${@:3}"
+        elif [ "$1" = -m ]; then
+            check_named "$2" "${@:3}"
+        fi
+        return 0
+    fi
+    [[ ! $name =~ ^pip[0-9.]*$ ]] || name=pip
+    [[ $name != easy_install* ]] || name=easy_install
+    for a in "$@"; do
+        [[ $a == -* ]] || pos+=("$a")
+    done
+    # The tool and its command, which uv's take two words to name.
+    [ "$name" != uv ] || n=2
+    line="$name "
+    for a in "${pos[@]:0:n}"; do
+        line+="$a "
+    done
+    [ "$line" != "yarn " ] || line="yarn install "
+    case $line in
+    "pip install "* | "pip download "* | "pip wheel "*)
+        [ -n "$offline" ] || check_pip "${pos[0]}" "$@"
+        return 0
+        ;;
+    "pipx install "* | "pipx inject "*)
+        check_pipx "${pos[0]}" "$@"
+        return 0
+        ;;
+    "venv "*)
+        for a in "${pos[@]}"; do
+            [[ ${a%/} != */shared ]] || shared=1
+        done
+        return 0
+        ;;
+    esac
+    [ -z "$offline" ] || return 0
+    case $line in
+    "npm install "* | "npm i "* | "npm in "* | "npm add "* | "npm update "* | \
+        "npm up "* | "npm upgrade "* | "npm install-test "* | "npm it "* | \
+        "npm link "* | "npm ln "* | "npm dedupe "* | "npm ddp "*)
+        why "npm ${pos[0]} resolves versions itself, where npm ci installs a" \
+            "lock as given"
+        ;;
+    "pyproject-build "* | "uv build "* | "pdm build "* | "hatch build "*)
+        check_build "${line% }" "$@"
+        ;;
+    "pip lock "* | "pip-compile "* | "uv pip compile "* | "uv lock "* | \
+        "uv export "* | "poetry lock "* | "poetry export "* | \
+        "pipenv lock "* | "pdm lock "* | "pdm export "*)
+        why "${line% } outside a RUN --network=none, since a lock resolved" \
+            "during the build is committed nowhere"
+        ;;
+    "yarn install "* | "pnpm install "* | "pnpm i "* | "bun install "* | \
+        "bun i "* | "uv sync "* | "npx "?* | "npm exec "* | "npm x "* | \
+        "yarn add "* | "pnpm add "* | "bun add "* | "uv pip install "* | \
+        "uv pip sync "* | "uv add "* | "uv tool install "* | "uvx "?* | \
+        "poetry install "* | "poetry add "* | "pipenv install "* | \
+        "pipenv sync "* | "pdm install "* | "pdm add "* | "pdm sync "* | \
+        "easy_install "*)
+        case $line in
+        "yarn install "*)
+            ! has --immutable "$@" || return 0
+            ! has --frozen-lockfile "$@" || return 0
+            ;;
+        "pnpm install "* | "pnpm i "* | "bun install "* | "bun i "*)
+            ! has --frozen-lockfile "$@" || return 0
+            ;;
+        "uv sync "*)
+            ! has --locked "$@" || return 0
+            ! has --frozen "$@" || return 0
+            ;;
+        "npx "* | "npm exec "* | "npm x "*)
+            ! has --no "$@" || return 0
+            ;;
+        esac
+        why "${line% } outside a RUN --network=none, since what it fetches is" \
+            "not checked here"
+        ;;
+    esac
+}
+
+# Checks one simple command, its words $@, past any assignments, reserved
+# words and wrappers.
+check_command() {
+    local -a w=("$@")
+    local k=0 name
+    while [ "$k" -lt ${#w[@]} ]; do
+        name=${w[k]##*/}
+        k=$((k + 1))
+        case $name in
+        '!' | '{' | '}' | if | then | else | elif | do | while | until) ;;
+        sudo | env)
+            while [[ ${w[k]-} == -* ]]; do
+                case ${w[k]} in
+                -u | -C) k=$((k + 1)) ;;
+                esac
+                k=$((k + 1))
+            done
+            ;;
+        *)
+            [[ ! ${w[k - 1]} =~ $assignment ]] || continue
+            check_named "$name" "${w[@]:k}"
+            return 0
+            ;;
+        esac
+    done
+}
+
+# Ends check_script's word, if one has begun.
+flush() {
+    [ -n "$has" ] || return 0
+    words+=("$word")
+    word="" has=""
+}
+
+# Ends check_script's simple command, checking it.
+end() {
+    flush
+    [ ${#words[@]} -eq 0 ] || check_command "${words[@]}"
+    words=()
+}
+
+# Checks shell text $1, command by command. Quotes are removed and nothing is
+# expanded; a quote with no end runs to the end of the text.
+check_script() {
+    local s=$1 i=0 c q word="" has=""
+    local -a words=()
+    while [ "$i" -lt ${#s} ]; do
+        c=${s:i:1}
+        case $c in
+        ' ' | $'\t') flush ;;
+        $'\n' | ';' | '&' | '|' | '(' | ')' | \`) end ;;
+        \#)
+            if [ -n "$has" ]; then
+                word+=$c
+            else
+                q=${s:i}
+                q=${q%%$'\n'*}
+                i=$((i + ${#q} - 1))
+            fi
+            ;;
+        \')
+            q=${s:i+1}
+            q=${q%%\'*}
+            word+=$q
+            has=1
+            i=$((i + 1 + ${#q}))
+            ;;
+        \")
+            has=1
+            i=$((i + 1))
+            while [ "$i" -lt ${#s} ] && [ "${s:i:1}" != \" ]; do
+                c=${s:i:1}
+                if [ "$c" = \\ ]; then
+                    case ${s:i+1:1} in
+                    \$ | \` | \" | \\)
+                        i=$((i + 1))
+                        c=${s:i:1}
+                        ;;
+                    $'\n')
+                        i=$((i + 1))
+                        c=""
+                        ;;
+                    esac
+                fi
+                word+=$c
+                i=$((i + 1))
+            done
+            ;;
+        \\)
+            i=$((i + 1))
+            if [ "${s:i:1}" != $'\n' ]; then
+                word+=${s:i:1}
+                has=1
+            fi
+            ;;
+        *)
+            word+=$c
+            has=1
+            ;;
+        esac
+        i=$((i + 1))
+    done
+    end
+}
+
+# Checks the RUN whose text after its keyword is $1, and whose heredoc scripts
+# are $2, setting reasons to why it is refused.
+check_run() {
+    local text=$1 quoted
+    reasons=()
+    shared=""
+    offline=""
+    while [[ $text =~ ^(--[^[:space:]]*)[[:blank:]]*(.*)$ ]]; do
+        text=${BASH_REMATCH[2]}
+        [ "${BASH_REMATCH[1]}" != --network=none ] || offline=1
+    done
+    if [[ $text == '['* ]]; then
+        quoted=$(jq -rR 'fromjson? | select(type == "array"
+            and all(.[]; type == "string")) | map(@sh) | join(" ")' \
+            <<<"$text") || die "$at: jq failed reading the exec form"
+        [ -z "$quoted" ] || text=$quoted
+    fi
+    check_script "$text"
+    check_script "$2"
+}
+
+# Refuses line $2 of $1 for the reasons after it, kept in check_file's found to
+# be said in line order.
+refuse_at() {
+    local why
+    printf -v why '%s; ' "${@:3}"
+    found[$2]="$1:$2: ${why%; }"
+    refused=1
+}
+
+ignore='^[[:space:]]*#[[:space:]]*dockerfile-locks ignore:(.*)$'
+delimiter='[^<"'\''[:space:]]+'
+heredoc="^[0-9]*<<(-?)(\"($delimiter)\"|'($delimiter)'|($delimiter))\$"
+run='^[[:space:]]*([Oo][Nn][Bb][Uu][Ii][Ll][Dd][[:space:]]+)?[Rr][Uu][Nn]([[:space:]]+(.*))?$'
+
+check_file() {
+    local dockerfile=$1 line i k a start="" text word keyword escape=\\ last=""
+    local script="" reason
+    local -a lines=() logical=() bodies=() docs=() words=() found=() comments=()
+
+    [ -f "$dockerfile" ] || die "$dockerfile: no such file"
+    mapfile -t lines 2>/dev/null <"$dockerfile" ||
+        die "$dockerfile: cannot be read"
+    for line in "${lines[@]}"; do
+        [[ $line =~ ^#[[:space:]]*([A-Za-z]+)[[:space:]]*=[[:space:]]*([^[:space:]]*) ]] ||
+            break
+        [ "${BASH_REMATCH[1],,}" != escape ] || escape=${BASH_REMATCH[2]}
+    done
+
+    # Logical lines, joined at the escape character, comment lines inside them
+    # skipped; a RUN's heredoc bodies are kept in bodies where they are its
+    # script, and the bodies of the others passed over.
+    for i in "${!lines[@]}"; do
+        line=${lines[i]}
+        if [ ${#docs[@]} -gt 0 ]; then
+            k=$line
+            if [ "${docs[0]:0:1}" = - ]; then
+                [[ $line =~ ^$'\t'*(.*)$ ]]
+                k=${BASH_REMATCH[1]}
+            fi
+            if [ "$k" = "${docs[0]:1}" ]; then
+                docs=("${docs[@]:1}")
+            elif [ -n "$script" ]; then
+                bodies[last]+=$line$'\n'
+            fi
+            continue
+        fi
+        if [[ $line =~ ^[[:space:]]*(#.*)?$ ]]; then
+            [[ $line != *\#* ]] || comments[i]=1
+            continue
+        fi
+        if [ -z "$start" ]; then
+            start=$i
+            text=""
+        fi
+        if [[ $line =~ ^(.*)"$escape"[[:blank:]]*$ ]]; then
+            text+=${BASH_REMATCH[1]}
+            continue
+        fi
+        logical[start]=$text$line
+        bodies[start]=""
+        last=$start
+        start=""
+        script=""
+        read -r -a words <<<"${logical[last]}"
+        keyword=${words[0]^^}
+        if [ "$keyword" = ONBUILD ]; then
+            words=("${words[@]:1}")
+            keyword=${words[0]-}
+            keyword=${keyword^^}
+        fi
+        case $keyword in
+        RUN | COPY | ADD) ;;
+        *) continue ;;
+        esac
+        for word in "${words[@]:1}"; do
+            if [[ $word =~ $heredoc ]]; then
+                docs+=("${BASH_REMATCH[1]:-+}${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}")
+            fi
+        done
+        [ "$keyword" = RUN ] || continue
+        # Its heredocs are its script where its command is a heredoc or a shell.
+        for word in "${words[@]:1}"; do
+            [[ $word != --* ]] || continue
+            case ${word##*/} in
+            sh | bash | dash | ash) script=1 ;;
+            *) [[ ! $word =~ $heredoc ]] || script=1 ;;
+            esac
+            break
+        done
+    done
+    if [ -n "$start" ]; then
+        logical[start]=$text
+        bodies[start]=""
+    fi
+    [ ${#docs[@]} -eq 0 ] ||
+        die "$dockerfile: a heredoc's body has no end line ${docs[0]:1}"
+
+    for i in "${!logical[@]}"; do
+        at=$dockerfile:$((i + 1))
+        [[ ${logical[i]} =~ $run ]] || continue
+        check_run "${BASH_REMATCH[3]}" "${bodies[i]}"
+        # The nearest in the comment lines directly above, so that another
+        # tool's, such as hadolint's, may sit below it.
+        k=""
+        for ((a = i - 1; a >= 0; a--)); do
+            [ -n "${comments[a]-}" ] || break
+            if [[ ${lines[a]} =~ $ignore ]]; then
+                k=$a
+                reason=${BASH_REMATCH[1]}
+                break
+            fi
+        done
+        if [ -z "$k" ]; then
+            [ ${#reasons[@]} -eq 0 ] ||
+                refuse_at "$dockerfile" $((i + 1)) "${reasons[@]}"
+        elif [[ ! $reason =~ [^[:space:]] ]]; then
+            refuse_at "$dockerfile" $((k + 1)) \
+                "dockerfile-locks ignore has no reason"
+        fi
+    done
+    [ ${#found[@]} -eq 0 ] || printf '%s\n' "${found[@]}" >&2
+}
+
+reasons=()
+shared=""
+offline=""
+at=""
+refused=0
+
+for f in "${files[@]}"; do
+    check_file "$f"
+done
+exit "$refused"

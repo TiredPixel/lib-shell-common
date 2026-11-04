@@ -95,12 +95,13 @@ unchanged() {
 
 # Fails case $1 unless HEAD is one commit past the fixture's, changing exactly
 # the paths after $1, as Upgrade pins with a body of the moves where Dockerfile
-# is among them and then lib_move where lib is, the remote untouched and the
-# record removed.
+# or a lock under Dockerfile.lock is among them and then lib_move where lib is,
+# the remote untouched and the record removed.
 committed() {
     local name=$1 want message=("Upgrade pins") body=()
     want=$(printf '%s\n' "${@:2}")
-    if [[ $'\n'$want$'\n' == *$'\nDockerfile\n'* ]]; then
+    if [[ $'\n'$want$'\n' == *$'\nDockerfile\n'* ]] ||
+        [[ $'\n'$want == *$'\nDockerfile.lock/'* ]]; then
         body+=("${moves[@]}")
     fi
     if [[ $'\n'$want$'\n' == *$'\nlib\n'* ]]; then
@@ -165,6 +166,20 @@ fixture
 printf 'more notes\n' >>"$w/app/notes.txt"
 run "" "$w/record" notes.txt
 committed path-only notes.txt
+
+# A record whose only move is a lock's content, in a directory new to the
+# repository, commits that lock with the line as the body.
+fixture
+mkdir -p "$w/app/Dockerfile.lock/m"
+printf 'm-d==1.0 --hash=sha256:%s\n' "$(printf '5%.0s' {1..64})" \
+    >"$w/app/Dockerfile.lock/m/requirements.txt"
+printf '%s\n' "$(readlink -f "$w/app")/Dockerfile.lock/m/requirements.txt" "" \
+    "LOCK m: files changed" >"$w/record"
+saved=("${moves[@]}")
+moves=("LOCK m: files changed")
+run "" "$w/record"
+committed lock-content-only Dockerfile.lock/m/requirements.txt
+moves=("${saved[@]}")
 
 # A submodule's ignore setting hides it from neither the commit nor its body,
 # nor from the check for other paths staged.
