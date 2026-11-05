@@ -1,0 +1,117 @@
+# shellcheck shell=bash
+#
+# Sourced by docker/upgrade and lint/dockerfile-locks, so the two read a
+# Dockerfile alike. Sets no shell options, since it runs under its caller's.
+
+# Before the first command, so it covers the whole file: ShellCheck takes each
+# variable assigned through a nameref for unused.
+# shellcheck disable=SC2034
+
+# A heredoc's opening word in a RUN, COPY or ADD, <<WORD or <<-WORD, WORD
+# optionally quoted, whose body runs from the next line to one that is WORD,
+# leading tabs dropped after <<- (Dockerfile reference, "Here-Documents",
+# docs.docker.com, checked 2026-11). Words are split at blanks, not shell-lexed.
+dockerfile_delimiter='[^<"'\''[:space:]]+'
+dockerfile_heredoc="^[0-9]*<<(-?)(\"($dockerfile_delimiter)\"|'($dockerfile_delimiter)'|($dockerfile_delimiter))\$"
+
+# Reads Dockerfile $1 into the variables named after $2: $3 its escape
+# character; $4 its lines; $5 each instruction, keyed by the index of its first
+# line, its lines joined at the escape character, then any blanks, ending one;
+# $6 the index of each instruction's last line, keyed as $5; $7 each comment
+# line outside a heredoc body, within an instruction or between them, keyed by
+# its index; and $8 the bodies of each RUN, COPY or ADD's heredocs, after any
+# ONBUILD, each line ended by a newline, keyed as $5 where it has any. Returns
+# 1, why in the variable named by $2, where the file cannot be read, a heredoc's
+# body has no end line, or the escape directive is given twice or is not \ or `.
+# Each step is checked, since a caller's || turns errexit off here, and each
+# local is prefixed, so that no name given collides with one.
+dockerfile_parse() {
+    local dp_line dp_i dp_start="" dp_last="" dp_text="" dp_word dp_set=""
+    local -n dp_error=$2 dp_escape=$3 dp_lines=$4 dp_logical=$5 dp_ends=$6
+    local -n dp_comments=$7 dp_bodies=$8
+    local -a dp_words=() dp_docs=()
+    dp_escape=\\
+    dp_logical=() dp_ends=() dp_comments=() dp_bodies=()
+    if ! mapfile -t dp_lines 2>/dev/null <"$1"; then
+        dp_error="cannot be read"
+        return 1
+    fi
+
+    # Parser directives open the file, before any comment, blank line or
+    # instruction; an unknown one ends them, as Docker reads it as a comment,
+    # and so does one with no value (Dockerfile reference, "Parser
+    # directives", docs.docker.com, checked 2026-11).
+    for dp_line in "${dp_lines[@]}"; do
+        [[ $dp_line =~ ^#[[:space:]]*([A-Za-z][A-Za-z0-9]*)[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] ||
+            break
+        case ${BASH_REMATCH[1],,} in
+        escape)
+            if [ -n "$dp_set" ]; then
+                dp_error="the escape directive appears twice"
+                return 1
+            fi
+            dp_set=1
+            dp_escape=${BASH_REMATCH[2]}
+            if [[ $dp_escape != [\\\`] ]]; then
+                dp_error="escape directive $dp_escape is not \\ or \`"
+                return 1
+            fi
+            ;;
+        syntax | check) ;;
+        *) break ;;
+        esac
+    done
+
+    # Each body still to come is in dp_docs, its WORD prefixed with - where
+    # leading tabs are dropped and + where they are not.
+    for dp_i in "${!dp_lines[@]}"; do
+        dp_line=${dp_lines[dp_i]}
+        if [ ${#dp_docs[@]} -gt 0 ]; then
+            if [ "${dp_docs[0]:0:1}" = - ]; then
+                [[ $dp_line =~ ^$'\t'*(.*)$ ]]
+                dp_line=${BASH_REMATCH[1]}
+            fi
+            if [ "$dp_line" = "${dp_docs[0]:1}" ]; then
+                dp_docs=("${dp_docs[@]:1}")
+            else
+                dp_bodies[dp_last]+=$dp_line$'\n'
+            fi
+            continue
+        fi
+        if [[ $dp_line =~ ^[[:space:]]*(#.*)?$ ]]; then
+            [[ $dp_line != *\#* ]] || dp_comments[dp_i]=$dp_line
+            continue
+        fi
+        if [ -z "$dp_start" ]; then
+            dp_start=$dp_i
+            dp_text=""
+        fi
+        if [[ $dp_line =~ ^(.*)"$dp_escape"[[:blank:]]*$ ]]; then
+            dp_text+=${BASH_REMATCH[1]}
+            continue
+        fi
+        dp_logical[dp_start]=$dp_text$dp_line
+        dp_ends[dp_start]=$dp_i
+        dp_last=$dp_start
+        dp_start=""
+        read -r -a dp_words <<<"${dp_logical[dp_last]}"
+        dp_word=${dp_words[0]-}
+        [ "${dp_word^^}" != ONBUILD ] || dp_words=("${dp_words[@]:1}")
+        case ${dp_words[0]-} in
+        [Rr][Uu][Nn] | [Cc][Oo][Pp][Yy] | [Aa][Dd][Dd]) ;;
+        *) continue ;;
+        esac
+        for dp_word in "${dp_words[@]:1}"; do
+            [[ ! $dp_word =~ $dockerfile_heredoc ]] ||
+                dp_docs+=("${BASH_REMATCH[1]:-+}${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}")
+        done
+    done
+    if [ -n "$dp_start" ]; then
+        dp_logical[dp_start]=$dp_text
+        dp_ends[dp_start]=$((${#dp_lines[@]} - 1))
+    fi
+    if [ ${#dp_docs[@]} -gt 0 ]; then
+        dp_error="a heredoc's body has no end line ${dp_docs[0]:1}"
+        return 1
+    fi
+}

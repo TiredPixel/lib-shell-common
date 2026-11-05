@@ -360,6 +360,19 @@ RUN true `
     && npm i
 DOCKERFILE
 
+# Parser directives end at an unknown one, as Docker's do, so the escape
+# directive after it is a comment.
+check escape-after-unknown 1 "Dockerfile:5: ${npm_install/install/i}" <<'DOCKERFILE'
+# unknown=x
+# escape=`
+FROM x
+RUN true `
+RUN npm i
+DOCKERFILE
+
+check escape-bad 3 "dockerfile-locks: Dockerfile: escape directive x is not \\ or \`" \
+    < <(printf '# escape=x\nFROM x\nRUN npm i\n')
+
 check continued-at-end 1 "Dockerfile:2: ${npm_install/install/i}" < <(printf 'FROM x\nrun npm i \\\n')
 
 check onbuild 1 "Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
@@ -383,6 +396,13 @@ check ignore-detached 1 "Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
 FROM x
 # dockerfile-locks ignore: a blank line between
 
+RUN npm i
+DOCKERFILE
+
+check ignore-past-instruction 1 "Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
+FROM x
+# dockerfile-locks ignore: another instruction between
+FROM y
 RUN npm i
 DOCKERFILE
 

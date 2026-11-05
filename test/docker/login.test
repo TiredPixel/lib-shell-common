@@ -2,9 +2,12 @@
 #
 # Tests docker/login in a scratch project with docker and git faked on PATH, so
 # nothing logs in anywhere. The fake docker logs each call's arguments, then the
-# password it read on stdin, a line each. The fake git puts HEAD on branch a/b.
-# Each case writes .dockerrepo and checks the server docker login is given, or
-# that none is, which is Docker Hub.
+# password it read on stdin, a line each. The fake git puts HEAD on branch
+# FAKE_BRANCH, a/b unless a case says otherwise, "HEAD" where that is the
+# detached state. Each case writes .dockerrepo, or leaves it out, and checks
+# the server docker login is given, or that none is, which is Docker Hub, or
+# that the run is refused before docker is called, comparing stdout and stderr
+# exactly.
 #
 # Run: test/docker/login.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -20,7 +23,7 @@ cp -p -- "$fixtures/docker" "$fixtures/git" "$work/bin/"
 
 export FAKE_LOG=$work/log
 export PATH=$work/bin:$PATH
-export DOCKER_USERNAME=u DOCKER_PASSWORD=p
+export DOCKER_USERNAME=u DOCKER_PASSWORD=p FAKE_BRANCH=a/b
 
 failures=0
 # Reports a failure of case $1 at once, each line of $2 under the program and
@@ -33,29 +36,65 @@ fail() {
     failures=$((failures + 1))
 }
 
-# Runs docker/login with .dockerrepo holding $2, and checks it exits 0 and
-# docker login is given server $3, or no server where $3 is empty, with the
-# password on stdin.
+# Runs docker/login with .dockerrepo holding $3, or with none where $3 is -,
+# and the environment after $5, and checks its status is $2, docker was called
+# as $4 has it, its stdout is empty and its stderr is want_err.
 check() {
-    local name=$1 repo=$2 server=$3 rc=0 want
-    echo "$repo" >"$work/project/.dockerrepo"
+    local name=$1 status=$2 repo=$3 calls=$4 rc=0
+    shift 4
+    rm -f -- "$work/project/.dockerrepo"
+    if [ "$repo" != - ]; then
+        echo "$repo" >"$work/project/.dockerrepo"
+    fi
     : >"$FAKE_LOG"
-    (cd "$work/project" && "$dir/login") >"$work/out" 2>&1 || rc=$?
-    want="login -u u --password-stdin${server:+ $server}"$'\n'"stdin p"
-    if [ "$rc" -ne 0 ]; then
-        fail "$name" "exit $rc: $(<"$work/out")"
-    elif [ "$(<"$FAKE_LOG")" != "$want" ]; then
+    (cd "$work/project" && env -u CIRCLE_BRANCH -u CIRCLE_TAG \
+        -u GITHUB_HEAD_REF -u GITHUB_REF_NAME "$@" "$dir/login") \
+        >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ "$(<"$FAKE_LOG")" != "$calls" ]; then
         fail "$name" "docker was called as: $(<"$FAKE_LOG")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$want_err" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
     fi
 }
 
-check dotted ghcr.io/o/n ghcr.io
-check port localhost:5000/n localhost:5000
-check localhost localhost/n localhost
-check upper Registry/o/n Registry
-check hub o/n ""
-check hub-library n ""
-check hub-dotted-name a.b ""
+# Runs check expecting docker login to be given server $3, or no server where
+# $3 is empty, with the password on stdin, and nothing printed.
+logs_in() {
+    local name=$1 repo=$2 server=$3
+    shift 3
+    want_err=""
+    check "$name" 0 "$repo" \
+        "login -u u --password-stdin${server:+ $server}"$'\n'"stdin p" "$@"
+}
+
+logs_in dotted ghcr.io/o/n ghcr.io
+logs_in port localhost:5000/n localhost:5000
+logs_in localhost localhost/n localhost
+logs_in upper Registry/o/n Registry
+logs_in hub o/n ""
+logs_in hub-library n ""
+logs_in hub-dotted-name a.b ""
+
+# Logging in needs no tag, so a detached HEAD with no CI variable to name it
+# does not stop it.
+logs_in detached ghcr.io/o/n ghcr.io FAKE_BRANCH=HEAD
+
+# A missing .dockerrepo, or credential, stops the run before docker is called.
+want_err="cat: .dockerrepo: No such file or directory"$'\n'"login: REPO:"
+want_err+=" .dockerrepo missing or empty; write the image repository, such as"
+want_err+=" ghcr.io/OWNER/NAME, to it"
+check missing-dockerrepo 1 - ""
+
+for var in DOCKER_USERNAME DOCKER_PASSWORD; do
+    want_err="login: $var: not set or empty; export the registry credentials"
+    want_err+=" to log in with"
+    check "unset-$var" 1 ghcr.io/o/n "" -u "$var"
+    check "empty-$var" 1 ghcr.io/o/n "" "$var="
+done
 
 if [ "$failures" -gt 0 ]; then
     exit 1

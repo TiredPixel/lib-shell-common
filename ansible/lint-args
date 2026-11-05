@@ -8,8 +8,13 @@
 # shellcheck disable=SC2034
 ansible_lint_args=(
     # No installing requirements.yml and no refreshing schemas, so a run reaches
-    # no network and writes no cache into the tree.
+    # no network.
     --offline
+    # The scripts run from the repository's root. Without this, ansible-lint
+    # looks upward for .git, .hg or its own config file and, where a container's
+    # copy or mount has none, takes / as the project root. Its cache goes in the
+    # project root's .ansible/ where that is writable, and no option moves it.
+    --project-dir .
     # Warnings fail as errors do.
     --strict
     # lib/ holds submodules, which are linted in their own repositories; vault

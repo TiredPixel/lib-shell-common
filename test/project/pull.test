@@ -111,23 +111,48 @@ branch_of() {
     fi
 }
 
-# Runs project/pull in app, keeping its status in rc and its output in $w/out.
+# project/pull's stdout and stderr, $w shown as W so a report reads the same
+# from run to run.
+output() {
+    local out err
+    out=$(<"$w/out")
+    err=$(<"$w/err")
+    echo "stdout: ${out//"$w"/W}"
+    echo "stderr: ${err//"$w"/W}"
+}
+
+# Runs project/pull in app for case $1, keeping its status in rc, its stdout in
+# $w/out and its stderr in $w/err, and records a failure for each line of either
+# that is the scripts' own rather than git's. git's text varies with its
+# version, so it is not compared; a line of their own is told by its shape: a
+# program's prefix, a shell trace, or a leading path, as a FILE: message has.
 run() {
+    local stream line
     rc=0
-    (cd "$w/app" && "$pull") >"$w/out" 2>&1 || rc=$?
+    (cd "$w/app" && "$pull") >"$w/out" 2>"$w/err" || rc=$?
+    for stream in out err; do
+        while IFS= read -r line <&3; do
+            line=${line//"$w"/W}
+            case $line in
+            pull:* | submodule-init:* | +* | /* | W/*)
+                fail "$1" "std$stream has a line of its own: $line"
+                ;;
+            esac
+        done 3<"$w/$stream"
+    done
 }
 
 # Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
 expect() {
     if [ "$3" != "$4" ]; then
-        fail "$1" "$2 is $3, not $4: $(<"$w/out")"
+        fail "$1" "$2 is $3, not $4: $(output)"
     fi
 }
 
 # Records a failure of case $1 unless project/pull failed.
 expect_failure() {
     if [ "$rc" -eq 0 ]; then
-        fail "$1" "exit 0, not a failure: $(<"$w/out")"
+        fail "$1" "exit 0, not a failure: $(output)"
     fi
 }
 
@@ -141,7 +166,7 @@ git -C "$w/app" checkout -q topic
 upcommit app topic2
 upcommit lib lib2
 upcommit deep deep2
-run
+run feature
 expect feature status "$rc" 0
 expect feature "app's branch" "$(branch_of "$w/app")" topic
 expect feature "app's commit" "$(head_of "$w/app")" \
@@ -157,7 +182,7 @@ expect feature "deep's commit" "$(head_of "$w/app/lib/deep")" \
 fixture
 mkrepo extra trunk
 upadd app extra
-run
+run added
 expect added status "$rc" 0
 expect added "extra's branch" "$(branch_of "$w/app/extra")" trunk
 expect added "extra's commit" "$(head_of "$w/app/extra")" \
@@ -168,7 +193,7 @@ expect added "extra's commit" "$(head_of "$w/app/extra")" \
 fixture
 mkrepo more trunk
 upadd lib more
-run
+run nested-added
 expect nested-added status "$rc" 0
 expect nested-added "more's branch" "$(branch_of "$w/app/lib/more")" trunk
 expect nested-added "more's commit" "$(head_of "$w/app/lib/more")" \
@@ -179,7 +204,7 @@ expect nested-added "more's commit" "$(head_of "$w/app/lib/more")" \
 fixture
 upmove app lib
 upcommit lib lib2
-run
+run moved
 expect moved status "$rc" 0
 expect moved "app's lib URL" "$(git -C "$w/app" config submodule.lib.url)" \
     "$w/lib-moved.git"
@@ -192,7 +217,7 @@ expect moved "lib's commit" "$(head_of "$w/app/lib")" \
 fixture
 upmove lib deep
 upcommit deep deep2
-run
+run nested-moved
 expect nested-moved status "$rc" 0
 expect nested-moved "lib's deep URL" \
     "$(git -C "$w/app/lib" config submodule.deep.url)" "$w/deep-moved.git"
@@ -210,7 +235,7 @@ git -C "$w/app.up" config -f .gitmodules submodule.extra.update none
 git -C "$w/app.up" add .gitmodules
 git -C "$w/app.up" commit -q -m "add extra"
 git -C "$w/app.up" push -q
-run
+run update-none
 expect update-none status "$rc" 0
 expect update-none "extra's branch" "$(branch_of "$w/app/extra")" trunk
 expect update-none "extra's commit" "$(head_of "$w/app/extra")" \
@@ -228,7 +253,7 @@ git -C "$w/app/lib" checkout -q release/x
 git -C "$w/app/lib" pull -q --ff-only
 echo local >"$w/app/lib/file"
 upcommit lib lib2
-run
+run dirty-ahead
 expect dirty-ahead status "$rc" 0
 expect dirty-ahead "lib's branch" "$(branch_of "$w/app/lib")" release/x
 expect dirty-ahead "lib's commit" "$(head_of "$w/app/lib")" \
@@ -240,7 +265,7 @@ fixture
 git -C "$w/app" checkout -q -b local
 upcommit lib lib2
 before=$(head_of "$w/app/lib")
-run
+run no-upstream
 expect_failure no-upstream
 expect no-upstream "lib's commit" "$(head_of "$w/app/lib")" "$before"
 
@@ -250,7 +275,7 @@ git -C "$w/app" commit -q --allow-empty -m local
 upcommit app app2
 upcommit lib lib2
 before=$(head_of "$w/app/lib")
-run
+run diverged
 expect_failure diverged
 expect diverged "lib's commit" "$(head_of "$w/app/lib")" "$before"
 
@@ -259,7 +284,7 @@ fixture
 git -C "$w/app/lib" checkout -q release/x
 git -C "$w/app/lib" commit -q --allow-empty -m local
 upcommit lib lib2
-run
+run sub-diverged
 expect_failure sub-diverged
 
 if [ "$failures" -gt 0 ]; then

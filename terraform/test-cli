@@ -4,11 +4,17 @@ shopt -s inherit_errexit failglob
 
 f_plan=.terraform.plan
 
+# This script saves no plan, so one found here came from an earlier run and is
+# removed before terraform/deploy-cli can apply it.
+if [ -e $f_plan ]; then
+    echo "test-cli: $f_plan: removing an earlier plan" >&2
+    rm -- $f_plan
+fi
+
 # -diff, so a failure shows what would change rather than only naming the file.
 terraform fmt -recursive -check -diff
 
-terraform init
-
-# Saved for terraform/deploy-cli, run later in the same directory, so the change
-# applied is the one this run showed rather than a fresh plan.
-terraform plan -out $f_plan
+# No backend, so the checks read no state and need no credentials for it.
+terraform init -backend=false -input=false
+terraform validate
+terraform test

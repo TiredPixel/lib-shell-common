@@ -34,8 +34,9 @@ sorted=$(mktemp)
 trap 'rm -f -- "$sorted"' EXIT
 
 # The path list is read from fd 3 and stdin is /dev/null, so nothing run inside
-# the loop can consume the paths still to come.
-while IFS= read -r -d '' f <&3; do
+# the loop can consume the paths still to come. A last path with no NUL after
+# it is still checked, rather than dropped in silence.
+while IFS= read -r -d '' f <&3 || [ -n "$f" ]; do
     checked=$((checked + 1))
 
     # Written to a file rather than piped into diff, so yq's own status is seen

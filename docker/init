@@ -1,25 +1,12 @@
 # shellcheck shell=bash
 #
-# Sourced by the docker/ scripts that build or push $REPO:$TAG images, or log
-# in, to export REPO, from .dockerrepo, TAG, from the branch, and
+# Sourced by the docker/ scripts that build or push $REPO:$TAG images to export
+# REPO, from .dockerrepo through docker/repo, TAG, from the branch, and
 # DOCKER_BUILDKIT=1. Sets no shell options, since it runs under its caller's.
 
 export DOCKER_BUILDKIT=1
 
-# Checked and exited explicitly, as TAG is below, so a missing or empty
-# .dockerrepo says what to do and exits 1 with or without errexit. Read with cat
-# rather than $(<...), whose failure Bash before 5.3 treats as fatal under
-# errexit even beside || (Bash's CHANGES, bash-5.3-alpha item 1rrr,
-# tiswww.case.edu/php/chet/bash/CHANGES, checked 2026-11). cat's error is left
-# on stderr, since it says why (missing, denied, a directory) where the check
-# below cannot.
-REPO=$(cat -- .dockerrepo) || REPO=""
-
-if [ -z "$REPO" ]; then
-    echo "${0##*/}: REPO: .dockerrepo missing or empty;" \
-        "write the image repository, such as ghcr.io/OWNER/NAME, to it" >&2
-    exit 1
-fi
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/repo"
 
 # git rev-parse --abbrev-ref HEAD answers the literal "HEAD" in a detached
 # checkout, which is what a pull request and a tag push both produce -- so the
@@ -47,6 +34,22 @@ if [ -z "$TAG" ]; then
     exit 1
 fi
 
-TAG=${TAG//\//-}
+# Docker's tag grammar is [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}. The letters are
+# written out, since a bracket range can match other characters under some
+# locales and the caller's shell options, and the cut is at 124 to leave room
+# for the .dev and .prd suffixes the build-dev and build-prd scripts add.
+init_tag=${TAG//[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-]/-}
 
-export REPO TAG
+while [ "${init_tag#[.-]}" != "$init_tag" ]; do
+    init_tag=${init_tag#?}
+done
+
+if [ -z "$init_tag" ]; then
+    echo "${0##*/}: TAG: $TAG: no letter, digit or _ to make an image tag" \
+        "from; check out a branch named with one" >&2
+    exit 1
+fi
+
+TAG=${init_tag:0:124}
+unset init_tag
+export TAG

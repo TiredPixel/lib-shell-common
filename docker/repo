@@ -1,0 +1,22 @@
+# shellcheck shell=bash
+#
+# Sourced by docker/init, and by docker/login, which needs no tag, to export
+# REPO, the image repository, from .dockerrepo. Sets no shell options, since it
+# runs under its caller's.
+
+# Checked and exited explicitly, so a missing or empty .dockerrepo says what to
+# do and exits 1 with or without errexit. Read with cat rather than $(<...),
+# whose failure Bash before 5.3 treats as fatal under errexit even beside ||
+# (Bash's CHANGES, bash-5.3-alpha item 1rrr,
+# tiswww.case.edu/php/chet/bash/CHANGES, checked 2026-11). cat's error is left
+# on stderr, since it says why (missing, denied, a directory) where the check
+# below cannot.
+REPO=$(cat -- .dockerrepo) || REPO=""
+
+if [ -z "$REPO" ]; then
+    echo "${0##*/}: REPO: .dockerrepo missing or empty;" \
+        "write the image repository, such as ghcr.io/OWNER/NAME, to it" >&2
+    exit 1
+fi
+
+export REPO

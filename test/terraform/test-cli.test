@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# Tests terraform/test-cli in a scratch project with terraform faked on PATH, so
+# nothing is initialised or planned. The fake terraform logs each call's
+# arguments, then "plan present" where .terraform.plan exists as it runs; it
+# fails where its first argument is FAKE_FAIL, and writes the file plan -out
+# names.
+#
+# Run: test/terraform/test-cli.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+script=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../terraform")/test-cli
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/terraform/test-cli")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin"
+cp -p -- "$fixtures/terraform" "$work/bin/"
+
+export FAKE_LOG=$work/log
+export PATH=$work/bin:$PATH
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+fmt='fmt -recursive -check -diff'
+init='init -backend=false -input=false'
+
+# Runs test-cli in a fresh project, holding a plan where $2 is "stale", with the
+# fake failing at $3, or nowhere where that is empty, and checks it exits $4,
+# prints nothing on stdout and $5 on stderr, calls terraform as $6 and leaves no
+# plan.
+check() {
+    local name=$1 stale=$2 rc=0
+    rm -rf -- "$work/project"
+    mkdir "$work/project"
+    if [ "$stale" = stale ]; then
+        echo stale >"$work/project/.terraform.plan"
+    fi
+    : >"$FAKE_LOG"
+    (cd "$work/project" && FAKE_FAIL=$3 "$script") >"$work/out" \
+        2>"$work/err" || rc=$?
+    if [ "$rc" -ne "$4" ]; then
+        fail "$name" "exit $rc, not $4: $(<"$work/err")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$5" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    elif [ "$(<"$FAKE_LOG")" != "$6" ]; then
+        fail "$name" "terraform was called as: $(<"$FAKE_LOG")"
+    elif [ -e "$work/project/.terraform.plan" ]; then
+        fail "$name" ".terraform.plan is left"
+    fi
+}
+
+all="$fmt"$'\n'"$init"$'\n'validate$'\n'test
+check order "" "" 0 "" "$all"
+
+# Removed, and said so, before terraform first runs.
+check stale stale "" 0 "test-cli: .terraform.plan: removing an earlier plan" \
+    "$all"
+
+check fmt-fails "" fmt 1 "fake terraform: fmt failed" "$fmt"
+check init-fails "" init 1 "fake terraform: init failed" "$fmt"$'\n'"$init"
+check validate-fails "" validate 1 "fake terraform: validate failed" \
+    "$fmt"$'\n'"$init"$'\n'validate
+check test-fails "" test 1 "fake terraform: test failed" "$all"
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

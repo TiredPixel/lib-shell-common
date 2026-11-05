@@ -3,11 +3,12 @@
 # Usage: docker/upgrade-commit RECORD [PATH...]
 #
 # Commits what docker/upgrade --record RECORD wrote, once the build and tests
-# after it have passed, as "Upgrade pins" with a line for each pin that moved as
-# the body. It stages exactly the paths RECORD lists and each PATH, such as a
-# library submodule taken forwards beside the upgrade, and refuses, listing
-# them, where any other path is already staged, since the commit would carry it.
-# A submodule PATH that moved adds a line as PATH OLD -> NEW, each commit cut to
+# after it have passed, as "Upgrade pins" with the body a list, an item for
+# each move RECORD holds, written "- " then the move as docker/upgrade gave it.
+# It stages exactly the paths RECORD lists and each PATH, such as a library
+# submodule taken forwards beside the upgrade, and refuses, listing them, where
+# any other path is already staged, since the commit would carry it. A
+# submodule PATH that moved adds an item as PATH OLD -> NEW, each commit cut to
 # 7 hex digits, so a PATH that changed is committed even where no pin moved.
 # Where neither a pin nor a PATH moved, it commits nothing. It never pushes.
 # RECORD is removed once used, so a second run cannot commit it again.
@@ -110,7 +111,7 @@ if git diff --cached --ignore-submodules=none --quiet; then
     nothing
 fi
 if [ ${#moves[@]} -gt 0 ]; then
-    git commit -m "Upgrade pins" -m "$(printf '%s\n' "${moves[@]}")"
+    git commit -m "Upgrade pins" -m "$(printf -- '- %s\n' "${moves[@]}")"
 else
     git commit -m "Upgrade pins"
 fi

@@ -39,7 +39,7 @@ fail() {
     failures=$((failures + 1))
 }
 n=0
-moves=("V 1.0.0 -> 1.2.3" "o/r v1: v0 -> 3333333")
+moves=("V 1.0.0 -> 1.2.3" "o/r@v1 v0 -> 3333333")
 
 # A fresh fixture in $w: app at $w/app, pushed to $w/app.git, with lib at
 # $w/app/lib one commit past what app records, the upgrade's changes made and
@@ -104,9 +104,9 @@ unchanged() {
 }
 
 # Fails case $1 unless HEAD is one commit past the fixture's, changing exactly
-# the paths after $1, as "Upgrade pins" with a body of the moves where
-# Dockerfile or a lock under Dockerfile.lock is among them and then lib_move
-# where lib is, the remote untouched and the record removed.
+# the paths after $1, as "Upgrade pins" with a body listing, each as "- MOVE",
+# the moves where Dockerfile or a lock under Dockerfile.lock is among them and
+# then lib_move where lib is, the remote untouched and the record removed.
 committed() {
     local name=$1 want message=("Upgrade pins") body=()
     want=$(printf '%s\n' "${@:2}")
@@ -118,7 +118,7 @@ committed() {
         body+=("$lib_move")
     fi
     if [ ${#body[@]} -gt 0 ]; then
-        message+=("" "${body[@]}")
+        message+=("" "${body[@]/#/- }")
     fi
     if [ "$rc" != 0 ]; then
         fail "$name" "exit $rc, not 0: $err"

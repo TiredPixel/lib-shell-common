@@ -76,7 +76,7 @@ Where the lint itself fails, with any status but 1, such as 3 where `jq` fails t
 
 With `--record`, `docker/upgrade` notes each file it wrote and each pin that moved.
 
-`docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with a line for each move as the body, a submodule's included, so a library bump is committed even where no pin moved. It refuses where anything else is staged, commits nothing where neither a pin nor a path given moved, and never pushes.
+`docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with the body a list holding an item for each move, a submodule's included, so a library bump is committed even where no pin moved. It refuses where anything else is staged, commits nothing where neither a pin nor a path given moved, and never pushes.
 
 With `--record`, `docker/upgrade` refuses to start while an earlier record that is not empty is still there, or while the `Dockerfile`, followed through any symbolic link, or its `Dockerfile.lock/` directory differs from what git has committed, untracked files included, since the commit takes each recorded file whole. It also refuses a `Dockerfile` that is a symbolic link into another repository, such as a submodule, since the commit cannot add a file there; such a link is re-pinned without `--record`, or in the repository it links into.
 
@@ -287,7 +287,7 @@ Dockerfile:12: npm install resolves versions itself, where npm ci installs a loc
 
 A pip install passes with `--require-hashes`, a local `-r` lock and `--only-binary=:all:` or `--no-build-isolation`, as in the wheels stage above, and with `--no-index` and only local `--find-links`, or in a `RUN --network=none`, which fetch nothing. A pipx install passes in the offline form above, npm as `npm ci` or in a `RUN --network=none`, `npx` given `--no`, and yarn, pnpm, bun and uv in their frozen forms, such as `uv sync --locked`.
 
-A `Dockerfile` it cannot read, with a heredoc that has no end line, or with an exec-form `RUN` `jq` fails to read, fails the run with status 3.
+A `Dockerfile` it cannot read, with an `escape` directive given twice or other than `\` or `` ` ``, with a heredoc that has no end line, or with an exec-form `RUN` `jq` fails to read, fails the run with status 3.
 
 It catches the unlocked installs written by mistake, not those written to evade it, which a suppression comment would pass anyway; the full list of what it checks and what it cannot see, such as Bun installing with no lock where none is committed, is at the top of `lint/dockerfile-locks`.
 
@@ -360,7 +360,9 @@ make workflows-approve
 
 The `docker/` scripts that build or push tagged images, or log in, such as `docker/build-dev-latest` and `docker/login`, read the image repository, such as `ghcr.io/OWNER/NAME`, from a `.dockerrepo` file at the calling repository's root.
 
-They run from that root, building the `Dockerfile` there, and tag each image from the branch checked out, any `/` in its name written as `-`. On a detached HEAD, as in a pull request or a tag push, the tag is the first of CircleCI's `CIRCLE_BRANCH` and `CIRCLE_TAG`, then GitHub Actions' `GITHUB_HEAD_REF` and `GITHUB_REF_NAME`, that is set and not empty; with none, the script fails before building.
+They run from that root, building the `Dockerfile` there, and tag each image from the branch checked out. On a detached HEAD, as in a pull request or a tag push, the tag is the first of CircleCI's `CIRCLE_BRANCH` and `CIRCLE_TAG`, then GitHub Actions' `GITHUB_HEAD_REF` and `GITHUB_REF_NAME`, that is set and not empty; with none, the script fails before building.
+
+The name is fitted to Docker's tag grammar: each character other than an ASCII letter, a digit, `_`, `.` or `-` is written as `-`, so `feature/a+b` tags as `feature-a-b`; any leading `.` or `-` is dropped; and the tag is cut to 124 characters, leaving room for a `.dev` or `.prd` suffix. A name with nothing left, such as `---`, fails before building.
 
 Each build passes the `GIT_DESCRIBE` build argument, which a `Dockerfile` reads with `ARG GIT_DESCRIBE` to stamp the image with the commit it was built from. Every script but `docker/build-tags` takes it from `docker/describe`: what `git describe` prints, or empty where no tag describes HEAD, any other git failure stopping the build. A `Dockerfile` that needs a version refuses an empty `GIT_DESCRIBE` where it stamps the image.
 
@@ -376,13 +378,13 @@ lib/shell-common/docker/build-compose --profile test
 lib/shell-common/docker/build-prd-latest
 ```
 
-`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release and each shorter prefix of it, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`, then pushes each tag, naming it on stderr. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building.
+`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release and each shorter prefix of it, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`, then pushes each tag, naming it on stderr. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building. A release on HEAD that is not a valid Docker tag, such as `v1+build`, also fails before building.
 
 ```sh
 lib/shell-common/docker/build-tags
 ```
 
-`docker/login` logs in to the registry `.dockerrepo` names, or to Docker Hub where it names none, as `DOCKER_USERNAME`, passing `DOCKER_PASSWORD` on standard input; both must be set.
+`docker/login` logs in to the registry `.dockerrepo` names, or to Docker Hub where it names none, as `DOCKER_USERNAME`, passing `DOCKER_PASSWORD` on standard input; it fails before calling Docker where either is unset or empty. It reads only `.dockerrepo` and needs no tag, so it runs on a detached HEAD with no CI variable set.
 
 ```sh
 lib/shell-common/docker/login
@@ -445,11 +447,13 @@ lib/shell-common/project/tag-list
 
 ## Checking Ansible
 
-`ansible/test` runs ansible-lint, which also syntax-checks each playbook, and `ansible/format` applies its fixes, both from the repository's root with the same options, set in `ansible/lint-args`: offline, warnings failing, and `lib/` and vault files left out.
+`ansible/test` runs ansible-lint, which also syntax-checks each playbook, and `ansible/format` applies its fixes, both from the repository's root with the same options, set in `ansible/lint-args`: offline, warnings failing, the current directory as the project root, and `lib/` and vault files left out.
 
 ```sh
 lib/shell-common/ansible/test
 ```
+
+ansible-lint caches in `./.ansible/` where it can write there, and no option moves it. In a container that mounts the source by path, the cache stays in the container; a repository that runs the scripts on the host lists `/.ansible/` in its `.gitignore`.
 
 `ansible/inventory-ssh-known-hosts` is a dynamic inventory listing every host in a `known_hosts` file whose first name ends in `.DOMAIN`. Ansible passes an inventory only `--list` or `--host`, so a wrapper script of the repository's own gives the file and domain before them. A host matched gets no variables, and a file with none fails the run:
 
@@ -465,19 +469,25 @@ lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.co
 lib/shell-common/terraform/format
 ```
 
-`terraform/test-cli` fails on any unformatted file, showing the diff, then initialises and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
+`terraform/test-cli` checks the configuration without reading any state: it fails on any unformatted file, showing the diff, then initialises with no backend, validates and runs `terraform test`. It saves no plan, and first removes any `.terraform.plan` it finds in the directory it runs from, saying so, so that `terraform/deploy-cli` cannot apply a plan left by an earlier run. `terraform test` runs what the repository's test files declare, which can create real infrastructure where a `run` block applies without mocked providers.
 
 ```sh
 lib/shell-common/terraform/test-cli
 ```
 
-`terraform/deploy-cli`, run later in the same directory, applies that saved plan and nothing else; Terraform refuses it once the state has moved on since the plan was made.
+`terraform/plan-cli` removes any earlier `.terraform.plan`, initialises and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. A failed run leaves no earlier plan behind. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
+
+```sh
+lib/shell-common/terraform/plan-cli
+```
+
+`terraform/deploy-cli`, run later in the same directory, applies that saved plan and nothing else; Terraform refuses it once the state has moved on since the plan was made. With no saved plan it fails before running Terraform, naming `terraform/plan-cli`.
 
 ```sh
 lib/shell-common/terraform/deploy-cli
 ```
 
-`terraform/test-cloud` checks formatting and plans the same way for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
+`terraform/test-cloud` checks formatting, initialises and plans for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
 
 ```sh
 lib/shell-common/terraform/test-cloud
@@ -490,6 +500,7 @@ Working on this repository needs:
 - Docker Engine or Docker Desktop with Compose v2
 - GNU make 3.82 or newer, whose recipes run under Bash 4.4 or newer
 - for `make upgrade` and `make workflows-approve`, which run on the host, the tools listed above for `docker/` and `github/`
+- for `make coverage`, `tar`, which unpacks its report on the host
 
 ### Setting up a working copy
 
@@ -501,7 +512,7 @@ cd lib-shell-common
 cp .env.example .env
 ```
 
-Where Docker is rootless or the host user's uid is not 1000, set this in `.env`, so that `make format` and `make coverage` can write to the tree:
+Where Docker is rootless or the host user's uid is not 1000, set this in `.env`, so that `make format` can write to the tree:
 
 ```sh
 DC_BIND_USER=0:0
@@ -531,7 +542,7 @@ make lint
 
 ### Measuring coverage
 
-`make coverage` runs the lint and tests under kcov in the `shell` container and writes its report to `tmp/coverage/`, replacing the last one; `TESTS` narrows it as it does `make test`. Like `make format`, it writes to the tree, so it needs `DC_BIND_USER` set where *Setting up a working copy* says to.
+`make coverage` runs the lint and tests under kcov in the `shell_test` container, which hands the report out as a tar on stdout, and `bin/coverage --extract` unpacks it on the host into `tmp/coverage/`. The report replaces the last one only once it is wholly unpacked, so a bad test name, a failed build or an export cut short leaves the last one; a run whose tests fail still replaces it, and the target fails. `TESTS` narrows it as it does `make test`.
 
 ```sh
 make coverage
@@ -547,9 +558,9 @@ make format
 
 ### Building
 
-The image builds three stages. `wheels` downloads the wheels `Dockerfile.lock/mdformat/requirements.txt` names, each checked against its hash. `dev` is the formatting, linting and test toolchain, running as the unprivileged user `x`, installing mdformat and its plugins from those wheels with no network; it copies nothing in, reading the wheels only through a bind mount, so `make format` runs it on the mounted tree. `test` adds a copy of the repository's tree to it, leaving out every top-level dot path but the project's own, which `.dockerignore` names, so a per-user one, such as an editor's directory, never reaches the image.
+The image builds three stages. `wheels` downloads the wheels `Dockerfile.lock/mdformat/requirements.txt` names, each checked against its hash. `dev` is the formatting, linting and test toolchain, running as the unprivileged user `x`, installing mdformat and its plugins from those wheels with no network; it copies nothing in, reading the wheels only through a bind mount, so `make format` runs it on the source it mounts. `test` adds a copy of the repository's tree to it, leaving out every top-level dot path but the project's own, which `.dockerignore` names, so a per-user one, such as an editor's directory, never reaches the image.
 
-The `shell` and `shell_test` services sit under the `test` profile, which every make target that runs Compose passes. The `shell` service runs `bin/format` and `bin/coverage` from `dev` on the tree mounted read-write, since their writes must reach it. The `shell_test` service runs the gates from `test` on its own copy, with no mount and no network.
+The `shell` and `shell_test` services sit under the `test` profile, which every make target that runs Compose passes. The `shell` service runs `bin/format` from `dev`, with each path it reads or rewrites, as `bin/files` lists them, bound read-write by name, since its writes must reach the tree; nothing else of the checkout, such as `.env`, `.git` or `tmp/`, is mounted, and a missing path fails the run. The `shell_test` service runs the gates and `bin/coverage` from `test` on its own copy, with no mount and no network.
 
 `make build` builds `dev` and `test`, and `wheels` with them:
 
@@ -561,7 +572,7 @@ make build
 
 Base images are pinned by digest, tools downloaded from GitHub by `ARG` and checked against a SHA-256 pinned beside each, mdformat and its plugins by the hashed lock in `Dockerfile.lock/mdformat/`, and the workflow's actions by commit SHA.
 
-`make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` names on a `# TRACK USES` line, and to resolve anew the lock the `Dockerfile` names on its `# TRACK LOCK` line, proposing re-pinned workflows in `.github/workflows.new/`, then builds, tests and commits the result as `Upgrade pins`, with a line for each move as the body, so a bump that breaks the repository shows before it is committed. It never pushes.
+`make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` names on a `# TRACK USES` line, and to resolve anew the lock the `Dockerfile` names on its `# TRACK LOCK` line, proposing re-pinned workflows in `.github/workflows.new/`, then builds, tests and commits the result as `Upgrade pins`, with the body a list holding an item for each move, so a bump that breaks the repository shows before it is committed. It never pushes.
 
 ```sh
 make upgrade

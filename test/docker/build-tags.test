@@ -99,6 +99,33 @@ check github-tag 0 HEAD 1.2 1.2 "$calls" GITHUB_REF_NAME=1.2
 expect v1.2 v1.2 v1
 check circle-tag 0 HEAD v1.2 v1.2 "$calls" CIRCLE_TAG=v1.2
 
+# A release as long as Docker's tag grammar allows is a tag.
+printf -v r128 '%*s' 128 ''
+r128=${r128// /r}
+expect "$r128" a-b "$r128"
+check release-128 0 a/b "$r128" "$r128" "$calls"
+
+# Upper-case letters and _ are in the grammar too, _ even as the first
+# character.
+expect V1_x.Y a-b V1_x.Y V1_x
+check release-upper-underscore 0 a/b V1_x.Y V1_x.Y "$calls"
+expect _1 a-b _1
+check release-leading-underscore 0 a/b _1 _1 "$calls"
+
+# A release outside Docker's tag grammar stops the run before docker is called,
+# under any locale.
+want_out=""
+for release in v1+x .1 "${r128}r" $'v1\xc3\xa9'; do
+    want_err="build-tags: $release: release is not a valid image tag"
+    check "bad-release-$release" 1 a/b "$release" "$release" ""
+    check "bad-release-utf8-$release" 1 a/b "$release" "$release" "" \
+        LC_ALL=en_US.UTF-8
+done
+
+# Past a release, it is not a tag, so it is not checked.
+expect v1+x-4-gabcdef0 a-b
+check past-bad-release 0 a/b v1+x-4-gabcdef0 v1+x "$calls"
+
 # No annotated tag stops the run before docker is called.
 want_out=""
 want_err="fatal: No names found, cannot describe anything."

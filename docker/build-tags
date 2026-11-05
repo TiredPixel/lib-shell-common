@@ -25,7 +25,17 @@ add_tag() {
 
 add_tag "$TAG"
 
+# Docker's tag grammar, its letters written out as docker/init's are. Only the
+# release is checked, since each prefix of a valid release is valid too.
+alnum=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
+tag_grammar="^[${alnum}_][${alnum}_.-]{0,127}\$"
+
 if [ "$version" = "$release" ]; then
+    if ! [[ $release =~ $tag_grammar ]]; then
+        echo "${0##*/}: $release: release is not a valid image tag" >&2
+        exit 1
+    fi
+
     prefix=$release
     add_tag "$prefix"
 

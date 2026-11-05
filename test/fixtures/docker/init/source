@@ -3,6 +3,11 @@ if [ "$1" = strict ]; then
     set -Eeuo pipefail
     shopt -s inherit_errexit failglob
 fi
+# Off, a bracket range such as [A-Z] can match letters outside ASCII under a
+# UTF-8 locale.
+if [ -n "${NO_GLOBASCIIRANGES:-}" ]; then
+    shopt -u globasciiranges
+fi
 # shellcheck source=SCRIPTDIR/../../../../docker/init
 source "$2"
 bash --norc --noprofile "$3"

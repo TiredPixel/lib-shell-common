@@ -1,0 +1,27 @@
+# shellcheck shell=bash
+if [ "$1" = strict ]; then
+    set -Eeuo pipefail
+    shopt -s inherit_errexit failglob
+fi
+before=$SHELLOPTS:$BASHOPTS
+# shellcheck source=SCRIPTDIR/../../../../docker/dockerfile-parse
+source "$2"
+status=0
+declare error escape lines logical ends comments bodies
+dockerfile_parse "$3" error escape lines logical ends comments bodies ||
+    status=$?
+[ "$SHELLOPTS:$BASHOPTS" = "$before" ] || echo "options changed"
+if [ "$status" != 0 ]; then
+    echo "status $status: $error"
+    exit
+fi
+printf 'escape %s\nlines %s\n' "$escape" "${#lines[@]}"
+for i in "${!logical[@]}"; do
+    printf 'logical %s-%s %s\n' $((i + 1)) $((ends[i] + 1)) "${logical[i]}"
+done
+for i in "${!comments[@]}"; do
+    printf 'comment %s %s\n' $((i + 1)) "${comments[i]}"
+done
+for i in "${!bodies[@]}"; do
+    printf 'body %s %q\n' $((i + 1)) "${bodies[i]}"
+done

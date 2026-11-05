@@ -2,6 +2,6 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 case $* in
-"rev-parse --abbrev-ref HEAD") echo "$FAKE_BRANCH" ;;
+"rev-parse --abbrev-ref HEAD") printf '%s\n' "$FAKE_BRANCH" ;;
 *) exit 2 ;;
 esac

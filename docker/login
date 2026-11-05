@@ -2,7 +2,17 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
+# repo rather than init, since logging in needs no tag, so a detached HEAD with
+# no CI variable to name it does not stop it.
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/repo"
+
+for var in DOCKER_USERNAME DOCKER_PASSWORD; do
+    if [ -z "${!var:-}" ]; then
+        echo "${0##*/}: $var: not set or empty;" \
+            "export the registry credentials to log in with" >&2
+        exit 1
+    fi
+done
 
 # Docker's rule for an image name: in a name with a /, its first path component
 # is a registry host only where it holds a . or a :, is localhost or holds an

@@ -21,11 +21,11 @@
 #
 # wheels downloads the wheels Dockerfile.lock/mdformat names, each checked
 # against its hash, for dev to install offline. dev copies nothing in, reading
-# the wheels only through a bind mount, so make format runs it on the mounted
-# tree; test adds the tree for the gate. README.md, Building, describes the
-# stages.
+# the wheels only through a bind mount, so make format runs it on the source
+# paths it mounts by name; test adds the tree for the gate and coverage.
+# README.md, Building, describes the stages.
 #===============================================================================
-FROM docker.io/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS wheels
+FROM docker.io/library/debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 AS wheels
 
 SHELL ["/bin/bash", "-Eeuo", "pipefail", "-O", "inherit_errexit", "-O", "failglob", "-c"]
 
@@ -37,7 +37,7 @@ RUN --mount=type=bind,source=Dockerfile.lock/mdformat,target=/lock \
     python3 -m pip download --disable-pip-version-check --require-hashes \
     --no-deps --only-binary=:all: -d /wheels -r /lock/requirements.txt
 #===============================================================================
-FROM docker.io/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS dev
+FROM docker.io/library/debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 AS dev
 
 LABEL org.opencontainers.image.source=https://github.com/TiredPixel/lib-shell-common
 
@@ -197,8 +197,8 @@ RUN --network=none \
     && echo "$version" | grep -qF 'mdformat-gfm ' \
     && echo "$version" | grep -qF 'mdformat_frontmatter '
 
-# uid 1000 so a bind-mounted tree is writable from a host whose user is the
-# usual 1000.
+# uid 1000 so the source make format bind-mounts is writable from a host whose
+# user is the usual 1000.
 RUN useradd -u 1000 x -m \
     && mkdir /home/x/r \
     && chown -R x:x /home/x
@@ -206,6 +206,11 @@ RUN useradd -u 1000 x -m \
 USER 1000:1000
 
 WORKDIR /home/x/r
+
+# Last in the stage, so a new stamp rebuilds no earlier layer. Empty where no
+# build argument is given, as under compose run --build.
+ARG GIT_DESCRIBE
+LABEL org.opencontainers.image.version=$GIT_DESCRIBE
 #===============================================================================
 FROM dev AS test
 

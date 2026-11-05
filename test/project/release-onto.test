@@ -79,16 +79,21 @@ calls() {
 }
 
 # Runs release_onto $3 $4 in the mode $2 names, and checks its status is $5 and
-# the calls made are $6.
+# the calls made are $6. The fakes write nothing, so any output, a failure's
+# included, is release_onto's own, and it has none to give.
 check() {
     local name=$1 mode=$2 branch=$3 tag=$4 status=$5 want=$6 rc=0
     : >"$FAKE_LOG"
     bash --norc --noprofile "$work/release" "$mode" "$helper" \
-        "$work/project" "$branch" "$tag" >/dev/null 2>"$work/err" || rc=$?
+        "$work/project" "$branch" "$tag" >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$FAKE_LOG")" != "$want" ]; then
         fail "$name" "the calls were: $(<"$FAKE_LOG")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ -s "$work/err" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
     fi
 }
 

@@ -116,11 +116,14 @@
 # as 3 where jq fails to read an exec-form RUN, so does the run.
 #
 # FROM and ARG are matched in any case, as Docker reads them, and on logical
-# lines, with continued lines joined at the escape character, which a leading
-# # escape= directive may change, and heredoc bodies skipped. A pinned FROM must
-# open its line as FROM REPO:TAG or FROM REPO@DIGEST, the reference whole on
-# that line, and a TRACK ARG's ARG must sit on a line of its own as
-# ARG NAME=VALUE, each keyword in any case.
+# lines, as docker/dockerfile-parse reads them: continued lines joined at the
+# escape character, which a leading # escape= directive may change, and the
+# heredoc bodies of each RUN, COPY and ADD, ONBUILD's included, skipped, as are
+# TRACK lines in them. A twice-given or invalid escape directive, or a heredoc
+# with no end line, fails the run. A pinned FROM must open its line as
+# FROM REPO:TAG or FROM REPO@DIGEST, the reference whole on that line, and a
+# TRACK ARG's ARG must sit on a line of its own as ARG NAME=VALUE, each keyword
+# in any case.
 #
 # A pin that names nothing in its file fails the run, as does a REPO, NAME or
 # OWNER/REPO pinned twice in one file, a FROM naming REPO in another form, a
@@ -138,9 +141,9 @@
 #
 # With --record, FILE is written last, for docker/upgrade-commit: the path of
 # each file written, one to a line, then a blank line, then a line for each
-# value a pin moved from, as NAME OLD -> NEW for a TRACK ARG,
-# REPO:TAG OLD -> NEW for a TRACK FROM, OLD a digest or REPO:TAG, and
-# OWNER/REPO TAG: OLD -> NEW for a TRACK USES, with a digest or hash cut to 12
+# value a pin moved from, as SUBJECT OLD -> NEW, SUBJECT as its TRACK line
+# writes it: NAME for a TRACK ARG, REPO:TAG for a TRACK FROM, OLD a digest or
+# REPO:TAG, and OWNER/REPO@TAG for a TRACK USES, with a digest or hash cut to 12
 # hex digits and a commit to 7. A TRACK LOCK's lines are
 # LOCK NAME PACKAGE OLD -> NEW for each package it names, or an npm lock's root
 # depended on, that moved, OLD none where the lock lacked it and NEW none where
@@ -277,7 +280,12 @@ fi
 # joined by any blanks, - or _, read lowercased.
 track='^[[:space:]]*#[[:space:]]*track[-_[:space:]]*(from|arg|uses|lock)s?([^a-z0-9_]|$)'
 
-mapfile -t lines <"$dockerfile"
+source "$here/dockerfile-parse"
+# Each set by dockerfile_parse, bodies though nothing here reads it.
+# shellcheck disable=SC2034
+declare error escape lines logical ends comments bodies
+dockerfile_parse "$dockerfile" error escape lines logical ends comments \
+    bodies || die "$error"
 
 # Bounded, so a stalled server fails the run rather than hanging it.
 fetch() {
@@ -295,42 +303,6 @@ refs_in() {
     done
 }
 
-# Parser directives open the file, before any comment, blank line or
-# instruction; an unknown one ends them, as Docker treats it as a comment
-# (Dockerfile reference, "Parser directives", docs.docker.com, checked 2026-11).
-escape=\\
-escaped=""
-for line in "${lines[@]}"; do
-    [[ "$line" =~ ^#[[:space:]]*([A-Za-z][A-Za-z0-9]*)[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] ||
-        break
-    case ${BASH_REMATCH[1],,} in
-    escape)
-        [ -z "$escaped" ] || die "the escape directive appears twice"
-        escaped=1
-        escape=${BASH_REMATCH[2]}
-        case $escape in
-        \\ | \`) ;;
-        *) die "escape directive $escape is not \\ or \`" ;;
-        esac
-        ;;
-    syntax | check) ;;
-    *) break ;;
-    esac
-done
-
-# Each instruction, keyed by the index of its first line, with the index of its
-# last in ends. A line ending in the escape character, then any blanks,
-# continues on the next; comment and blank lines are skipped, within an
-# instruction as between them, and pins are read from them.
-#
-# BuildKit reads a word <<WORD or <<-WORD, WORD optionally quoted, in a RUN,
-# COPY or ADD as a heredoc, whose body runs from the next line to one that is
-# WORD, leading tabs dropped after <<- (Dockerfile reference, "Here-Documents",
-# docs.docker.com, checked 2026-11). Its words are split here at blanks, not
-# shell-lexed. Each body still to come is in docs, its WORD prefixed with -
-# where leading tabs are dropped and + where they are not.
-delimiter='[^<"'\''[:space:]]+'
-heredoc="^[0-9]*<<(-?)(\"($delimiter)\"|'($delimiter)'|($delimiter))\$"
 froms=()
 args=()
 locks=()
@@ -341,83 +313,43 @@ declare -A track_at=()
 read_at() {
     [ -n "${track_at[$1]+set}" ] || track_at[$1]=$((i + 1))
 }
-logical=()
-ends=()
-docs=()
-start=""
-for i in "${!lines[@]}"; do
-    line=${lines[$i]}
-    if [ ${#docs[@]} -gt 0 ]; then
-        if [ "${docs[0]:0:1}" = - ]; then
-            [[ "$line" =~ ^$'\t'*(.*)$ ]]
-            line=${BASH_REMATCH[1]}
-        fi
-        [ "$line" != "${docs[0]:1}" ] || docs=("${docs[@]:1}")
-        continue
-    fi
-    if [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]]; then
-        case $line in
-        "# TRACK FROM "*)
-            froms+=("${line#"# TRACK FROM "}")
-            read_at "FROM ${froms[-1]}"
+# Pins are read from comment lines, a heredoc's body aside.
+for i in "${!comments[@]}"; do
+    line=${comments[$i]}
+    case $line in
+    "# TRACK FROM "*)
+        froms+=("${line#"# TRACK FROM "}")
+        read_at "FROM ${froms[-1]}"
+        ;;
+    "# TRACK ARG "*)
+        args+=("${line#"# TRACK ARG "}")
+        read_at "ARG ${args[-1]}"
+        ;;
+    "# TRACK LOCK "*)
+        locks+=("${line#"# TRACK LOCK "}")
+        read_at "LOCK ${locks[-1]}"
+        ;;
+    *)
+        [[ "${line,,}" =~ $track ]] || continue
+        case ${BASH_REMATCH[1]} in
+        from)
+            refuse_at "$dockerfile" $((i + 1)) "not # TRACK FROM REPO:TAG"
             ;;
-        "# TRACK ARG "*)
-            args+=("${line#"# TRACK ARG "}")
-            read_at "ARG ${args[-1]}"
+        arg)
+            refuse_at "$dockerfile" $((i + 1)) "not # TRACK ARG NAME SOURCE"
             ;;
-        "# TRACK LOCK "*)
-            locks+=("${line#"# TRACK LOCK "}")
-            read_at "LOCK ${locks[-1]}"
+        lock)
+            refuse_at "$dockerfile" $((i + 1)) "not # TRACK LOCK NAME" \
+                "PACKAGE..."
             ;;
-        *)
-            [[ "${line,,}" =~ $track ]] || continue
-            case ${BASH_REMATCH[1]} in
-            from)
-                refuse_at "$dockerfile" $((i + 1)) "not # TRACK FROM REPO:TAG"
-                ;;
-            arg)
-                refuse_at "$dockerfile" $((i + 1)) "not # TRACK ARG NAME SOURCE"
-                ;;
-            lock)
-                refuse_at "$dockerfile" $((i + 1)) "not # TRACK LOCK NAME" \
-                    "PACKAGE..."
-                ;;
-            uses)
-                refuse_at "$dockerfile" $((i + 1)) "TRACK USES belongs in a" \
-                    "workflow, not a Dockerfile"
-                ;;
-            esac
+        uses)
+            refuse_at "$dockerfile" $((i + 1)) "TRACK USES belongs in a" \
+                "workflow, not a Dockerfile"
             ;;
         esac
-        continue
-    fi
-    if [ -z "$start" ]; then
-        start=$i
-        text=""
-    fi
-    if [[ "$line" =~ ^(.*)"$escape"[[:blank:]]*$ ]]; then
-        text+=${BASH_REMATCH[1]}
-        continue
-    fi
-    logical[start]=$text$line
-    ends[start]=$i
-    read -r -a words <<<"$text$line"
-    keyword=${words[0]:-}
-    case ${keyword^^} in
-    RUN | COPY | ADD)
-        for word in "${words[@]:1}"; do
-            [[ "$word" =~ $heredoc ]] || continue
-            docs+=("${BASH_REMATCH[1]:-+}${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}")
-        done
         ;;
     esac
-    start=""
 done
-if [ -n "$start" ]; then
-    logical[start]=$text
-    ends[start]=$((${#lines[@]} - 1))
-fi
-[ ${#docs[@]} -eq 0 ] || die "a heredoc's body has no end line ${docs[0]:1}"
 
 if [ ${#froms[@]} -eq 0 ] && [ ${#args[@]} -eq 0 ] &&
     [ ${#locks[@]} -eq 0 ]; then
@@ -1424,7 +1356,8 @@ for data in "${args[@]}"; do
 done
 
 # Each file written, the temporary file beside it holding what it becomes, and
-# each directory made for one, deepest first, removed again if left empty.
+# each directory made for one or for the record, deepest first, removed again if
+# left empty.
 changed=()
 temps=()
 made=()
@@ -1439,12 +1372,32 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Makes absolute directory $1 and each missing above it, one level at a time,
+# adding each to made.
+make_dirs() {
+    local dir=$1 levels=()
+    # The walk up would never end on a relative path whose first part is
+    # missing, since ${dir%/*} leaves a path with no slash as it is.
+    if [ "${dir:0:1}" != / ]; then
+        say "make_dirs: $dir is not absolute"
+        exit 1
+    fi
+    while [ -n "$dir" ] && [ ! -d "$dir" ]; do
+        levels=("$dir" "${levels[@]}")
+        dir=${dir%/*}
+    done
+    for dir in "${levels[@]}"; do
+        mkdir -- "$dir"
+        made=("$dir" "${made[@]}")
+    done
+}
+
 # Writes the lines in new to a temporary file beside $2, the absolute path it
 # goes to, making each directory missing above it, where they differ from $1's
 # lines or $1 is missing, setting staged where it does. The file takes $1's
 # mode, or 0644 where $1 is missing.
 stage() {
-    local source=$1 target=$2 dir temp i levels=() now=()
+    local source=$1 target=$2 temp i now=()
     staged=""
     if [ -e "$source" ]; then
         mapfile -t now <"$source"
@@ -1456,15 +1409,7 @@ stage() {
             [ ${#new[@]} -eq 0 ] || [ "${new[$i]}" != "${now[$i]}" ] || return 0
         fi
     fi
-    dir=${target%/*}
-    while [ -n "$dir" ] && [ ! -d "$dir" ]; do
-        levels=("$dir" "${levels[@]}")
-        dir=${dir%/*}
-    done
-    for dir in "${levels[@]}"; do
-        mkdir -- "$dir"
-        made=("$dir" "${made[@]}")
-    done
+    make_dirs "${target%/*}"
     temp=$(mktemp "$target.XXXXXX")
     temps+=("$temp")
     if [ -e "$source" ]; then
@@ -1564,11 +1509,11 @@ for pin in "${pins[@]}"; do
     for ref in "${refs[@]}"; do
         add_was "$ref"
     done
-    add_move "${pin%@*} ${pin##*@}:" "${commits[$pin]}"
+    add_move "$pin" "${commits[$pin]}"
 done
 
 if [ -n "$record" ]; then
-    mkdir -p -- "$(dirname -- "$record")"
+    make_dirs "$(dirname -- "$(readlink -m -- "$record")")"
     temps+=("$(mktemp "$record.XXXXXX")")
     if [ ${#changed[@]} -gt 0 ]; then
         printf '%s\n' "${changed[@]}" "" "${moves[@]}" >"${temps[-1]}"

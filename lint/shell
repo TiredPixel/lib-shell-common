@@ -63,6 +63,28 @@ for f in "${found[@]}"; do
     scripts+=("$f")
 done
 
+# A named file the scan also found is checked once, not twice. The scan writes
+# ./run where a caller may name run, so a leading ./ is set aside on both sides
+# before the paths are compared as strings.
+extra=()
+
+for f in "${named[@]}"; do
+    dup=0
+
+    for s in "${scripts[@]}"; do
+        if [ "${f#./}" = "${s#./}" ]; then
+            dup=1
+            break
+        fi
+    done
+
+    if [ "$dup" -eq 0 ]; then
+        extra+=("$f")
+    fi
+done
+
+named=("${extra[@]}")
+
 if [ ${#scripts[@]} -eq 0 ] && [ ${#named[@]} -eq 0 ]; then
     echo "${0##*/}: no shell scripts found in . or bin/, so nothing was checked" >&2
     exit 0

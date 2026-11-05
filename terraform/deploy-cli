@@ -4,6 +4,11 @@ shopt -s inherit_errexit failglob
 
 f_plan=.terraform.plan
 
-# The plan terraform/test-cli saved, so only the change it showed is applied;
+if ! [ -e $f_plan ]; then
+    echo "deploy-cli: $f_plan: no saved plan; run terraform/plan-cli first" >&2
+    exit 1
+fi
+
+# The plan terraform/plan-cli saved, so only the change it showed is applied;
 # Terraform refuses a saved plan once the state has moved on since it was made.
 terraform apply $f_plan

@@ -2,4 +2,11 @@
 before=$SHELLOPTS:$BASHOPTS
 # shellcheck source=SCRIPTDIR/../../../../docker/init
 source "$1"
-[ "$SHELLOPTS:$BASHOPTS" = "$before" ]
+if [ "$SHELLOPTS:$BASHOPTS" != "$before" ]; then
+    echo "options: sourcing changed the shell's options" >&2
+    exit 1
+fi
+if [ -n "${init_tag+set}" ]; then
+    echo "options: sourcing left init_tag set" >&2
+    exit 1
+fi

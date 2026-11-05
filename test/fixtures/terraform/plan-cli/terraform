@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+args=$(printf '%q ' "$@")
+echo "${args% }" >>"$FAKE_LOG"
+if [ -e .terraform.plan ]; then
+    echo "plan present" >>"$FAKE_LOG"
+fi
+if [ "$1" = "${FAKE_FAIL:-}" ]; then
+    echo "fake terraform: $1 failed" >&2
+    exit 1
+fi
+if [ "$1" = plan ] && [ "${2:-}" = -out ]; then
+    echo plan >"$3"
+fi

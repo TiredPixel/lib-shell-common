@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+#
+# Tests docker/dockerfile-parse on Dockerfiles written to a scratch directory,
+# sourced in a shell with no options set and in one under the strict mode its
+# callers run, each printing what dockerfile_parse returned and set: its escape
+# character, how many lines it read, each instruction's lines and logical line,
+# each comment line and each heredoc body, numbered from 1. Neither sourcing nor
+# parsing may change the shell's options.
+#
+# Run: test/docker/dockerfile-parse.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+parse=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/dockerfile-parse
+dump=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/dockerfile-parse")/dump
+work=$(mktemp -d)
+trap 'chmod -R u+rwx -- "$work" && rm -rf -- "$work"' EXIT
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Parses file $2, in each mode, and checks what is printed is $3 and nothing
+# reaches stderr.
+parsed() {
+    local name=$1 mode
+    for mode in plain strict; do
+        bash --norc --noprofile "$dump" "$mode" "$parse" "$2" >"$work/out" \
+            2>"$work/err" || fail "$name-$mode" "exit $?: $(<"$work/err")"
+        if [ -s "$work/err" ]; then
+            fail "$name-$mode" "stderr is: $(<"$work/err")"
+        elif [ "$(<"$work/out")" != "$3" ]; then
+            fail "$name-$mode" "printed: $(<"$work/out")"
+        fi
+    done
+}
+
+# Writes $2 to a Dockerfile and checks it parses as parsed does.
+check() {
+    printf '%s' "$2" >"$work/Dockerfile"
+    parsed "$1" "$work/Dockerfile" "$3"
+}
+
+# Directives.
+check unknown-then-escape $'# unknown=x\n# escape=`\nRUN a `\nRUN b\n' \
+    $'escape \\\nlines 4\nlogical 3-3 RUN a `\nlogical 4-4 RUN b\ncomment 1 # unknown=x\ncomment 2 # escape=`'
+check backtick $'# escape=`\nRUN a `\n  b \\\nRUN c\n' \
+    $'escape `\nlines 4\nlogical 2-3 RUN a   b \\\nlogical 4-4 RUN c\ncomment 1 # escape=`'
+check escape-no-value $'# escape=\n# escape=`\nRUN a `\nRUN b\n' \
+    $'escape \\\nlines 4\nlogical 3-3 RUN a `\nlogical 4-4 RUN b\ncomment 1 # escape=\ncomment 2 # escape=`'
+check escape-twice $'# escape=`\n# escape=\\\nRUN a\n' \
+    "status 1: the escape directive appears twice"
+check escape-bad $'# escape=x\nRUN a\n' "status 1: escape directive x is not \\ or \`"
+check escape-loosely $'#  ESCAPE = `  \nRUN a `\n b\n' \
+    $'escape `\nlines 3\nlogical 2-3 RUN a  b\ncomment 1 #  ESCAPE = `  '
+check syntax-check $'# syntax=docker/dockerfile:1\n# Check = skip=all\n# escape=`\nRUN a `\n b\n' \
+    $'escape `\nlines 5\nlogical 4-5 RUN a  b\ncomment 1 # syntax=docker/dockerfile:1\ncomment 2 # Check = skip=all\ncomment 3 # escape=`'
+check escape-after-comment $'# a comment\n# escape=`\nRUN a `\nRUN b\n' \
+    $'escape \\\nlines 4\nlogical 3-3 RUN a `\nlogical 4-4 RUN b\ncomment 1 # a comment\ncomment 2 # escape=`'
+
+# Instructions.
+check onbuild-heredoc $'FROM x\nonbuild RUN <<EOF\nARG V=1\nEOF\nARG W=1\nONBUILD\n' \
+    $'escape \\\nlines 6\nlogical 1-1 FROM x\nlogical 2-2 onbuild RUN <<EOF\nlogical 5-5 ARG W=1\nlogical 6-6 ONBUILD\nbody 2 $\'ARG V=1\\n\''
+check continued-at-end $'FROM x\nRUN a \\\n\n' \
+    $'escape \\\nlines 3\nlogical 1-1 FROM x\nlogical 2-3 RUN a '
+check blanks-after-escape $'RUN a \\ \t\n  b\n' \
+    $'escape \\\nlines 2\nlogical 1-2 RUN a   b'
+check comment-inside $'RUN a \\\n  # c\n\n  b\n' \
+    $'escape \\\nlines 4\nlogical 1-4 RUN a   b\ncomment 2   # c'
+check not-a-heredoc $'CMD cat <<EOF\nRUN echo \'<<EOF\' <<\nRUN b\n' \
+    $'escape \\\nlines 3\nlogical 1-1 CMD cat <<EOF\nlogical 2-2 RUN echo \'<<EOF\' <<\nlogical 3-3 RUN b'
+
+# Heredocs.
+check heredoc-dash $'RUN <<-EOF\n\tx\n\t\tEOF\nRUN <<EOF\n\tEOF\nEOF\n' \
+    $'escape \\\nlines 6\nlogical 1-1 RUN <<-EOF\nlogical 4-4 RUN <<EOF\nbody 1 $\'x\\n\'\nbody 4 $\'\\tEOF\\n\''
+check heredoc-quoted $'RUN <<"A" cat\na\nA\nRUN <<\'B\'\nb\nB\n' \
+    $'escape \\\nlines 6\nlogical 1-1 RUN <<"A" cat\nlogical 4-4 RUN <<\'B\'\nbody 1 $\'a\\n\'\nbody 4 $\'b\\n\''
+check heredoc-fd $'RUN 3<<A cat <&3\na\nA\n' \
+    $'escape \\\nlines 3\nlogical 1-1 RUN 3<<A cat <&3\nbody 1 $\'a\\n\''
+check heredoc-two $'RUN <<A bash \\\n  <<-B\na\nA\n\tb\n\tB\nRUN c\n' \
+    $'escape \\\nlines 7\nlogical 1-2 RUN <<A bash   <<-B\nlogical 7-7 RUN c\nbody 1 $\'a\\nb\\n\''
+check heredoc-copy-add $'COPY <<A /a\nx\nA\nadd <<B /b\ny\nB\n' \
+    $'escape \\\nlines 6\nlogical 1-1 COPY <<A /a\nlogical 4-4 add <<B /b\nbody 1 $\'x\\n\'\nbody 4 $\'y\\n\''
+check heredoc-hash $'RUN <<EOF\n# not a comment\nEOF\n# a comment\n' \
+    $'escape \\\nlines 4\nlogical 1-1 RUN <<EOF\ncomment 4 # a comment\nbody 1 $\'# not a comment\\n\''
+check heredoc-unended $'RUN <<A <<B\nA\nx\n' "status 1: a heredoc's body has no end line B"
+
+# A file that cannot be read; root reads any.
+if [ "$(id -u)" -ne 0 ]; then
+    printf 'FROM x\n' >"$work/locked"
+    chmod 000 "$work/locked"
+    parsed unreadable "$work/locked" "status 1: cannot be read"
+fi
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

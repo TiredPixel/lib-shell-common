@@ -53,7 +53,7 @@ chmod +x "$work/path/find"
 export PATH=$work/path:$PATH
 
 dirs=(ansible docker github lint project terraform bin test/ansible test/bin
-    test/docker test/github test/lint test/project)
+    test/docker test/github test/lint test/project test/terraform)
 
 # A bash script in the fixtures, below a test's own directory, as bin/files
 # reaches them at any depth.
@@ -110,7 +110,7 @@ fail() {
 failures=0
 
 # Runs show in tree $2 and checks its status is $3, its stdout is $4, and its
-# stderr holds $5 where that is not empty.
+# stderr is $5.
 check() {
     local name=$1 t=$2 status=$3 out=$4 said=$5 rc=0
     (cd "$t" && "$work/show") >"$work/out" 2>"$work/err" || rc=$?
@@ -118,8 +118,8 @@ check() {
         fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$work/out")" != "$out" ]; then
         fail "$name" "stdout is: $(<"$work/out")"
-    elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
-        fail "$name" "stderr lacks '$said': $(<"$work/err")"
+    elif [ "$(<"$work/err")" != "$said" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
     fi
 }
 
@@ -216,7 +216,7 @@ for d in docker test/fixtures .github; do
     t=$(tree "find-fails-${d//\//-}")
     mkdir -p "$t/.github/workflows"
     FAKE_FIND_FAIL=$d check "find-fails-${d//\//-}" "$t" 1 "" \
-        "bin/files: listing $d/ failed"
+        "fake find: failed"$'\n'"bin/files: listing $d/ failed"
 done
 
 # The output file is gone from TMPDIR while find still writes to it.

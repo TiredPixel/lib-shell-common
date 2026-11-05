@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Tests docker/init, sourced in a shell with no options set and in one under the
-# strict mode its callers run, in scratch projects with git faked on PATH: the
-# fake answers HEAD's branch as FAKE_BRANCH, "HEAD" where that is the detached
-# state. Each case prints what a child of the sourcing shell sees of REPO,
-# TAG and DOCKER_BUILDKIT, so only what init exports counts. Sourcing must set
-# none of the shell's options.
+# Tests docker/init, and docker/repo through it, sourced in a shell with no
+# options set and in one under the strict mode its callers run, in scratch
+# projects with git faked on PATH: the fake answers HEAD's branch as
+# FAKE_BRANCH, "HEAD" where that is the detached state. Each case prints what a
+# child of the sourcing shell sees of REPO, TAG and DOCKER_BUILDKIT, so only
+# what init exports counts, and compares stdout and stderr exactly. Sourcing
+# must set none of the shell's options and leave no variable of its own.
 #
 # Run: test/docker/init.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -40,24 +41,38 @@ fail() {
 
 # Sources init in the scratch project named by $project, in a bash with no
 # options or, where $2 is strict, under the callers' strict mode, with the
-# environment after $4, and checks its status is $3 and a child then prints $4
-# where it passes, or stderr holds $4 where it fails.
+# environment after $4, and checks its status is $3, and that a child then
+# prints $4 and stderr is empty where it passes, or stdout is empty and stderr
+# is exactly $4 where it fails.
 project=project
 check() {
-    local name=$1 mode=$2 status=$3 want=$4 rc=0
+    local name=$1 mode=$2 status=$3 want=$4 rc=0 want_out="" want_err=""
     shift 4
+    if [ "$status" = 0 ]; then
+        want_out=$want
+    else
+        want_err=$want
+    fi
     (cd "$work/$project" && env -u CIRCLE_BRANCH -u CIRCLE_TAG \
         -u GITHUB_HEAD_REF -u GITHUB_REF_NAME "$@" bash --norc --noprofile \
         "$work/source" "$mode" "$init" "$work/show") >"$work/out" \
         2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status: $(<"$work/err")"
-    elif [ "$status" = 0 ] && [ "$(<"$work/out")" != "$want" ]; then
-        fail "$name" "a child sees: $(<"$work/out")"
-    elif [ "$status" != 0 ] && ! grep -qF -- "$want" "$work/err"; then
-        fail "$name" "stderr lacks '$want': $(<"$work/err")"
+    elif [ "$(<"$work/out")" != "$want_out" ]; then
+        fail "$name" "stdout, from a child, is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$want_err" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
     fi
 }
+
+detached="source: TAG: detached HEAD and no CI branch or tag variable set;"
+detached+=" check out a branch"
+nothing_left="source: TAG: ---: no letter, digit or _ to make an image tag"
+nothing_left+=" from; check out a branch named with one"
+printf -v a129 '%*s' 129 ''
+a129=${a129// /a}
+a124=${a129:0:124}
 
 for mode in plain strict; do
     check "$mode-branch" "$mode" 0 "r/x a-b 1" FAKE_BRANCH=a/b
@@ -69,29 +84,61 @@ for mode in plain strict; do
         GITHUB_HEAD_REF=e/f GITHUB_REF_NAME=g
     check "$mode-push" "$mode" 0 "r/x 1.2 1" FAKE_BRANCH=HEAD \
         GITHUB_REF_NAME=1.2
-    check "$mode-detached" "$mode" 1 \
-        "source: TAG: detached HEAD and no CI branch or tag variable set" \
-        FAKE_BRANCH=HEAD
+    check "$mode-detached" "$mode" 1 "$detached" FAKE_BRANCH=HEAD
     # A CI that exports its branch or tag variable empty is refused all the
     # same.
-    check "$mode-empty-variable" "$mode" 1 \
-        "source: TAG: detached HEAD and no CI branch or tag variable set" \
-        FAKE_BRANCH=HEAD \
+    check "$mode-empty-variable" "$mode" 1 "$detached" FAKE_BRANCH=HEAD \
         CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=
+    # An empty variable is passed over for a later one that is set.
+    check "$mode-empty-then-set" "$mode" 0 "r/x g 1" FAKE_BRANCH=HEAD \
+        CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=g
+
+    # Each character Docker's tag grammar refuses becomes a -, then any leading
+    # . or - goes, then the tag is cut to 124 characters.
+    check "$mode-slashes" "$mode" 0 "r/x a-b-c 1" FAKE_BRANCH=a/b/c
+    check "$mode-plus-at" "$mode" 0 "r/x a-b-c_D.9 1" FAKE_BRANCH=a+b@c_D.9
+    check "$mode-leading-dot" "$mode" 0 "r/x a.b 1" FAKE_BRANCH=.a.b
+    check "$mode-leading-dash" "$mode" 0 "r/x a-b 1" FAKE_BRANCH=-a-b
+    check "$mode-leading-mixed" "$mode" 0 "r/x a 1" FAKE_BRANCH=.-/.a
+    check "$mode-124" "$mode" 0 "r/x $a124 1" FAKE_BRANCH="$a124"
+    check "$mode-125" "$mode" 0 "r/x $a124 1" FAKE_BRANCH="${a124}b"
+    check "$mode-129" "$mode" 0 "r/x $a124 1" FAKE_BRANCH="$a129"
+    # Stripped before it is cut, so the cut still keeps 124 characters.
+    check "$mode-leading-dot-long" "$mode" 0 "r/x $a124 1" \
+        FAKE_BRANCH=".${a124}b"
+    check "$mode-nothing-left" "$mode" 1 "$nothing_left" FAKE_BRANCH=---
+    # Each character, rather than each byte, becomes a - under a UTF-8 locale,
+    # and no letter outside ASCII is kept under any locale.
+    check "$mode-non-ascii-utf8" "$mode" 0 "r/x a-b 1" \
+        LC_ALL=en_US.UTF-8 FAKE_BRANCH=$'a\xc3\xa9b'
+    check "$mode-non-ascii-c" "$mode" 0 "r/x a--b 1" \
+        LC_ALL=C FAKE_BRANCH=$'a\xc3\xa9b'
+    # Even where the sourcing shell turns globasciiranges off.
+    check "$mode-non-ascii-no-globasciiranges" "$mode" 0 "r/x a-b 1" \
+        NO_GLOBASCIIRANGES=1 LC_ALL=en_US.UTF-8 FAKE_BRANCH=$'a\xc3\xa9b'
 done
 
-# A project with no .dockerrepo, or an empty one, is refused on a branch.
-for project in missing empty; do
-    for mode in plain strict; do
-        check "$mode-$project-dockerrepo" "$mode" 1 \
-            "source: REPO: .dockerrepo missing or empty" FAKE_BRANCH=a/b
-    done
+# A project with no .dockerrepo, or an empty one, is refused on a branch, with
+# cat's own error where it has one.
+dockerrepo="source: REPO: .dockerrepo missing or empty; write the image"
+dockerrepo+=" repository, such as ghcr.io/OWNER/NAME, to it"
+for mode in plain strict; do
+    project=missing
+    check "$mode-missing-dockerrepo" "$mode" 1 \
+        "cat: .dockerrepo: No such file or directory"$'\n'"$dockerrepo" \
+        FAKE_BRANCH=a/b
+    project=empty
+    check "$mode-empty-dockerrepo" "$mode" 1 "$dockerrepo" FAKE_BRANCH=a/b
 done
 
-# Sourcing changes none of the shell's options.
-(cd "$work/project" && FAKE_BRANCH=a/b bash --norc --noprofile \
-    "$work/options" "$init") ||
-    fail options "sourcing changed the shell's options"
+# Sourcing changes none of the shell's options, leaves no variable of its own
+# set, and prints nothing.
+if ! (cd "$work/project" && FAKE_BRANCH=a/b bash --norc --noprofile \
+    "$work/options" "$init") >"$work/out" 2>"$work/err"; then
+    fail options "$(<"$work/err")"
+elif [ -s "$work/out" ] || [ -s "$work/err" ]; then
+    fail options "sourcing printed: $(<"$work/out")$(<"$work/err")"
+fi
 
 if [ "$failures" -gt 0 ]; then
     exit 1

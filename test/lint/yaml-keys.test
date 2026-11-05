@@ -116,6 +116,15 @@ PREPATH=$work/drain check stdin-drained 1 "$top_diff"$'\n'"$space_diff" \
 PREPATH=$work/baddiff check diff-fails 2 "" "fake diff: read error" \
     sorted.yml top.yml
 
+# A last path with no NUL after it is checked, not dropped.
+rc=0
+(cd "$work/y" && printf 'sorted.yml\0top.yml' | "$keys") >"$work/out" \
+    2>"$work/err" || rc=$?
+if [ "$rc" != 1 ] || [ "$(<"$work/out")" != "$top_diff" ] ||
+    [ "$(<"$work/err")" != "yaml-keys: top.yml: keys not sorted"$'\n'"yaml-keys: checked 2 file(s)"$'\n'"$hint" ]; then
+    fail no-trailing-nul "exit $rc, stderr: $(<"$work/err")"
+fi
+
 # An empty set is reported, not refused.
 rc=0
 (cd "$work/y" && "$keys" </dev/null) >"$work/out" 2>"$work/err" || rc=$?

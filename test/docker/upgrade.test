@@ -47,7 +47,7 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
 mkdir -p "$work/lib/docker" "$work/lib/lint"
-cp -- "$source/upgrade" "$source/lock-resolve" "$work/lib/docker/"
+cp -- "$source/upgrade" "$source/lock-resolve" "$source/dockerfile-parse" "$work/lib/docker/"
 upgrade=$work/lib/docker/upgrade
 export FAKE_RESOLVER=$work/lib/docker/lock-resolve
 cat >"$work/lib/lint/dockerfile-locks" <<'EOF'
@@ -123,7 +123,9 @@ elif [ $# -ge 12 ] &&
     # A container of its own, so what one run installs no other sees.
     box=$(mktemp -d "$FAKE_BOXES/box.XXXXXX")
     cp -RP -- "$FAKE_CONTAINER/." "$box"
-    exec env PATH="$box:$FAKE_TOOLS" sh -c "${10}" "${@:11}" \
+    # No BASH_ENV, as a container takes none of the host's environment; kcov's
+    # would trace lock-resolve with a PS4 that its set -u refuses.
+    exec env -u BASH_ENV PATH="$box:$FAKE_TOOLS" sh -c "${10}" "${@:11}" \
         <<<"${script//\/etc\/os-release/$FAKE_OS_RELEASE}"
 else
     echo "fake docker: unexpected arguments: $*" >&2
@@ -706,10 +708,10 @@ check escape-after-unknown $'# unknown=x\n# escape=`\n# TRACK ARG V github:o/p\n
     0 "" $'# unknown=x\n# escape=`\n# TRACK ARG V github:o/p\nRUN echo \\\nARG V=1\nARG V=1.2.3'
 
 check escape-twice $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1\n' 1 \
-    "the escape directive appears twice" $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1'
+    "upgrade: @F@: the escape directive appears twice" $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1'
 
 check escape-bad $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1\n' 1 \
-    "escape directive x is not \\ or \`" $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1'
+    "upgrade: @F@: escape directive x is not \\ or \`" $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1'
 
 check arg-continued-no-blank $'# TRACK ARG V github:o/p\nARG V=1\\\n  W=2\n' 1 \
     "@F@:2: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\\\n  W=2'
@@ -798,7 +800,11 @@ check heredoc-not $'# TRACK ARG V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1\nCM
     $'# TRACK ARG V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1.2.3\nCMD cat <<EOF\nARG V=1.2.3'
 
 check heredoc-unended $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1\n' 1 \
-    "a heredoc's body has no end line EOF" $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1'
+    "upgrade: @F@: a heredoc's body has no end line EOF" $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1'
+
+# An ONBUILD RUN's heredoc body is no instruction either.
+check heredoc-onbuild $'# TRACK ARG V github:o/p\nARG V=1\nonbuild RUN <<EOF\nARG V=1\nEOF\n' 0 "" \
+    $'# TRACK ARG V github:o/p\nARG V=1.2.3\nonbuild RUN <<EOF\nARG V=1\nEOF'
 
 sha256_of() {
     local sum
@@ -1122,13 +1128,15 @@ for above in "  # v1" "  #v1"$' \t' "  # o/r v1.2.3" "  # 1.2"$'\n' $'  # v1\n\n
 done
 
 # A uses: on the first line, or with only blank lines above it, has no line
-# above it, whatever the last line holds.
+# above it, whatever the last line holds, an indented version comment included.
 n=0
 for lead in "" $'\n \n'; do
-    n=$((n + 1))
-    wf=$lead$'  - uses: o/r@v0\n  # v1\n# TRACK USES o/r@v1'
-    flow "wf-first-line-$n" "$df" "$wf" 0 "" "$dfafter" \
-        "$lead"$'  - uses: o/r@'"$c3"$'\n  # v1\n# TRACK USES o/r@v1'
+    for rest in $'\n  # v1\n# TRACK USES o/r@v1' $'\n# TRACK USES o/r@v1\n  # v1'; do
+        n=$((n + 1))
+        wf=$lead$'  - uses: o/r@v0'$rest
+        flow "wf-first-line-$n" "$df" "$wf" 0 "" "$dfafter" \
+            "$lead"$'  - uses: o/r@'"$c3$rest"
+    done
 done
 
 # OWNER/REPO is matched in any case, each uses: keeping its own.
@@ -1311,8 +1319,8 @@ real=$(readlink -f "$work")
 said=$(printf '%s\n' "$real/rec/Dockerfile" "$real/rec/.github/workflows.new/1.yml" \
     "$real/rec/.github/workflows.new/3.yml" "" "r/x:1 r/x:1 -> sha256:aaaaaaaaaaaa" \
     "r/x:1 sha256:000000000000 -> sha256:aaaaaaaaaaaa" "V 1.0.0 -> 1.2.3" \
-    "H dddddddddddd -> cccccccccccc" "o/r v1: v0 -> 3333333" "o/r v1: 1111111 -> 3333333" \
-    "o/a v2: v1 -> 2222222")
+    "H dddddddddddd -> cccccccccccc" "o/r@v1 v0 -> 3333333" "o/r@v1 1111111 -> 3333333" \
+    "o/a@v2 v1 -> 2222222")
 rc=0
 "$upgrade" --record "$work/recdir/sub/record" "$r/Dockerfile" "$r/.github/workflows/1.yml" \
     "$r/.github/workflows/2.yml" "$r/.github/workflows/3.yml" >"$work/out" 2>"$work/err" || rc=$?
@@ -1423,6 +1431,25 @@ if [ "$rc" != 1 ] || [ -e "$work/recdir/fails" ] ||
     fail record-write-fails "exit $rc, or something was written: $(<"$work/err")"
 fi
 
+# Each directory missing above the record is made, and removed again by a run
+# that fails after making it; a relative path is taken from the working
+# directory.
+rc=0
+FAKE_MKTEMP_FAIL=$real/recdir/new/tmp/record.XXXXXX "$upgrade" --record \
+    "$real/recdir/new/tmp/record" "$work/recfail/Dockerfile" >/dev/null 2>"$work/err" || rc=$?
+if [ "$rc" != 1 ] || [ -e "$work/recdir/new" ] || [ "$(<"$work/recfail/Dockerfile")" != "$df" ]; then
+    fail record-dirs-removed "exit $rc, or something was left: $(<"$work/err")"
+fi
+rc=0
+(cd "$work/recfail" && "$upgrade" --record tmp/sub/record Dockerfile) >/dev/null 2>"$work/err" ||
+    rc=$?
+said=$(printf '%s\n' "$real/recfail/Dockerfile" "" "V 1 -> 1.2.3")
+if [ "$rc" != 0 ]; then
+    fail record-dirs-relative "exit $rc, not 0: $(<"$work/err")"
+elif [ "$(cat -- "$work/recfail/tmp/sub/record" 2>&1)" != "$said" ]; then
+    fail record-dirs-relative "the record is: $(cat -- "$work/recfail/tmp/sub/record" 2>&1)"
+fi
+
 usage="Usage: upgrade [--record FILE] [DOCKERFILE [WORKFLOW...]]"
 for empty in "" x; do
     rc=0
@@ -1447,7 +1474,7 @@ rc=0
 (cd "$v/.github/workflows" && "$upgrade" --record ../../rec ../../Dockerfile w.yml) \
     >/dev/null 2>"$work/err" || rc=$?
 said=$(printf '%s\n' "$real/relative/Dockerfile" "$real/relative/.github/workflows.new/w.yml" "" \
-    "V 1 -> 1.2.3" "o/r v1: v0 -> 3333333")
+    "V 1 -> 1.2.3" "o/r@v1 v0 -> 3333333")
 if [ "$rc" != 0 ]; then
     fail relative "exit $rc, not 0: $(<"$work/err")"
 elif [ "$(<"$v/rec")" != "$said" ] ||
@@ -1753,36 +1780,42 @@ fi
 d=$work/lock-created
 file=$d/Dockerfile
 
-# A lock that would not change is not written, and nothing is recorded.
-inode=$(ls -i "$d/Dockerfile.lock/m/requirements.txt")
-commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
-if expect lock-unchanged 0 ""; then
-    [ "$(ls -i "$d/Dockerfile.lock/m/requirements.txt")" = "$inode" ] ||
-        fail lock-unchanged "the lock was written"
-    if ! [ -f "$work/lockrec" ] || [ -s "$work/lockrec" ]; then
-        fail lock-unchanged "the record is not empty: $(cat -- "$work/lockrec" 2>&1)"
+# A lock that would not change is not written, and nothing is recorded. This
+# and the cases after it take lock-created's lock, so where it made none, that
+# is recorded rather than left to abort the test.
+if ! [ -f "$d/Dockerfile.lock/m/requirements.txt" ]; then
+    fail lock-unchanged "lock-created made no lock, which this and the lock-dirty cases need"
+else
+    inode=$(ls -i "$d/Dockerfile.lock/m/requirements.txt")
+    commit_all "$d"
+    rm -f -- "$work/lockrec"
+    lockgo --record "$work/lockrec"
+    if expect lock-unchanged 0 ""; then
+        [ "$(ls -i "$d/Dockerfile.lock/m/requirements.txt")" = "$inode" ] ||
+            fail lock-unchanged "the lock was written"
+        if ! [ -f "$work/lockrec" ] || [ -s "$work/lockrec" ]; then
+            fail lock-unchanged "the record is not empty: $(cat -- "$work/lockrec" 2>&1)"
+        fi
     fi
-fi
 
-# A lock with changes not committed is refused, as the Dockerfile is, before
-# anything is looked up.
-printf '# edit\n' >>"$d/Dockerfile.lock/m/requirements.txt"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
-if expect lock-dirty 1 "upgrade: $d/Dockerfile.lock: has changes not committed; commit or stash them first" \
-    "fake "; then
-    [ ! -e "$work/lockrec" ] || fail lock-dirty "a record was written"
+    # A lock with changes not committed is refused, as the Dockerfile is, before
+    # anything is looked up.
+    printf '# edit\n' >>"$d/Dockerfile.lock/m/requirements.txt"
+    rm -f -- "$work/lockrec"
+    lockgo --record "$work/lockrec"
+    if expect lock-dirty 1 "upgrade: $d/Dockerfile.lock: has changes not committed; commit or stash them first" \
+        "fake "; then
+        [ ! -e "$work/lockrec" ] || fail lock-dirty "a record was written"
+    fi
+    rm -- "$d/Dockerfile.lock/m/requirements.txt"
+    lockgo --record "$work/lockrec"
+    expect lock-dirty-removed 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
+    mkdir "$d/Dockerfile.lock/new"
+    printf 'x\n' >"$d/Dockerfile.lock/new/f"
+    "$REAL_GIT" -C "$d" checkout -q -- Dockerfile.lock
+    lockgo --record "$work/lockrec"
+    expect lock-dirty-untracked 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
 fi
-rm -- "$d/Dockerfile.lock/m/requirements.txt"
-lockgo --record "$work/lockrec"
-expect lock-dirty-removed 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
-mkdir "$d/Dockerfile.lock/new"
-printf 'x\n' >"$d/Dockerfile.lock/new/f"
-"$REAL_GIT" -C "$d" checkout -q -- Dockerfile.lock
-lockgo --record "$work/lockrec"
-expect lock-dirty-untracked 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
 
 # A version that moves, a dependency added and one dropped are each recorded; an
 # existing lock keeps its mode.

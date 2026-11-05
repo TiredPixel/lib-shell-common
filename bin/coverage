@@ -1,23 +1,96 @@
 #!/usr/bin/env bash
 #
-# Runs bin/test under kcov, with any test names it is given, and writes the
-# report to tmp/coverage/, replacing the last one, since kcov otherwise merges
-# into whatever is there. Covers only the repository's own files. Runs from the
+# Runs bin/test under kcov, with any test names it is given, covering only the
+# repository's own files, and writes the report to tmp/coverage/, replacing the
+# last one, since kcov otherwise merges into whatever is there. Runs from the
 # root of the repository.
+#
+# With --tar, the report is made in a scratch directory and written to stdout
+# as a tar instead, everything the run itself prints going to stderr, so it can
+# leave a container that mounts nothing; the tar is written whether or not the
+# tests pass, and the exit status is still theirs. --extract, on the host, reads
+# such a tar from stdin and puts it in place of tmp/coverage/ only once it is
+# wholly unpacked, so a run that exports nothing or is cut short leaves the last
+# report.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 out=$PWD/tmp/coverage
 
+usage() {
+    echo "Usage: bin/coverage [--tar] [test/DIR/NAME.test...]" >&2
+    echo "       bin/coverage --extract" >&2
+    exit 2
+}
+
+if [ "${1-}" = --extract ]; then
+    if [ $# -ne 1 ]; then
+        usage
+    fi
+    new=$out.new
+    if [ -e "$new" ]; then
+        echo "bin/coverage: removing ${new:?}" >&2
+        rm -rf -- "${new:?}"
+    fi
+    mkdir -p -- "$new"
+    # index.html is the last member --tar writes, so its presence shows the
+    # stream ended where it should.
+    if ! tar -x --no-same-owner -f - -C "$new" ||
+        ! [ -f "$new/index.html" ]; then
+        echo "bin/coverage: no complete report on stdin;" \
+            "tmp/coverage/ is left as it was" >&2
+        echo "bin/coverage: removing ${new:?}" >&2
+        rm -rf -- "${new:?}"
+        exit 1
+    fi
+    if [ -e "$out" ]; then
+        echo "bin/coverage: removing ${out:?}" >&2
+        rm -rf -- "${out:?}"
+    fi
+    mv -- "$new" "$out"
+    echo "bin/coverage: report written to tmp/coverage/index.html" >&2
+    exit 0
+fi
+
+tar=
+if [ "${1-}" = --tar ]; then
+    tar=1
+    shift
+fi
+
 # Checked here as bin/test checks them, so a bad name leaves the last report.
 for t in "$@"; do
     if ! [[ $t =~ ^test/[^/]+/[^/]+\.test$ ]]; then
         printf 'bin/coverage: %q is not a test/*/*.test\n' "$t" >&2
-        echo "Usage: bin/coverage [test/DIR/NAME.test...]" >&2
-        exit 2
+        usage
     fi
 done
+
+if [ -n "$tar" ]; then
+    report=$(mktemp -d)
+    trap 'rm -rf -- "$report"' EXIT
+    rc=0
+    kcov --include-path="$PWD" "$report" "$bin/test" "$@" >&2 || rc=$?
+    cd -- "$report"
+    # kcov links test to the run's own directory by its absolute path, which
+    # would dangle once the report leaves the container, so each such link is
+    # made relative; a link anywhere else is left as it is.
+    shopt -s nullglob
+    entries=(./*)
+    shopt -u nullglob
+    for l in "${entries[@]}"; do
+        if [ -L "$l" ]; then
+            target=$(readlink -- "$l")
+            ln -sfn -- "${target#"$report"/}" "$l"
+        fi
+    done
+    {
+        find . -mindepth 1 -maxdepth 1 ! -name index.html -print0
+        printf '%s\0' ./index.html
+    } | tar --null -T - -cf -
+    exit "$rc"
+fi
 
 if [ -e "$out" ]; then
     echo "bin/coverage: removing ${out:?}" >&2
