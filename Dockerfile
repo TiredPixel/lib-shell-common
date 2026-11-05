@@ -206,6 +206,11 @@ RUN useradd -u 1000 x -m \
 USER 1000:1000
 
 WORKDIR /home/x/r
+
+# Last in the stage, so a new stamp rebuilds no earlier layer. Empty where no
+# build argument is given, as under compose run --build.
+ARG GIT_DESCRIBE
+LABEL org.opencontainers.image.version=$GIT_DESCRIBE
 #===============================================================================
 FROM dev AS test
 
