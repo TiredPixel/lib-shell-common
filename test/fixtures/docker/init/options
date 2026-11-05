@@ -1,0 +1,5 @@
+# shellcheck shell=bash
+before=$SHELLOPTS:$BASHOPTS
+# shellcheck source=SCRIPTDIR/../../../../docker/init
+source "$1"
+[ "$SHELLOPTS:$BASHOPTS" = "$before" ]

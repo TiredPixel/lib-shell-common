@@ -11,39 +11,12 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dir=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/build-compose")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
 mkdir "$work/bin" "$work/project"
-cat >"$work/bin/docker" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-shopt -s inherit_errexit failglob
-args=$(printf '%q ' "$@")
-echo "${args% }" >>"$FAKE_LOG"
-[ "$1" = compose ] || exit 2
-echo "fake docker: building" >&2
-echo "fake docker: built"
-exit "${FAKE_BUILD:-0}"
-EOF
-cat >"$work/bin/git" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-shopt -s inherit_errexit failglob
-[ "$*" = describe ] || exit 2
-case ${FAKE_DESCRIBE:-} in
-"")
-    echo "fatal: No names found, cannot describe anything." >&2
-    exit 128
-    ;;
-broken)
-    echo "fatal: bad object HEAD" >&2
-    exit 128
-    ;;
-*) echo "$FAKE_DESCRIBE" ;;
-esac
-EOF
-chmod +x "$work/bin/docker" "$work/bin/git"
+cp -p -- "$fixtures/docker" "$fixtures/git" "$work/bin/"
 
 export FAKE_LOG=$work/log
 export FAKE_DESCRIBE=v1.2-3-gabcdef0

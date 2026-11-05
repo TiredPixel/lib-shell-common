@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+[ "$*" = describe ] || exit 2
+# A no-tag message as git gives it, or in German unless LC_ALL is C.
+no_tag() {
+    if [ "${LC_ALL:-}" = C ]; then
+        printf '%s\n' "$1" >&2
+    else
+        echo "fatal: Keine Namen gefunden, kann nichts beschreiben." >&2
+    fi
+    exit 128
+}
+case $FAKE_GIT in
+tagged) echo v1.2-3-gabcdef0 ;;
+warned)
+    echo "warning: tag 'v1.2' is externally known as 'v1.3'" >&2
+    echo v1.2
+    ;;
+no-names) no_tag "fatal: No names found, cannot describe anything." ;;
+no-annotated)
+    no_tag "fatal: No annotated tags can describe 'abcdef0'."$'\n'"However, there were unannotated tags: try --tags."
+    ;;
+no-tags)
+    no_tag "fatal: No tags can describe 'abcdef0'."$'\n'"Try --always, or create some tags."
+    ;;
+broken)
+    echo "fatal: not a git repository (or any of the parent directories): .git" >&2
+    exit 128
+    ;;
+# Names a no-tag message only past the start of its line.
+mentions)
+    echo "fatal: bad object: No names found, cannot describe anything." >&2
+    exit 128
+    ;;
+*) exit 2 ;;
+esac

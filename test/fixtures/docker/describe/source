@@ -1,0 +1,8 @@
+# shellcheck shell=bash
+if [ "$1" = strict ]; then
+    set -Eeuo pipefail
+    shopt -s inherit_errexit failglob
+fi
+# shellcheck source=SCRIPTDIR/../../../../docker/describe
+source "$2"
+echo "${describe-unset}|${describe_err-unset}"

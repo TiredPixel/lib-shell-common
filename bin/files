@@ -39,22 +39,26 @@ files_find() {
     exec {files_find_read}<&-
 }
 
-# Appends to shell_files each file directly in directory $1 whose first line is
-# a bash shebang or, for a file that is sourced and so carries none,
-# ShellCheck's shell=bash directive, since the scripts carry no suffix. Checked
-# on this scan's own result, so a directory that is missing or yields nothing
-# fails the run rather than quietly narrowing the lint.
+# Appends to shell_files each file directly in directory $1, or at any depth
+# where $2 is "recursive", whose first line is a bash shebang or, for a file
+# that is sourced and so carries none, ShellCheck's shell=bash directive, since
+# the scripts carry no suffix. Checked on this scan's own result, so a directory
+# that is missing or yields nothing fails the run rather than quietly narrowing
+# the lint.
 files_shell_in() {
     local dir=$1 f first
     local shebang='#!.*[/[:space:]]bash([[:space:]]|$)'
     local pattern="^($shebang|# shellcheck shell=bash\$)"
-    local -a entries found=()
+    local -a depth=(-maxdepth 1) entries found=()
 
+    if [ "${2:-}" = recursive ]; then
+        depth=()
+    fi
     if ! [ -d "$dir" ]; then
         echo "bin/files: $dir/ is missing" >&2
         exit 1
     fi
-    files_find entries "$dir" "$dir" -mindepth 1 -maxdepth 1 -type f
+    files_find entries "$dir" "$dir" -mindepth 1 "${depth[@]}" -type f
     for f in "${entries[@]}"; do
         first=$(head -n 1 -- "$f")
         if [[ $first =~ $pattern ]]; then
@@ -74,6 +78,8 @@ for files_dir in ansible docker github lint project terraform bin test/ansible \
     files_shell_in "$files_dir"
 done
 unset files_dir
+# Fixtures sit in a directory for each test, so a new one is reached unlisted.
+files_shell_in test/fixtures recursive
 
 compose_files=(docker-compose.yml)
 # A proposed workflow waits in .github/workflows.new/ until it is moved into

@@ -12,20 +12,12 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 init=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/init
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/init")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
 mkdir "$work/bin" "$work/project" "$work/missing" "$work/empty"
-cat >"$work/bin/git" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-shopt -s inherit_errexit failglob
-case $* in
-"rev-parse --abbrev-ref HEAD") echo "$FAKE_BRANCH" ;;
-*) exit 2 ;;
-esac
-EOF
-chmod +x "$work/bin/git"
+cp -p -- "$fixtures/git" "$work/bin/"
 echo r/x >"$work/project/.dockerrepo"
 : >"$work/empty/.dockerrepo"
 export PATH=$work/bin:$PATH
@@ -33,22 +25,7 @@ export PATH=$work/bin:$PATH
 # The shells that source init are scripts in files rather than -c strings, as
 # its callers are, so $0 names the script as it names a caller. The
 # sourcing shell runs show, a child that sees only what init exports.
-cat >"$work/source" <<'EOF'
-if [ "$1" = strict ]; then
-    set -Eeuo pipefail
-    shopt -s inherit_errexit failglob
-fi
-source "$2"
-bash --norc --noprofile "$3"
-EOF
-cat >"$work/show" <<'EOF'
-echo "${REPO:-} ${TAG:-} ${DOCKER_BUILDKIT:-}"
-EOF
-cat >"$work/options" <<'EOF'
-before=$SHELLOPTS:$BASHOPTS
-source "$1"
-[ "$SHELLOPTS:$BASHOPTS" = "$before" ]
-EOF
+cp -p -- "$fixtures/source" "$fixtures/show" "$fixtures/options" "$work/"
 
 failures=0
 # Reports a failure of case $1 at once, each line of $2 under the program and

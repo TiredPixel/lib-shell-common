@@ -1,0 +1,2 @@
+# shellcheck shell=bash
+echo "${REPO:-} ${TAG:-} ${DOCKER_BUILDKIT:-}"

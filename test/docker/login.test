@@ -11,28 +11,12 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dir=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/login")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
 mkdir "$work/bin" "$work/project"
-cat >"$work/bin/docker" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-shopt -s inherit_errexit failglob
-args=$(printf '%q ' "$@")
-echo "${args% }" >>"$FAKE_LOG"
-echo "stdin $(cat)" >>"$FAKE_LOG"
-EOF
-cat >"$work/bin/git" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-shopt -s inherit_errexit failglob
-case $* in
-"rev-parse --abbrev-ref HEAD") echo a/b ;;
-*) exit 2 ;;
-esac
-EOF
-chmod +x "$work/bin/docker" "$work/bin/git"
+cp -p -- "$fixtures/docker" "$fixtures/git" "$work/bin/"
 
 export FAKE_LOG=$work/log
 export PATH=$work/bin:$PATH
