@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# Tests terraform/deploy-cli in a scratch project with terraform faked on PATH,
+# so nothing is applied. The fake terraform logs each call's arguments, then
+# "plan present" where .terraform.plan exists as it runs, and fails where its
+# first argument is FAKE_FAIL.
+#
+# Run: test/terraform/deploy-cli.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+script=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../terraform")/deploy-cli
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/terraform/deploy-cli")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin"
+cp -p -- "$fixtures/terraform" "$work/bin/"
+
+export FAKE_LOG=$work/log
+export PATH=$work/bin:$PATH
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Runs deploy-cli in a fresh project, holding a saved plan where $2 is "plan",
+# with the fake failing at $3, or nowhere where that is empty, and checks it
+# exits $4, prints nothing on stdout and $5 on stderr, and calls terraform as
+# $6.
+check() {
+    local name=$1 plan=$2 rc=0
+    rm -rf -- "$work/project"
+    mkdir "$work/project"
+    if [ "$plan" = plan ]; then
+        echo plan >"$work/project/.terraform.plan"
+    fi
+    : >"$FAKE_LOG"
+    (cd "$work/project" && FAKE_FAIL=$3 "$script") >"$work/out" \
+        2>"$work/err" || rc=$?
+    if [ "$rc" -ne "$4" ]; then
+        fail "$name" "exit $rc, not $4: $(<"$work/err")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$5" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    elif [ "$(<"$FAKE_LOG")" != "$6" ]; then
+        fail "$name" "terraform was called as: $(<"$FAKE_LOG")"
+    fi
+}
+
+check applies plan "" 0 "" "apply .terraform.plan"$'\n'"plan present"
+
+# A consumer still running terraform/test-cli to plan is stopped before
+# terraform runs.
+check no-plan "" "" 1 \
+    "deploy-cli: .terraform.plan: no saved plan; run terraform/plan-cli first" ""
+
+check apply-fails plan apply 1 "fake terraform: apply failed" \
+    "apply .terraform.plan"$'\n'"plan present"
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

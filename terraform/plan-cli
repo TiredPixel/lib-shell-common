@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+f_plan=.terraform.plan
+
+# Removed first, so a run that fails leaves no earlier plan for
+# terraform/deploy-cli to apply.
+if [ -e $f_plan ]; then
+    echo "plan-cli: $f_plan: removing an earlier plan" >&2
+    rm -- $f_plan
+fi
+
+terraform init
+
+# Saved for terraform/deploy-cli, run later in the same directory, so the change
+# applied is the one this run showed rather than a fresh plan.
+terraform plan -out $f_plan

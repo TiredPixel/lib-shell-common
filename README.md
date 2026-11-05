@@ -469,19 +469,25 @@ lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.co
 lib/shell-common/terraform/format
 ```
 
-`terraform/test-cli` fails on any unformatted file, showing the diff, then initialises and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
+`terraform/test-cli` checks the configuration without reading any state: it fails on any unformatted file, showing the diff, then initialises with no backend, validates and runs `terraform test`. It saves no plan, and first removes any `.terraform.plan` it finds in the directory it runs from, saying so, so that `terraform/deploy-cli` cannot apply a plan left by an earlier run. `terraform test` runs what the repository's test files declare, which can create real infrastructure where a `run` block applies without mocked providers.
 
 ```sh
 lib/shell-common/terraform/test-cli
 ```
 
-`terraform/deploy-cli`, run later in the same directory, applies that saved plan and nothing else; Terraform refuses it once the state has moved on since the plan was made.
+`terraform/plan-cli` removes any earlier `.terraform.plan`, initialises and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. A failed run leaves no earlier plan behind. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
+
+```sh
+lib/shell-common/terraform/plan-cli
+```
+
+`terraform/deploy-cli`, run later in the same directory, applies that saved plan and nothing else; Terraform refuses it once the state has moved on since the plan was made. With no saved plan it fails before running Terraform, naming `terraform/plan-cli`.
 
 ```sh
 lib/shell-common/terraform/deploy-cli
 ```
 
-`terraform/test-cloud` checks formatting and plans the same way for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
+`terraform/test-cloud` checks formatting, initialises and plans for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
 
 ```sh
 lib/shell-common/terraform/test-cloud
