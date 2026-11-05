@@ -93,12 +93,16 @@ shells() {
     echo "${2:-shell $fixture}"
 }
 
+# The test's own stderr, which a case silencing bash's report of a signal does
+# not silence.
+exec 4>&2
+
 # Reports a failure of case $1 at once, each line of $2 under the program and
 # the case, so a later abort cannot hide it.
 fail() {
     local line
     while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
+        echo "${0##*/}: $1: $line" >&4
     done 3<<<"$2"
     failures=$((failures + 1))
 }
@@ -221,8 +225,8 @@ mkdir "$work/tmp-unlinked-tmp"
 TMPDIR=$work/tmp-unlinked-tmp FAKE_FIND_TMP_EMPTY=1 check tmp-unlinked "$t" 0 \
     "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
 
-# A signal while find runs leaves nothing in TMPDIR. check records any failure
-# itself, so its stderr carries only bash's report of the signal.
+# A signal while find runs leaves nothing in TMPDIR. check reports any failure
+# on fd 4, so its stderr carries only bash's report of the signal.
 t=$(tree term)
 mkdir "$work/term-tmp"
 TMPDIR=$work/term-tmp FAKE_FIND_TERM=1 check term "$t" 143 "" "" 2>/dev/null
