@@ -8,6 +8,9 @@ services:
   # stale across an editor's save by rename.
   shell:
     build:
+      args:
+        USER_GID: ${DC_GID:-1000}
+        USER_UID: ${DC_UID:-1000}
       context: .
       target: dev
     init: true
@@ -93,6 +96,9 @@ services:
   # trap for.
   shell_test:
     build:
+      args:
+        USER_GID: ${DC_GID:-1000}
+        USER_UID: ${DC_UID:-1000}
       context: .
       target: test
     init: true
