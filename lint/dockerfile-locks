@@ -6,8 +6,10 @@
 # PyPI or npm in a way that can fetch what no hashed lock pins, or resolves a
 # lock during the build. Each refused RUN is named on stderr as FILE:LINE: and
 # why, LINE its first line, and the run exits 1; a usage error exits 2; a file
-# that cannot be read, whose heredoc has no end line, or whose exec-form RUN jq
-# fails to read, exits 3.
+# that cannot be read, whose escape directive is given twice or is not \ or `,
+# whose heredoc has no end line, or whose exec-form RUN jq fails to read, exits
+# 3. Each file is read as docker/dockerfile-parse reads it, as docker/upgrade
+# reads it too.
 #
 # A RUN's shell or exec form, the heredoc that is its script, as in RUN <<EOF or
 # RUN bash <<EOF, and the script a shell's -c gives are split into simple
@@ -75,6 +77,8 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 prog=${0##*/}
+
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../docker/dockerfile-parse"
 
 usage() {
     echo "Usage: $prog [--] DOCKERFILE..." >&2
@@ -467,102 +471,39 @@ refuse_at() {
 }
 
 ignore='^[[:space:]]*#[[:space:]]*dockerfile-locks ignore:(.*)$'
-delimiter='[^<"'\''[:space:]]+'
-heredoc="^[0-9]*<<(-?)(\"($delimiter)\"|'($delimiter)'|($delimiter))\$"
 run='^[[:space:]]*([Oo][Nn][Bb][Uu][Ii][Ll][Dd][[:space:]]+)?[Rr][Uu][Nn]([[:space:]]+(.*))?$'
 
 check_file() {
-    local dockerfile=$1 line i k a start="" text word keyword escape=\\ last=""
-    local script="" reason
-    local -a lines=() logical=() bodies=() docs=() words=() found=() comments=()
+    local dockerfile=$1 i k a text word script reason error
+    local -a lines=() logical=() comments=() bodies=() words=() found=()
+    # dockerfile_parse sets them, though nothing here reads them.
+    # shellcheck disable=SC2034
+    local escape ends
 
     [ -e "$dockerfile" ] || die "$dockerfile: no such file"
     [ -f "$dockerfile" ] || die "$dockerfile: not a regular file"
-    mapfile -t lines 2>/dev/null <"$dockerfile" ||
-        die "$dockerfile: cannot be read"
-    for line in "${lines[@]}"; do
-        [[ $line =~ ^#[[:space:]]*([A-Za-z]+)[[:space:]]*=[[:space:]]*([^[:space:]]*) ]] ||
-            break
-        [ "${BASH_REMATCH[1],,}" != escape ] || escape=${BASH_REMATCH[2]}
-    done
+    dockerfile_parse "$dockerfile" error escape lines logical ends comments \
+        bodies || die "$dockerfile: $error"
 
-    # Logical lines, joined at the escape character, comment lines inside them
-    # skipped; a RUN's heredoc bodies are kept in bodies where they are its
-    # script, and the bodies of the others passed over.
-    for i in "${!lines[@]}"; do
-        line=${lines[i]}
-        if [ ${#docs[@]} -gt 0 ]; then
-            k=$line
-            if [ "${docs[0]:0:1}" = - ]; then
-                [[ $line =~ ^$'\t'*(.*)$ ]]
-                k=${BASH_REMATCH[1]}
-            fi
-            if [ "$k" = "${docs[0]:1}" ]; then
-                docs=("${docs[@]:1}")
-            elif [ -n "$script" ]; then
-                bodies[last]+=$line$'\n'
-            fi
-            continue
-        fi
-        if [[ $line =~ ^[[:space:]]*(#.*)?$ ]]; then
-            [[ $line != *\#* ]] || comments[i]=1
-            continue
-        fi
-        if [ -z "$start" ]; then
-            start=$i
-            text=""
-        fi
-        if [[ $line =~ ^(.*)"$escape"[[:blank:]]*$ ]]; then
-            text+=${BASH_REMATCH[1]}
-            continue
-        fi
-        logical[start]=$text$line
-        bodies[start]=""
-        last=$start
-        start=""
-        script=""
-        read -r -a words <<<"${logical[last]}"
-        keyword=${words[0]^^}
-        if [ "$keyword" = ONBUILD ]; then
-            words=("${words[@]:1}")
-            keyword=${words[0]-}
-            keyword=${keyword^^}
-        fi
-        case $keyword in
-        RUN | COPY | ADD) ;;
-        *) continue ;;
-        esac
-        for word in "${words[@]:1}"; do
-            if [[ $word =~ $heredoc ]]; then
-                docs+=("${BASH_REMATCH[1]:-+}${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}")
-            fi
-        done
-        [ "$keyword" = RUN ] || continue
+    for i in "${!logical[@]}"; do
+        at=$dockerfile:$((i + 1))
+        [[ ${logical[i]} =~ $run ]] || continue
+        text=${BASH_REMATCH[3]}
         # Its heredocs are its script where it has no command but them, or its
         # command, past any heredocs, is a shell; otherwise they are only that
         # command's input, as in RUN <<EOF cat >file.
-        script=1
-        for word in "${words[@]:1}"; do
+        script=${bodies[i]-}
+        read -r -a words <<<"$text"
+        for word in "${words[@]}"; do
             [[ $word != --* ]] || continue
-            [[ ! $word =~ $heredoc ]] || continue
+            [[ ! $word =~ $dockerfile_heredoc ]] || continue
             case ${word##*/} in
             sh | bash | dash | ash) ;;
             *) script="" ;;
             esac
             break
         done
-    done
-    if [ -n "$start" ]; then
-        logical[start]=$text
-        bodies[start]=""
-    fi
-    [ ${#docs[@]} -eq 0 ] ||
-        die "$dockerfile: a heredoc's body has no end line ${docs[0]:1}"
-
-    for i in "${!logical[@]}"; do
-        at=$dockerfile:$((i + 1))
-        [[ ${logical[i]} =~ $run ]] || continue
-        check_run "${BASH_REMATCH[3]}" "${bodies[i]}"
+        check_run "$text" "$script"
         # The nearest in the comment lines directly above, so that another
         # tool's, such as hadolint's, may sit below it.
         k=""

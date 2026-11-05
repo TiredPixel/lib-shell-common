@@ -287,7 +287,7 @@ Dockerfile:12: npm install resolves versions itself, where npm ci installs a loc
 
 A pip install passes with `--require-hashes`, a local `-r` lock and `--only-binary=:all:` or `--no-build-isolation`, as in the wheels stage above, and with `--no-index` and only local `--find-links`, or in a `RUN --network=none`, which fetch nothing. A pipx install passes in the offline form above, npm as `npm ci` or in a `RUN --network=none`, `npx` given `--no`, and yarn, pnpm, bun and uv in their frozen forms, such as `uv sync --locked`.
 
-A `Dockerfile` it cannot read, with a heredoc that has no end line, or with an exec-form `RUN` `jq` fails to read, fails the run with status 3.
+A `Dockerfile` it cannot read, with an `escape` directive given twice or other than `\` or `` ` ``, with a heredoc that has no end line, or with an exec-form `RUN` `jq` fails to read, fails the run with status 3.
 
 It catches the unlocked installs written by mistake, not those written to evade it, which a suppression comment would pass anyway; the full list of what it checks and what it cannot see, such as Bun installing with no lock where none is committed, is at the top of `lint/dockerfile-locks`.
 

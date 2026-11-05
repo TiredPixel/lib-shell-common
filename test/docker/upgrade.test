@@ -47,7 +47,7 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
 mkdir -p "$work/lib/docker" "$work/lib/lint"
-cp -- "$source/upgrade" "$source/lock-resolve" "$work/lib/docker/"
+cp -- "$source/upgrade" "$source/lock-resolve" "$source/dockerfile-parse" "$work/lib/docker/"
 upgrade=$work/lib/docker/upgrade
 export FAKE_RESOLVER=$work/lib/docker/lock-resolve
 cat >"$work/lib/lint/dockerfile-locks" <<'EOF'
@@ -708,10 +708,10 @@ check escape-after-unknown $'# unknown=x\n# escape=`\n# TRACK ARG V github:o/p\n
     0 "" $'# unknown=x\n# escape=`\n# TRACK ARG V github:o/p\nRUN echo \\\nARG V=1\nARG V=1.2.3'
 
 check escape-twice $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1\n' 1 \
-    "the escape directive appears twice" $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1'
+    "upgrade: @F@: the escape directive appears twice" $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1'
 
 check escape-bad $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1\n' 1 \
-    "escape directive x is not \\ or \`" $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1'
+    "upgrade: @F@: escape directive x is not \\ or \`" $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1'
 
 check arg-continued-no-blank $'# TRACK ARG V github:o/p\nARG V=1\\\n  W=2\n' 1 \
     "@F@:2: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\\\n  W=2'
@@ -800,7 +800,11 @@ check heredoc-not $'# TRACK ARG V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1\nCM
     $'# TRACK ARG V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1.2.3\nCMD cat <<EOF\nARG V=1.2.3'
 
 check heredoc-unended $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1\n' 1 \
-    "a heredoc's body has no end line EOF" $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1'
+    "upgrade: @F@: a heredoc's body has no end line EOF" $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1'
+
+# An ONBUILD RUN's heredoc body is no instruction either.
+check heredoc-onbuild $'# TRACK ARG V github:o/p\nARG V=1\nonbuild RUN <<EOF\nARG V=1\nEOF\n' 0 "" \
+    $'# TRACK ARG V github:o/p\nARG V=1.2.3\nonbuild RUN <<EOF\nARG V=1\nEOF'
 
 sha256_of() {
     local sum
@@ -1425,6 +1429,25 @@ if [ "$rc" != 1 ] || [ -e "$work/recdir/fails" ] ||
     [ "$(<"$work/recfail/Dockerfile")" != "$df" ] ||
     compgen -G "$work/recfail/Dockerfile.*" >/dev/null; then
     fail record-write-fails "exit $rc, or something was written: $(<"$work/err")"
+fi
+
+# Each directory missing above the record is made, and removed again by a run
+# that fails after making it; a relative path is taken from the working
+# directory.
+rc=0
+FAKE_MKTEMP_FAIL=$real/recdir/new/tmp/record.XXXXXX "$upgrade" --record \
+    "$real/recdir/new/tmp/record" "$work/recfail/Dockerfile" >/dev/null 2>"$work/err" || rc=$?
+if [ "$rc" != 1 ] || [ -e "$work/recdir/new" ] || [ "$(<"$work/recfail/Dockerfile")" != "$df" ]; then
+    fail record-dirs-removed "exit $rc, or something was left: $(<"$work/err")"
+fi
+rc=0
+(cd "$work/recfail" && "$upgrade" --record tmp/sub/record Dockerfile) >/dev/null 2>"$work/err" ||
+    rc=$?
+said=$(printf '%s\n' "$real/recfail/Dockerfile" "" "V 1 -> 1.2.3")
+if [ "$rc" != 0 ]; then
+    fail record-dirs-relative "exit $rc, not 0: $(<"$work/err")"
+elif [ "$(cat -- "$work/recfail/tmp/sub/record" 2>&1)" != "$said" ]; then
+    fail record-dirs-relative "the record is: $(cat -- "$work/recfail/tmp/sub/record" 2>&1)"
 fi
 
 usage="Usage: upgrade [--record FILE] [DOCKERFILE [WORKFLOW...]]"
