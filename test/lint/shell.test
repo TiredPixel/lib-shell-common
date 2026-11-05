@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+#
+# Tests lint/shell in scratch directories, with the real file(1) and shellcheck
+# faked on PATH. The fake shellcheck logs its arguments, a line to a call, and
+# exits with FAKE_SHELLCHECK's status. One case puts a failing file(1) in front
+# of the real one.
+#
+# Run: test/lint/shell.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+shell=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../lint")/shell
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/badfile"
+cat >"$work/bin/shellcheck" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+args=$(printf '%q ' "$@")
+echo "${args% }" >>"$FAKE_LOG"
+exit "${FAKE_SHELLCHECK:-0}"
+EOF
+cat >"$work/badfile/file" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+echo "fake file: broken" >&2
+exit 1
+EOF
+chmod +x "$work/bin/shellcheck" "$work/badfile/file"
+
+export FAKE_LOG=$work/log
+export PATH=$work/bin:$PATH
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
+n=0
+
+# A fresh, empty project directory in $p.
+project() {
+    n=$((n + 1))
+    p=$work/p$n
+    mkdir "$p"
+}
+
+# Writes a Bash script at $p/$1.
+script() {
+    mkdir -p "$(dirname "$p/$1")"
+    printf '#!/usr/bin/env bash\necho hi\n' >"$p/$1"
+}
+
+# Writes a plain-text file at $p/$1.
+text() {
+    mkdir -p "$(dirname "$p/$1")"
+    printf 'not a script\n' >"$p/$1"
+}
+
+# Runs lint/shell in $p with the arguments from $5 on, and checks its status is
+# $2, its stdout is empty, its stderr is $3 exactly, and the shellcheck log is
+# $4 exactly. PREPATH, where set, goes in front of PATH.
+check() {
+    local name=$1 status=$2 err=$3 log=$4 rc=0
+    shift 4
+    : >"$FAKE_LOG"
+    (cd "$p" && PATH=${PREPATH:+$PREPATH:}$PATH && "$shell" "$@") \
+        >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$err" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    elif [ "$(<"$FAKE_LOG")" != "$log" ]; then
+        fail "$name" "the log is: $(<"$FAKE_LOG")"
+    fi
+}
+
+none="shell: no shell scripts found in . or bin/, so nothing was checked"
+sc="-x -P SCRIPTDIR --"
+
+# An empty directory is the nothing-found case, not a glob failure.
+project
+check empty-dir 0 "$none" ""
+
+project
+text README
+text not-a-script.sh
+check no-scripts 0 "$none" ""
+
+# An empty bin/ adds nothing and fails nothing.
+project
+script run
+mkdir "$p/bin"
+check empty-bin 0 "./run" "$sc ./run"
+
+project
+script run
+text README
+script bin/tool
+text bin/notes.sh
+check found 0 "./run"$'\n'"bin/tool" "$sc ./run bin/tool"
+
+# A colon in a name is not taken for the end of the name.
+project
+script 'a:b'
+check colon 0 "./a:b" "$sc ./a:b"
+
+project
+script gradlew
+script gradlew.bat
+script bin/tool
+check gradle-skipped 0 "bin/tool" "$sc bin/tool"
+
+# A named file is checked whether or not anything was found.
+project
+printf 'echo sourced\n' >"$p/fragment"
+check named-only 0 "fragment" "$sc fragment" fragment
+
+# A named file that looks like an option is still a file, after --.
+project
+printf 'echo sourced\n' >"$p/-x"
+check named-dash 0 "-x" "$sc -x" -x
+
+project
+printf 'echo sourced\n' >"$p/fragment"
+script run
+check named-and-found 0 "fragment"$'\n'"./run" "$sc fragment ./run" fragment
+
+project
+script run
+FAKE_SHELLCHECK=1 check shellcheck-fails 1 "./run" "$sc ./run"
+
+# A failing file(1) stops the run before shellcheck, rather than reading as no
+# scripts found.
+project
+script run
+PREPATH=$work/badfile check file-fails 1 "fake file: broken" ""
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# Tests docker/build-compose in a scratch directory with docker and git faked on
+# PATH, so nothing is built or read from a repository. The fake docker logs each
+# call's arguments, a line to a call, and exits with FAKE_BUILD's status. The
+# fake git describes HEAD as FAKE_DESCRIBE, failing as an untagged repository
+# does where that is empty, or as a broken one does where it is "broken".
+#
+# Run: test/docker/build-compose.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+dir=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/build-compose")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/project"
+cp -p -- "$fixtures/docker" "$fixtures/git" "$work/bin/"
+
+export FAKE_LOG=$work/log
+export FAKE_DESCRIBE=v1.2-3-gabcdef0
+export PATH=$work/bin:$PATH
+cd "$work/project"
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Runs docker/build-compose with the arguments after $5 and checks its status is
+# $2, docker was called as $3 has it, and its stdout and stderr are $4 and
+# $5.
+check() {
+    local name=$1 status=$2 calls=$3 out=$4 err=$5 rc=0
+    shift 5
+    : >"$FAKE_LOG"
+    "$dir/build-compose" "$@" >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ "$(<"$FAKE_LOG")" != "$calls" ]; then
+        fail "$name" "docker was called as: $(<"$FAKE_LOG")"
+    elif [ "$(<"$work/out")" != "$out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$err" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    fi
+}
+
+built="fake docker: built"
+building="fake docker: building"
+
+check built 0 "compose build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE" \
+    "$built" "$building"
+
+# Its arguments go to docker compose, ahead of build.
+check arguments 0 \
+    "compose -f a\\ b.yml build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE" \
+    "$built" "$building" -f "a b.yml"
+
+# Stamped with nothing, and git's fatal: kept off the console.
+FAKE_DESCRIBE='' check untagged 0 "compose build --build-arg GIT_DESCRIBE=" \
+    "$built" "$building"
+
+# Any other failure of git's stops the build before docker is called.
+FAKE_DESCRIBE=broken check describe-fails 1 "" "" \
+    "fatal: bad object HEAD"$'\n'"build-compose: git describe failed"
+
+FAKE_BUILD=3 check build-fails 3 \
+    "compose build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE" "$built" "$building"
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

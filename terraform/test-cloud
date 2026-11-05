@@ -7,4 +7,7 @@ terraform fmt -recursive -check -diff
 
 terraform init
 
+# Unsaved, with no deploy-cloud to apply it: Terraform Cloud did not support
+# plan -out as of February 2023. Whether it does now is in HashiCorp's
+# documentation on remote operations.
 terraform plan

@@ -1,16 +1,14 @@
 # shellcheck shell=bash
 #
-# Sourced by the docker/ scripts that stamp an image with GIT_DESCRIBE, to set
-# describe to what git describe prints. Sets no shell options, since it runs
-# under its caller's.
+# Sourced by the docker/ scripts that stamp an image with GIT_DESCRIBE even
+# where no tag describes HEAD, to set describe to what git describe prints. Sets
+# no shell options, since it runs under its caller's.
 #
 # Empty is the right stamp for a working copy with no tag to describe HEAD by,
 # so git's three no-tag failures leave describe empty. Any other failure, such
 # as no repository, has its message passed on and exits 1, with or without
-# errexit, so a build never goes ahead with an accidental empty stamp. A
-# consumer that stamps this value should refuse an empty one at the point that
-# actually stamps. git runs under LC_ALL=C, so its messages are the English ones
-# matched here.
+# errexit, so a build never goes ahead with an accidental empty stamp. git runs
+# under LC_ALL=C, so its messages are the English ones matched here.
 
 describe_err=$(mktemp) || exit 1
 

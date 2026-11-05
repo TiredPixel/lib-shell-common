@@ -32,7 +32,7 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-prog=$(basename "$0")
+prog=${0##*/}
 
 usage() {
     echo "Usage: $prog [--parts 2|3]" >&2

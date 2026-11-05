@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# Tests docker/describe, sourced in a shell with no options set and in one under
+# the strict mode its callers run, with git faked on PATH: the fake describes
+# HEAD as FAKE_GIT has it, and gives its no-tag messages in German unless LC_ALL
+# is C, as a translated git does under LANGUAGE=de, which each case sets with
+# LC_ALL unset. LANGUAGE stands in for a German locale, which bash would warn of
+# where it is not installed. Each case prints what the sourcing shell then holds
+# in describe and describe_err, and must leave its TMPDIR empty. Sourcing must
+# set none of the shell's options.
+#
+# Run: test/docker/describe.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+describe=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/describe
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/describe")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/tmp"
+cp -p -- "$fixtures/git" "$work/bin/"
+export PATH=$work/bin:$PATH
+
+# The shells that source describe are scripts in files rather than -c strings,
+# as its callers are, so $0 names the script as it names a caller.
+cp -p -- "$fixtures/source" "$fixtures/options" "$work/"
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Sources describe with FAKE_GIT set to $3, in a bash with no options or, where
+# $2 is strict, under the callers' strict mode, with TMPDIR $4, and checks its
+# status is $5, its stdout $6 and its stderr $7, and that TMPDIR is left empty.
+check() {
+    local name=$1 mode=$2 fake=$3 tmp=$4 status=$5 out=$6 err=$7 rc=0
+    local left
+    env -u LC_ALL LANGUAGE=de FAKE_GIT="$fake" TMPDIR="$tmp" \
+        bash --norc --noprofile "$work/source" "$mode" "$describe" \
+        >"$work/out" 2>"$work/err" || rc=$?
+    left=$(find "$work/tmp" -mindepth 1)
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ "$(<"$work/out")" != "$out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$err" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    fi
+    if [ -n "$left" ]; then
+        fail "$name" "left behind: $left"
+        find "$work/tmp" -mindepth 1 -delete
+    fi
+}
+
+if no_tmpdir=$(env -u LC_ALL LANGUAGE=de TMPDIR="$work/missing" mktemp 2>&1); then
+    echo "${0##*/}: missing-tmpdir: mktemp made a file in a missing directory" >&2
+    exit 1
+fi
+
+for mode in plain strict; do
+    check "$mode-tagged" "$mode" tagged "$work/tmp" 0 "v1.2-3-gabcdef0|unset" ""
+    # A warning beside a description is passed on.
+    check "$mode-warned" "$mode" warned "$work/tmp" 0 "v1.2|unset" \
+        "warning: tag 'v1.2' is externally known as 'v1.3'"
+    # Each of git's no-tag failures leaves describe empty, silently.
+    for fake in no-names no-annotated no-tags; do
+        check "$mode-$fake" "$mode" "$fake" "$work/tmp" 0 "|unset" ""
+    done
+    # Any other failure is passed on, and exits 1 before the caller goes on.
+    check "$mode-broken" "$mode" broken "$work/tmp" 1 "" \
+        "fatal: not a git repository (or any of the parent directories): .git"$'\n'"source: git describe failed"
+    check "$mode-mentions" "$mode" mentions "$work/tmp" 1 "" \
+        "fatal: bad object: No names found, cannot describe anything."$'\n'"source: git describe failed"
+    # No temporary file for git's stderr: mktemp says why, in its own words
+    # here, and git never runs.
+    check "$mode-no-tmpdir" "$mode" broken "$work/missing" 1 "" "$no_tmpdir"
+done
+
+# Sourcing changes none of the shell's options.
+FAKE_GIT=tagged TMPDIR=$work/tmp bash --norc --noprofile "$work/options" \
+    "$describe" ||
+    fail options "sourcing changed the shell's options"
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

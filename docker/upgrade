@@ -58,16 +58,16 @@
 # through sh, whatever USER or ENTRYPOINT the image sets, under bash, which apk
 # adds first on Alpine, where it is missing. lock-resolve uses the image's own
 # pip or npm where it runs, on any distribution, and otherwise installs it with
-# the distribution's own manager: apt-get on Debian, Ubuntu and those like
-# them; dnf, or microdnf where dnf is missing, on Fedora, RHEL and those like
-# them; and apk on Alpine. A pip too old to report a dry run is upgraded in the
+# the distribution's own manager: apt-get on Debian, Ubuntu and those like them;
+# dnf, or microdnf where dnf is missing, on Fedora, RHEL and those like them;
+# and apk on Alpine. A pip too old to report a dry run is upgraded in the
 # container. Any other distribution whose image lacks the tool, an image that
 # lacks it and has no /etc/os-release, a RHEL-like image with neither dnf nor
 # microdnf, or an image with neither bash nor apk, fails the run. A requirement
 # pip resolves whose marker names platform_machine, platform_release or
 # platform_version fails the run, since the lock would not hold on another
-# architecture or kernel, unless the marker also requires an extra, with and
-# and no or, that nothing resolved asks for. sys_platform, platform_system and
+# architecture or kernel, unless the marker also requires an extra, with and and
+# no or, that nothing resolved asks for. sys_platform, platform_system and
 # os_name are passed over, since every image is Linux, whatever its
 # architecture.
 #
@@ -92,28 +92,28 @@
 # since the TRACK USES line says what it follows and a tag beside it would go
 # stale. Lines are read as text, not parsed as YAML, so a uses: line inside a
 # block scalar, such as a run: body, is re-pinned too, and any other line
-# holding uses: that names a covered OWNER/REPO fails rather than being passed
-# over. Workflows are re-pinned only when named, as by Makefile's upgrade-pre.
+# holding uses:, a comment line aside, that names a covered OWNER/REPO fails
+# rather than being passed over. Workflows are re-pinned only when named, as by
+# Makefile's upgrade-pre.
 #
-# A workflow is never written, since what may change one is not always what
-# runs this. Each must sit in a .github/workflows directory, and what it
-# becomes, where anything in it moves, is proposed as the file of its name in
-# the workflows.new directory beside that one, made where it is missing, to be
+# A workflow is never written, since what may change one is not always what runs
+# this. Each must sit in a .github/workflows directory, and what it becomes,
+# where anything in it moves, is proposed as the file of its name in the
+# workflows.new directory beside that one, made where it is missing, to be
 # reviewed and moved into place. A proposal already there for a named workflow
 # fails the run.
 #
 # A comment line that reads as a mistyped TRACK line fails, as does a TRACK line
-# of a kind its file does not hold. Before anything else is read, the FREEZE
-# lines that TRACK lines replaced, # FROMFREEZE, # ARGFREEZE and # USESFREEZE,
-# and the TRACK ARG NAME pypi: and npm: pins that TRACK LOCK replaced, each as
-# well as comment lines that read as mistyped ones, fail the run: grep lists
-# every one in every file named.
+# of a kind its file does not hold. Before anything else is read, # FROMFREEZE,
+# # ARGFREEZE and # USESFREEZE lines, and TRACK ARG NAME pypi: and npm: pins,
+# which take a TRACK LOCK line instead, each as well as comment lines that read
+# as mistyped ones, fail the run: grep lists every one in every file named.
 #
 # Before any lookup, lint/dockerfile-locks checks the Dockerfile. Where it
 # refuses a RUN, its FILE:LINE: lines stand on stderr above a warning and the
 # upgrade carries on, since a project's own lint runs lint/dockerfile-locks,
-# which fails on them; where the lint itself fails, with any status but 1,
-# such as 3 where jq fails to read an exec-form RUN, so does the run.
+# which fails on them; where the lint itself fails, with any status but 1, such
+# as 3 where jq fails to read an exec-form RUN, so does the run.
 #
 # FROM and ARG are matched in any case, as Docker reads them, and on logical
 # lines, with continued lines joined at the escape character, which a leading
@@ -130,11 +130,11 @@
 # sha256 pin, a TRACK LOCK without stage= in a file without exactly one
 # TRACK FROM, or a file named twice. Every pin in every file is checked before
 # any is looked up, and no file is written until every pin has been resolved;
-# each that changes, a lock made, grown or shrunk included, is then written to
-# a temporary file beside where it goes, each directory missing above it made,
-# and only once all are written is each moved into place, through any symbolic
-# link and keeping its file's mode, or at 0644 where it is new. A run that
-# fails removes every temporary file and every directory it made.
+# each that changes, a lock made, grown or shrunk included, is then written to a
+# temporary file beside where it goes, each directory missing above it made, and
+# only once all are written is each moved into place, through any symbolic link
+# and keeping its file's mode, or at 0644 where it is new. A run that fails
+# removes every temporary file and every directory it made that is left empty.
 #
 # With --record, FILE is written last, for docker/upgrade-commit: the path of
 # each file written, one to a line, then a blank line, then a line for each
@@ -151,10 +151,10 @@
 # reads otherwise, or the lock changed and no move is itemised, the line is
 # LOCK NAME: files changed. Where nothing moved, it is empty. Since the commit
 # takes each path whole, the run first fails where FILE holds an earlier run's
-# record, or where the Dockerfile, followed through any symbolic link, or its
-# BASENAME.lock directory differs from what git has committed, or where the
-# Dockerfile is a symbolic link into another repository, such as a submodule,
-# where the commit cannot add it.
+# record that is not empty, or where the Dockerfile, followed through any
+# symbolic link, or its BASENAME.lock directory differs from what git has
+# committed, or where the Dockerfile is a symbolic link into another repository,
+# such as a submodule, where the commit cannot add it.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -191,10 +191,12 @@ refuse_at() {
     exit 1
 }
 
-[ -f "$dockerfile" ] || die "no such file"
+[ -e "$dockerfile" ] || die "no such file"
+[ -f "$dockerfile" ] || die "not a regular file"
 for w in "${!workflows[@]}"; do
     workflow=${workflows[$w]}
-    [ -f "$workflow" ] || refuse "$workflow" "no such file"
+    [ -e "$workflow" ] || refuse "$workflow" "no such file"
+    [ -f "$workflow" ] || refuse "$workflow" "not a regular file"
     [ ! "$workflow" -ef "$dockerfile" ] || refuse "$workflow" "is named twice"
     for other in "${workflows[@]:0:w}"; do
         [ ! "$workflow" -ef "$other" ] || refuse "$workflow" "is named twice"
@@ -271,8 +273,8 @@ if [ -n "$record" ]; then
         refuse "$lockdir" "has changes not committed; commit or stash them first"
 fi
 
-# A comment line naming a TRACK kind, in any case, joined by any blanks, - or _
-# and with arg as args, read lowercased.
+# A comment line naming a TRACK kind, with or without a trailing s, in any case,
+# joined by any blanks, - or _, read lowercased.
 track='^[[:space:]]*#[[:space:]]*track[-_[:space:]]*(from|arg|uses|lock)s?([^a-z0-9_]|$)'
 
 mapfile -t lines <"$dockerfile"
@@ -332,6 +334,13 @@ heredoc="^[0-9]*<<(-?)(\"($delimiter)\"|'($delimiter)'|($delimiter))\$"
 froms=()
 args=()
 locks=()
+# The line each TRACK line was first read from, keyed by its kind, a space and
+# the rest of the line, for refusals naming it.
+declare -A track_at=()
+# Notes that TRACK line $1 is the current line, unless it was read before.
+read_at() {
+    [ -n "${track_at[$1]+set}" ] || track_at[$1]=$((i + 1))
+}
 logical=()
 ends=()
 docs=()
@@ -348,9 +357,18 @@ for i in "${!lines[@]}"; do
     fi
     if [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]]; then
         case $line in
-        "# TRACK FROM "*) froms+=("${line#"# TRACK FROM "}") ;;
-        "# TRACK ARG "*) args+=("${line#"# TRACK ARG "}") ;;
-        "# TRACK LOCK "*) locks+=("${line#"# TRACK LOCK "}") ;;
+        "# TRACK FROM "*)
+            froms+=("${line#"# TRACK FROM "}")
+            read_at "FROM ${froms[-1]}"
+            ;;
+        "# TRACK ARG "*)
+            args+=("${line#"# TRACK ARG "}")
+            read_at "ARG ${args[-1]}"
+            ;;
+        "# TRACK LOCK "*)
+            locks+=("${line#"# TRACK LOCK "}")
+            read_at "LOCK ${locks[-1]}"
+            ;;
         *)
             [[ "${line,,}" =~ $track ]] || continue
             case ${BASH_REMATCH[1]} in
@@ -403,8 +421,8 @@ fi
 
 if [ ${#froms[@]} -eq 0 ] && [ ${#args[@]} -eq 0 ] &&
     [ ${#locks[@]} -eq 0 ]; then
-    echo "${0##*/}: $dockerfile: no # TRACK FROM, # TRACK ARG or" \
-        "# TRACK LOCK line, so there is nothing to re-pin" >&2
+    say "$dockerfile: no # TRACK FROM, # TRACK ARG or" \
+        "# TRACK LOCK line, so there is nothing to re-pin"
 fi
 
 # Each pin is checked and its lines found before any is looked up. targets holds
@@ -424,7 +442,8 @@ for data in "${froms[@]}"; do
     # A tag holding / is a registry's port, as in localhost:5000/x, with no tag.
     if [ -z "$repo" ] || [ -z "$tag" ] || [ "$repo" = "$data" ] ||
         [[ "$tag" == */* ]]; then
-        die "TRACK FROM $data is not REPO:TAG"
+        refuse_at "$dockerfile" "${track_at["FROM $data"]}" \
+            "TRACK FROM $data is not REPO:TAG"
     fi
     [ -z "${targets["FROM $repo"]+set}" ] ||
         die "TRACK FROM $repo is pinned twice"
@@ -522,16 +541,18 @@ declare -A resolved=()
 
 forms="NAME github:OWNER/PROJECT or NAME sha256:ASSET_URL [CHECKSUMS_URL]"
 sources="github:OWNER/PROJECT or sha256:ASSET_URL [CHECKSUMS_URL]"
-url='https://[^[:space:]]*[^/[:space:]]'
+https_url='https://[^[:space:]]*[^/[:space:]]'
 for data in "${args[@]}"; do
     name=${data%% *}
     source=${data#* }
     if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [ "$source" = "$data" ]; then
-        die "TRACK ARG $data is not $forms"
+        refuse_at "$dockerfile" "${track_at["ARG $data"]}" \
+            "TRACK ARG $data is not $forms"
     fi
     [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
-        [[ "$source" =~ ^sha256:$url(\ $url)?$ ]] ||
-        die "TRACK ARG $name: $source is not $sources"
+        [[ "$source" =~ ^sha256:$https_url(\ $https_url)?$ ]] ||
+        refuse_at "$dockerfile" "${track_at["ARG $data"]}" \
+            "TRACK ARG $name: $source is not $sources"
     [ -z "${kinds[$name]+set}" ] || die "TRACK ARG $name is pinned twice"
     kinds[$name]=${source%%:*}
     scan_arg "$name" "TRACK ARG $name"
@@ -560,8 +581,8 @@ for data in "${args[@]}"; do
     done
 done
 
-# Sets key to $1 in PEP 503's normal form, lower case with each run of - _ .
-# as one -, as pip compares names.
+# Sets key to $1 in PEP 503's normal form, lower case with each run of - _ . as
+# one -, as pip compares names.
 normalise() {
     key=${1,,}
     key=${key//[_.]/-}
@@ -597,7 +618,8 @@ for data in "${locks[@]}"; do
     read -r -a words <<<"$data"
     name=${words[0]:-}
     if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || [ ${#words[@]} -lt 2 ]; then
-        die "TRACK LOCK $data is not $lockforms"
+        refuse_at "$dockerfile" "${track_at["LOCK $data"]}" \
+            "TRACK LOCK $data is not $lockforms"
     fi
     [ -z "${lock_kinds[$name]+set}" ] || die "TRACK LOCK $name is named twice"
     kind=""
@@ -625,8 +647,8 @@ for data in "${locks[@]}"; do
             this=npm
             package=${spec#npm:}
             version=""
-            # An @ after the first character holds a version back; a leading
-            # one opens a scope.
+            # An @ after the first character holds a version back; a leading one
+            # opens a scope.
             if [[ "${package:1}" == *@* ]]; then
                 version=${package##*@}
                 package=${package%@*}
@@ -655,10 +677,10 @@ done
 
 # Each FROM instruction's image as written, keyed by the index of its line, and
 # the index of each stage's, keyed by its name lowercased, the first where two
-# share one. global holds the value of each ARG set before the first FROM,
-# keyed by NAME, and global_ok 1 for each whose value is a literal, as one
-# FROM may take: with no quote, $ or escape, whole or within one pair of
-# matching quotes, which Docker strips.
+# share one. global holds the value of each ARG set before the first FROM, keyed
+# by NAME, and global_ok 1 for each whose value is a literal, as one FROM may
+# take: with no quote, $ or escape, whole or within one pair of matching quotes,
+# which Docker strips.
 from_image=()
 declare -A stage_at=()
 declare -A global=()
@@ -705,9 +727,9 @@ for i in "${!logical[@]}"; do
 done
 
 # Sets expanded to $1 with each $VAR and ${VAR} in it given VAR's new value
-# where a TRACK ARG pins it, and otherwise the value of the ARG before the
-# first FROM that sets it; returns 1 where a variable has neither, or $ opens
-# any other form.
+# where a TRACK ARG pins it, and otherwise the value of the ARG before the first
+# FROM that sets it; returns 1 where a variable has neither, or $ opens any
+# other form.
 expand() {
     local rest=$1 var
     expanded=""
@@ -773,7 +795,8 @@ find_stages
 
 # Sets versions to each package's version in package-lock.json $1, keyed by its
 # path there, and roots to the packages its root depends on, one to a line;
-# returns 1 where $1 lists no packages, each with a version.
+# returns 1 where $1 has no packages object, or a package there without a
+# version.
 read_npm_lock() {
     local entries path version
     entries=$(jq -r '
@@ -801,6 +824,8 @@ read_npm_lock() {
 # depended on, one to a line, keyed by NAME. The old lock is read only as this
 # writes it, and was_unread holds 1, keyed by NAME, where it reads otherwise.
 declare -A lock_file=()
+# Each lock's file names, space-separated and in order, keyed by NAME.
+declare -A lock_files=()
 declare -A was_v=()
 declare -A was_keys=()
 declare -A was_roots=()
@@ -821,8 +846,9 @@ for name in "${lock_names[@]}"; do
     else
         files=(package.json package-lock.json)
     fi
-    # A link would carry the write out of the lock's directory, even out of
-    # the repository, so none is followed.
+    lock_files[$name]=${files[*]}
+    # A link would carry the write out of the lock's directory, even out of the
+    # repository, so none is followed.
     for path in "$lockdir" "$lockdir/$name" "${files[@]/#/$lockdir/$name/}"; do
         [ ! -L "$path" ] ||
             refuse "$path" "is a symbolic link, which a lock is never written" \
@@ -869,10 +895,10 @@ for name in "${lock_names[@]}"; do
 done
 
 # Each workflow's covered uses: lines, by the index of the workflow in w_of and
-# of the line in i_of, with what the line keeps before the reference in
-# head_of, the action named, without its REF, in action_of, the REF in ref_of
-# and the OWNER/REPO@TAG it follows in pin_of. pins lists each OWNER/REPO@TAG
-# once, in the order first named, and pin_file the workflow that first names it.
+# of the line in i_of, with what the line keeps before the reference in head_of,
+# the action named, without its REF, in action_of, the REF in ref_of and the
+# OWNER/REPO@TAG it follows in pin_of. pins lists each OWNER/REPO@TAG once, in
+# the order first named, and pin_file the workflow that first names it.
 w_of=()
 i_of=()
 head_of=()
@@ -882,9 +908,9 @@ pin_of=()
 pins=()
 declare -A pin_file=()
 
-# The current workflow's TRACK USES tags and OWNER/REPO as written, keyed by
-# the lowercased OWNER/REPO, since GitHub reads either in any case, and whether
-# each covers a uses: line; order lists each key in the order pinned.
+# The current workflow's TRACK USES tags and OWNER/REPO as written, keyed by the
+# lowercased OWNER/REPO, since GitHub reads either in any case, and whether each
+# covers a uses: line; order lists each key in the order pinned.
 declare -A follows=()
 declare -A named=()
 declare -A covers=()
@@ -896,7 +922,7 @@ uses='^([[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+)([^[:space:]#][^[:space:]]
 uses+='([[:space:]]+#.*)?[[:space:]]*$'
 action='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(/[^@[:space:]]+)?@[^@[:space:]]+$'
 # A comment naming a version, such as v7 or 7.0.1, in any number of words.
-version='(^|[^[:alnum:]])(v[0-9]+|[0-9]+\.[0-9]+)([^[:alnum:]]|$)'
+version_comment='(^|[^[:alnum:]])(v[0-9]+|[0-9]+\.[0-9]+)([^[:alnum:]]|$)'
 for w in "${!workflows[@]}"; do
     workflow=${workflows[$w]}
     mapfile -t wlines <"$workflow"
@@ -918,7 +944,8 @@ for w in "${!workflows[@]}"; do
         fi
         data=${line#"# TRACK USES "}
         [[ "$data" =~ $trackuses ]] ||
-            refuse "$workflow" "TRACK USES $data is not OWNER/REPO@TAG"
+            refuse_at "$workflow" $((i + 1)) \
+                "TRACK USES $data is not OWNER/REPO@TAG"
         repo=${BASH_REMATCH[1]}
         [ -z "${follows[${repo,,}]+set}" ] ||
             refuse "$workflow" "TRACK USES $repo is pinned twice"
@@ -927,8 +954,8 @@ for w in "${!workflows[@]}"; do
         order+=("${repo,,}")
     done
     [ ${#order[@]} -gt 0 ] ||
-        echo "${0##*/}: $workflow: no # TRACK USES line, so there is" \
-            "nothing to re-pin" >&2
+        say "$workflow: no # TRACK USES line, so there is" \
+            "nothing to re-pin"
     for i in "${!wlines[@]}"; do
         line=${wlines[$i]}
         [[ "$line" == *uses:* ]] || continue
@@ -954,7 +981,7 @@ for w in "${!workflows[@]}"; do
                     j=$((j - 1))
                 done
                 if [ "$j" -ge 0 ] && [[ "${wlines[j]}" == "$indent#"* ]] &&
-                    [[ "${wlines[j]}" =~ $version ]]; then
+                    [[ "${wlines[j]}" =~ $version_comment ]]; then
                     refuse_at "$workflow" $((i + 1)) "uses: $reference has a" \
                         "version comment above it; TRACK USES $pin says what" \
                         "it follows"
@@ -1135,8 +1162,8 @@ listing='
     | @tsv'
 # Each requirement in pip's report whose marker names the machine or kernel, so
 # another architecture would resolve it otherwise, as PACKAGE: REQUIREMENT. One
-# gated on an extra, only by extra == "EXTRA" and on nothing else but by and,
-# is passed over unless a requirement resolved asks for that extra, as
+# whose marker also requires an extra, each as extra == "EXTRA", with and and no
+# or, is passed over unless a requirement resolved asks for one of them, as
 # NAME[EXTRA].
 # shellcheck disable=SC2016 # jq's own $variables, not the shell's
 markers='
@@ -1227,7 +1254,8 @@ for name in "${lock_names[@]}"; do
             die "TRACK LOCK $name: lock-resolve gave no pip report"
         gated=$(jq -r "$markers" <<<"$report")
         if [ -n "$gated" ]; then
-            printf '%s\n' "$gated" >&2
+            mapfile -t gated_lines <<<"$gated"
+            printf '%s\n' "${gated_lines[@]/#/${0##*/}: }" >&2
             die "TRACK LOCK $name: each requirement above turns on the" \
                 "platform, so its lock would not hold on another architecture"
         fi
@@ -1420,12 +1448,12 @@ stage() {
     staged=""
     if [ -e "$source" ]; then
         mapfile -t now <"$source"
-        if [ ${#now[@]} = ${#new[@]} ]; then
+        if [ ${#now[@]} -eq ${#new[@]} ]; then
             for i in "${!new[@]}"; do
                 [ "${new[$i]}" = "${now[$i]}" ] || break
             done
             # The loop ran to its end, or new is empty.
-            [ ${#new[@]} = 0 ] || [ "${new[$i]}" != "${now[$i]}" ] || return 0
+            [ ${#new[@]} -eq 0 ] || [ "${new[$i]}" != "${now[$i]}" ] || return 0
         fi
     fi
     dir=${target%/*}
@@ -1459,11 +1487,7 @@ stage "$target" "$target"
 declare -A is_named=()
 for name in "${lock_names[@]}"; do
     read -r -a named_here <<<"${packages_of[$name]}"
-    if [ "${lock_kinds[$name]}" = pypi ]; then
-        files=(requirements.txt)
-    else
-        files=(package.json package-lock.json)
-    fi
+    read -r -a files <<<"${lock_files[$name]}"
     written=""
     for file in "${files[@]}"; do
         mapfile -t new <<<"${lock_new[$name$'\t'$file]}"
@@ -1478,8 +1502,8 @@ for name in "${lock_names[@]}"; do
         continue
     fi
     # Each package named, now or, in an npm lock's root, before, as
-    # LOCK NAME PACKAGE OLD -> NEW, then how many others moved, each keyed as
-    # in now_v.
+    # LOCK NAME PACKAGE OLD -> NEW, then how many others moved, each keyed as in
+    # now_v.
     is_named=()
     lock_moves=()
     for package in "${named_here[@]}"; do

@@ -12,9 +12,9 @@ out=$PWD/tmp/coverage
 
 # Checked here as bin/test checks them, so a bad name leaves the last report.
 for t in "$@"; do
-    if ! [[ $t =~ ^[^/]+/[^/]+\.test$ ]]; then
-        printf 'bin/coverage: %q is not a */*.test\n' "$t" >&2
-        echo "Usage: bin/coverage [DIR/NAME.test...]" >&2
+    if ! [[ $t =~ ^test/[^/]+/[^/]+\.test$ ]]; then
+        printf 'bin/coverage: %q is not a test/*/*.test\n' "$t" >&2
+        echo "Usage: bin/coverage [test/DIR/NAME.test...]" >&2
         exit 2
     fi
 done

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+args=$(printf '%q ' "$@")
+echo "${args% }" >>"$FAKE_LOG"
+case $1 in
+build)
+    echo "fake docker: building" >&2
+    echo "fake docker: built"
+    exit "${FAKE_BUILD:-0}"
+    ;;
+push)
+    echo "fake docker: pushed $2"
+    exit "${FAKE_PUSH:-0}"
+    ;;
+*) exit 2 ;;
+esac

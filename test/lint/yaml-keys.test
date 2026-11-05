@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+#
+# Tests lint/yaml-keys on YAML files in a scratch directory, with the real yq
+# and diff, giving it each set of paths NUL-separated on stdin as bin/lint does.
+# Two cases put a stand-in on PATH in front of one of them: a yq that drains its
+# stdin first, as any command could, and a diff that fails as on an I/O error.
+#
+# Run: test/lint/yaml-keys.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+keys=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../lint")/yaml-keys
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/y"
+printf 'a: 1\nb:\n  c: 2\n  d: 3\n' >"$work/y/sorted.yml"
+printf 'b: 1\na: 2\n' >"$work/y/top.yml"
+printf 'a:\n  d: 1\n  c: 2\n' >"$work/y/nested.yml"
+printf 'b: 1\na: 2\n' >"$work/y/with space.yml"
+printf 'a: [\n' >"$work/y/invalid.yml"
+
+real_yq=$(command -v yq)
+mkdir "$work/drain" "$work/baddiff"
+printf '#!/usr/bin/env bash\nset -Eeuo pipefail\nshopt -s inherit_errexit failglob\ncat >/dev/null\nexec %q "$@"\n' \
+    "$real_yq" >"$work/drain/yq"
+printf '#!/usr/bin/env bash\nset -Eeuo pipefail\nshopt -s inherit_errexit failglob\necho "fake diff: read error" >&2\nexit 2\n' \
+    >"$work/baddiff/diff"
+chmod +x "$work/drain/yq" "$work/baddiff/diff"
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
+
+# Runs yaml-keys on the paths from $5 on, relative to $work/y, with $PREPATH,
+# where set, in front of PATH, and checks its status is $2, its stdout is $3
+# exactly and its stderr is $4 exactly.
+check() {
+    local name=$1 status=$2 out=$3 err=$4 rc=0
+    shift 4
+    (
+        cd "$work/y" && PATH=${PREPATH:+$PREPATH:}$PATH &&
+            printf '%s\0' "$@" | "$keys"
+    ) >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ "$(<"$work/out")" != "$out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$err" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    fi
+}
+
+hint="yaml-keys: rewrite with yq -i -P 'sort_keys(..)'"
+top_diff="--- top.yml
++++ top.yml (sorted)
+@@ -1,2 +1,2 @@
+-b: 1
+ a: 2
++b: 1"
+nested_diff="--- nested.yml
++++ nested.yml (sorted)
+@@ -1,3 +1,3 @@
+ a:
+-  d: 1
+   c: 2
++  d: 1"
+space_diff="--- with space.yml
++++ with space.yml (sorted)
+@@ -1,2 +1,2 @@
+-b: 1
+ a: 2
++b: 1"
+
+check sorted 0 "" "yaml-keys: checked 1 file(s)" sorted.yml
+
+check unsorted-top 1 "$top_diff" \
+    "yaml-keys: top.yml: keys not sorted"$'\n'"yaml-keys: checked 1 file(s)"$'\n'"$hint" \
+    top.yml
+
+check unsorted-nested 1 "$nested_diff" \
+    "yaml-keys: nested.yml: keys not sorted"$'\n'"yaml-keys: checked 1 file(s)"$'\n'"$hint" \
+    nested.yml
+
+# Every offender is named, not only the first, and a sorted one is not.
+check every-offender 1 "$top_diff"$'\n'"$space_diff" \
+    "yaml-keys: top.yml: keys not sorted"$'\n'"yaml-keys: with space.yml: keys not sorted"$'\n'"yaml-keys: checked 3 file(s)"$'\n'"$hint" \
+    top.yml sorted.yml "with space.yml"
+
+# A file yq cannot parse is named as unreadable, not as unsorted, after yq's own
+# error, and the others are still checked. The rewrite hint is only for an
+# unsorted file.
+yq_err=$(cd "$work/y" && yq -P 'sort_keys(..)' invalid.yml 2>&1) || true
+check invalid 1 "" \
+    "$yq_err"$'\n'"yaml-keys: invalid.yml: yq could not read it, so its keys were not checked"$'\n'"yaml-keys: checked 2 file(s)" \
+    invalid.yml sorted.yml
+
+check invalid-and-unsorted 1 "$top_diff" \
+    "$yq_err"$'\n'"yaml-keys: invalid.yml: yq could not read it, so its keys were not checked"$'\n'"yaml-keys: top.yml: keys not sorted"$'\n'"yaml-keys: checked 2 file(s)"$'\n'"$hint" \
+    invalid.yml top.yml
+
+# A command inside the loop that reads stdin cannot eat the paths still to come.
+PREPATH=$work/drain check stdin-drained 1 "$top_diff"$'\n'"$space_diff" \
+    "yaml-keys: top.yml: keys not sorted"$'\n'"yaml-keys: with space.yml: keys not sorted"$'\n'"yaml-keys: checked 3 file(s)"$'\n'"$hint" \
+    top.yml sorted.yml "with space.yml"
+
+# diff failing other than on a difference stops the run with its status.
+PREPATH=$work/baddiff check diff-fails 2 "" "fake diff: read error" \
+    sorted.yml top.yml
+
+# An empty set is reported, not refused.
+rc=0
+(cd "$work/y" && "$keys" </dev/null) >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 0 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "yaml-keys: checked 0 file(s)" ]; then
+    fail none "exit $rc, stderr: $(<"$work/err")"
+fi
+
+# A path given as an argument is refused, not ignored while stdin is read.
+rc=0
+(cd "$work/y" && "$keys" top.yml </dev/null) >"$work/out" 2>"$work/err" ||
+    rc=$?
+if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "Usage: yaml-keys <PATHS (NUL-separated)" ]; then
+    fail argument "exit $rc, stderr: $(<"$work/err")"
+fi
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

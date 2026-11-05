@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+#
+# Tests bin/files in scratch trees, with find faked on PATH, each sourcing it
+# under strict mode as bin/format and bin/lint do, and printing the two sets it
+# finds, a line to a file: "shell f" for each shell file, then "yaml f" for each
+# YAML file.
+#
+# Run: test/bin/files.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+files=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../bin")/files
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+cat >"$work/show" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+# The fake find signals this shell, not its own parent, which is the background
+# job bin/files runs it in.
+export SHOW_PID=$$
+source "${FILES:-bin/files}"
+printf 'shell %s\n' "${shell_files[@]}"
+printf 'yaml %s\n' "${yaml_files[@]}"
+EOF
+chmod +x "$work/show"
+
+# Fails as a broken find would where its first argument is FAKE_FIND_FAIL, or
+# where FAKE_FIND_TMP_EMPTY is set and TMPDIR holds anything; sends TERM to show
+# where FAKE_FIND_TERM is set; and is the real find otherwise.
+mkdir "$work/path"
+real_find=$(command -v find)
+cat >"$work/path/find" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ "\$1" = "\${FAKE_FIND_FAIL:-}" ]; then
+    echo "fake find: failed" >&2
+    exit 1
+fi
+if [ -n "\${FAKE_FIND_TMP_EMPTY:-}" ] && [ -n "\$(ls -A -- "\$TMPDIR")" ]; then
+    echo "fake find: TMPDIR holds a file" >&2
+    exit 1
+fi
+if [ -n "\${FAKE_FIND_TERM:-}" ]; then
+    kill -TERM "\$SHOW_PID"
+    exit 1
+fi
+exec $(printf %q "$real_find") "\$@"
+EOF
+chmod +x "$work/path/find"
+export PATH=$work/path:$PATH
+
+dirs=(ansible docker github lint project terraform bin test/ansible test/bin
+    test/docker test/github test/lint test/project)
+
+# A bash script in the fixtures, below a test's own directory, as bin/files
+# reaches them at any depth.
+fixture=test/fixtures/docker/t/a
+
+# Makes a tree at $work/$1 with one bash script in each listed directory and the
+# fixture, a copy of bin/files and an empty docker-compose.yml, and prints its
+# path.
+tree() {
+    local t=$work/$1 d
+    mkdir "$t"
+    for d in "${dirs[@]}" "${fixture%/*}"; do
+        mkdir -p "$t/$d"
+    done
+    for d in "${dirs[@]}"; do
+        printf '#!/usr/bin/env bash\ntrue\n' >"$t/$d/a"
+    done
+    printf '#!/usr/bin/env bash\ntrue\n' >"$t/$fixture"
+    cp -- "$files" "$t/bin/files"
+    : >"$t/docker-compose.yml"
+    echo "$t"
+}
+
+# The shell lines for a tree as tree made it, with $1 inserted after the docker/
+# line and $2 in place of the fixture's; bin/files, sourced, is found by its
+# shell=bash directive.
+shells() {
+    local d
+    for d in "${dirs[@]}"; do
+        echo "shell $d/a"
+        if [ "$d" = docker ] && [ -n "${1:-}" ]; then
+            echo "$1"
+        elif [ "$d" = bin ]; then
+            echo "shell bin/files"
+        fi
+    done
+    echo "${2:-shell $fixture}"
+}
+
+# The test's own stderr, which a case silencing bash's report of a signal does
+# not silence.
+exec 4>&2
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&4
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
+
+# Runs show in tree $2 and checks its status is $3, its stdout is $4, and its
+# stderr holds $5 where that is not empty.
+check() {
+    local name=$1 t=$2 status=$3 out=$4 said=$5 rc=0
+    (cd "$t" && "$work/show") >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ "$(<"$work/out")" != "$out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
+        fail "$name" "stderr lacks '$said': $(<"$work/err")"
+    fi
+}
+
+# Only a bash shebang is taken, in either form, with or without arguments, or a
+# first line of ShellCheck's shell=bash directive alone, and only directly in
+# the directory; the workflow directory is absent.
+t=$(tree shebangs)
+printf '#!/bin/bash\n' >"$t/docker/b"
+printf '#!/bin/bash -e\n' >"$t/docker/b2"
+printf '# shellcheck shell=bash\ntrue\n' >"$t/docker/b3"
+printf '# shellcheck shell=sh\n' >"$t/docker/h"
+printf '# shellcheck shell=bash x\n' >"$t/docker/i"
+printf 'true\n# shellcheck shell=bash\n' >"$t/docker/j"
+printf '#!/bin/sh\n' >"$t/docker/c"
+printf 'echo no shebang\n#!/usr/bin/env bash\n' >"$t/docker/d"
+printf '#!/usr/bin/env bashful\n' >"$t/docker/e"
+: >"$t/docker/f"
+mkdir "$t/docker/sub"
+printf '#!/usr/bin/env bash\n' >"$t/docker/sub/g"
+check shebangs "$t" 0 "$(shells "shell docker/b"$'\n'"shell docker/b2"$'\n'"shell docker/b3")"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+
+# The fixtures are read at any depth, by the same first-line rule.
+t=$(tree fixtures)
+printf '#!/usr/bin/env bash\n' >"$t/test/fixtures/b"
+printf '# shellcheck shell=bash\n' >"$t/test/fixtures/docker/t/c"
+mkdir -p "$t/test/fixtures/docker/u/v"
+printf '#!/bin/bash\n' >"$t/test/fixtures/docker/u/v/d"
+printf '#!/bin/sh\n' >"$t/test/fixtures/docker/u/e"
+: >"$t/test/fixtures/docker/u/f"
+check fixtures "$t" 0 "$(shells "" "shell test/fixtures/b"$'\n'"shell $fixture"$'\n'"shell test/fixtures/docker/t/c"$'\n'"shell test/fixtures/docker/u/v/d")"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+
+# Both workflow directories are read, only for *.yml and *.yaml directly in
+# them, the two suffixes GitHub runs a workflow under (GitHub's workflow syntax
+# reference, docs.github.com, checked 2026-11); a directory whose name only
+# begins like theirs is not.
+t=$(tree workflows)
+mkdir -p "$t/.github/workflows" "$t/.github/workflows.new/sub" "$t/.github/x" \
+    "$t/.github/workflows-old"
+: >"$t/.github/workflows-old/g.yml"
+: >"$t/.github/workflows/b.yml"
+: >"$t/.github/workflows/c.yaml"
+: >"$t/.github/workflows/f.json"
+: >"$t/.github/workflows.new/a.yml"
+: >"$t/.github/workflows.new/sub/d.yml"
+: >"$t/.github/x/e.yml"
+check workflows "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml"$'\n'"yaml .github/workflows.new/a.yml"$'\n'"yaml .github/workflows/b.yml"$'\n'"yaml .github/workflows/c.yaml" ""
+
+# .github/ present with no workflow directory in it.
+t=$(tree github-empty)
+mkdir "$t/.github"
+check github-empty "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+
+for d in "${dirs[@]}"; do
+    t=$(tree "missing-${d//\//-}")
+    # Sourced from outside the tree, since bin/ may be the one missing.
+    rm -r -- "${t:?}/$d"
+    FILES=$files check "missing-${d//\//-}" "$t" 1 "" "bin/files: $d/ is missing"
+done
+
+t=$(tree missing-test-fixtures)
+rm -r -- "${t:?}/test/fixtures"
+check missing-test-fixtures "$t" 1 "" "bin/files: test/fixtures/ is missing"
+
+# Bash scripts elsewhere do not count for the fixtures.
+t=$(tree no-scripts-test-fixtures)
+printf '#!/bin/sh\n' >"$t/$fixture"
+printf '#!/usr/bin/env bash\n' >"$t/test/docker/b"
+check no-scripts-test-fixtures "$t" 1 "" \
+    "bin/files: test/fixtures/ holds no bash script"
+
+for d in ansible docker github lint project terraform; do
+    t=$(tree "no-scripts-$d")
+    printf '#!/bin/sh\n' >"$t/$d/a"
+    check "no-scripts-$d" "$t" 1 "" "bin/files: $d/ holds no bash script"
+done
+
+t=$(tree empty-docker)
+rm -- "$t/docker/a"
+check empty-docker "$t" 1 "" "bin/files: docker/ holds no bash script"
+
+# A bin/ holding no bash file fails too, bin/files sourced from outside the
+# tree, since its own shell=bash line would otherwise count.
+t=$(tree no-scripts-bin)
+rm -- "$t/bin/a" "$t/bin/files"
+printf '#!/bin/sh\n' >"$t/bin/b"
+FILES=$files check no-scripts-bin "$t" 1 "" "bin/files: bin/ holds no bash script"
+
+# bin/files alone is enough, found by its shell=bash line.
+t=$(tree only-files-bin)
+rm -- "$t/bin/a"
+check only-files-bin "$t" 0 "$(shells | grep -vxF 'shell bin/a')"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+
+for d in docker test/fixtures .github; do
+    t=$(tree "find-fails-${d//\//-}")
+    mkdir -p "$t/.github/workflows"
+    FAKE_FIND_FAIL=$d check "find-fails-${d//\//-}" "$t" 1 "" \
+        "bin/files: listing $d/ failed"
+done
+
+# The output file is gone from TMPDIR while find still writes to it.
+t=$(tree tmp-unlinked)
+mkdir "$work/tmp-unlinked-tmp"
+TMPDIR=$work/tmp-unlinked-tmp FAKE_FIND_TMP_EMPTY=1 check tmp-unlinked "$t" 0 \
+    "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+
+# A signal while find runs leaves nothing in TMPDIR. check reports any failure
+# on fd 4, so its stderr carries only bash's report of the signal.
+t=$(tree term)
+mkdir "$work/term-tmp"
+TMPDIR=$work/term-tmp FAKE_FIND_TERM=1 check term "$t" 143 "" "" 2>/dev/null
+if [ -n "$(ls -A -- "$work/term-tmp")" ]; then
+    fail term "TMPDIR holds: $(ls -A -- "$work/term-tmp")"
+fi
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

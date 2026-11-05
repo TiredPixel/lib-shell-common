@@ -58,8 +58,8 @@
 # double quotes, an option overridden later, as --only-binary=:all: is by
 # --no-binary or npx's --no by --yes, abbreviated, grouped or unusual options,
 # npm's command prefixes, such as upd for update, an option's value written
-# before the command, a command a variable names, a script piped into a shell,
-# a requirement pip reads from a URL beside --no-index, a lock from standard
+# before the command, a command a variable names, a script piped into a shell, a
+# requirement pip reads from a URL beside --no-index, a lock from standard
 # input, npm init given an initializer, options set in the environment or a
 # configuration file, a lock's own options, such as --find-links in it, any
 # other installer or build frontend, that yarn 1 ignores --immutable, and that
@@ -185,6 +185,16 @@ check_pipx() {
         "shared venv, a directory ending in /shared, earlier in this RUN"
 }
 
+# Whether option $1 is among the rest.
+has() {
+    local o=$1 a
+    shift
+    for a in "$@"; do
+        [ "$a" != "$o" ] || return 0
+    done
+    return 1
+}
+
 # Checks build frontend $1, given the rest: an isolated build fetches its build
 # dependencies, such as setuptools, with no hash check.
 check_build() {
@@ -201,16 +211,6 @@ check_build() {
     esac
     why "$what outside a RUN --network=none, since it fetches build" \
         "dependencies with no hash check"
-}
-
-# Whether option $1 is among the rest.
-has() {
-    local o=$1 a
-    shift
-    for a in "$@"; do
-        [ "$a" != "$o" ] || return 0
-    done
-    return 1
 }
 
 # Checks command $1, given the rest.
@@ -331,8 +331,8 @@ check_named() {
     esac
 }
 
-# Checks one simple command, its words $@, past any assignments, reserved
-# words and wrappers.
+# Checks one simple command, its words $@, past any assignments, reserved words
+# and wrappers.
 check_command() {
     local -a w=("$@")
     local k=0 name
@@ -360,9 +360,9 @@ check_command() {
 
 # Ends check_script's word, if one has begun.
 flush() {
-    [ -n "$has" ] || return 0
+    [ -n "$begun" ] || return 0
     words+=("$word")
-    word="" has=""
+    word="" begun=""
 }
 
 # Ends check_script's simple command, checking it.
@@ -375,7 +375,7 @@ end() {
 # Checks shell text $1, command by command. Quotes are removed and nothing is
 # expanded; a quote with no end runs to the end of the text.
 check_script() {
-    local s=$1 i=0 c q word="" has=""
+    local s=$1 i=0 c q word="" begun=""
     local -a words=()
     while [ "$i" -lt ${#s} ]; do
         c=${s:i:1}
@@ -383,7 +383,7 @@ check_script() {
         ' ' | $'\t') flush ;;
         $'\n' | ';' | '&' | '|' | '(' | ')' | \`) end ;;
         \#)
-            if [ -n "$has" ]; then
+            if [ -n "$begun" ]; then
                 word+=$c
             else
                 q=${s:i}
@@ -395,11 +395,11 @@ check_script() {
             q=${s:i+1}
             q=${q%%\'*}
             word+=$q
-            has=1
+            begun=1
             i=$((i + 1 + ${#q}))
             ;;
         \")
-            has=1
+            begun=1
             i=$((i + 1))
             while [ "$i" -lt ${#s} ] && [ "${s:i:1}" != \" ]; do
                 c=${s:i:1}
@@ -423,12 +423,12 @@ check_script() {
             i=$((i + 1))
             if [ "${s:i:1}" != $'\n' ]; then
                 word+=${s:i:1}
-                has=1
+                begun=1
             fi
             ;;
         *)
             word+=$c
-            has=1
+            begun=1
             ;;
         esac
         i=$((i + 1))
@@ -476,7 +476,8 @@ check_file() {
     local script="" reason
     local -a lines=() logical=() bodies=() docs=() words=() found=() comments=()
 
-    [ -f "$dockerfile" ] || die "$dockerfile: no such file"
+    [ -e "$dockerfile" ] || die "$dockerfile: no such file"
+    [ -f "$dockerfile" ] || die "$dockerfile: not a regular file"
     mapfile -t lines 2>/dev/null <"$dockerfile" ||
         die "$dockerfile: cannot be read"
     for line in "${lines[@]}"; do

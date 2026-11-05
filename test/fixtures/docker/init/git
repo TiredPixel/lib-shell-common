@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+case $* in
+"rev-parse --abbrev-ref HEAD") echo "$FAKE_BRANCH" ;;
+*) exit 2 ;;
+esac

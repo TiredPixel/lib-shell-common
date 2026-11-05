@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+case $* in
+"rev-parse --abbrev-ref HEAD") echo "$FAKE_BRANCH" ;;
+"describe --abbrev=0" | describe)
+    if [ -z "$FAKE_RELEASE" ]; then
+        echo "fatal: No names found, cannot describe anything." >&2
+        exit 128
+    elif [ "$*" = describe ]; then
+        echo "$FAKE_DESCRIBE"
+    else
+        echo "$FAKE_RELEASE"
+    fi
+    ;;
+*) exit 2 ;;
+esac

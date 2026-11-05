@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+#
+# Tests docker/upgrade-commit against real repositories in a scratch dir: app,
+# with a bare remote and a submodule lib, in which an upgrade has rewritten the
+# Dockerfile, proposed a workflow and left a record of it, and lib has moved
+# forwards. Every case builds its fixture afresh and runs upgrade-commit in app,
+# but one, which runs it outside any repository.
+#
+# Run: test/docker/upgrade-commit.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+commit=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/upgrade-commit
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+# Nothing from the caller's configuration reaches the fixtures, and no fixture
+# finds a repository above the scratch dir. The file protocol, local paths
+# included, is refused to submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$work
+export GIT_CONFIG_COUNT=5
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+# Rename detection is on, so the staged rename below shows that upgrade-commit
+# turns it off.
+export GIT_CONFIG_KEY_4=diff.renames GIT_CONFIG_VALUE_4=true
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+n=0
+moves=("V 1.0.0 -> 1.2.3" "o/r v1: v0 -> 3333333")
+
+# A fresh fixture in $w: app at $w/app, pushed to $w/app.git, with lib at
+# $w/app/lib one commit past what app records, the upgrade's changes made and
+# its record at $w/record. pushed holds the commit $w/app.git's main is at, and
+# lib_move the line upgrade-commit writes for lib.
+fixture() {
+    n=$((n + 1))
+    w=$work/$n
+    mkdir "$w"
+    git init -q --bare "$w/lib.git"
+    git init -q "$w/lib.up"
+    git -C "$w/lib.up" commit -q --allow-empty -m init
+    git -C "$w/lib.up" push -q "$w/lib.git" main
+    git init -q --bare "$w/app.git"
+    git init -q "$w/app"
+    mkdir -p "$w/app/.github/workflows"
+    printf 'ARG V=1.0.0\n' >"$w/app/Dockerfile"
+    printf 'uses: o/r@v0\n' >"$w/app/.github/workflows/build.yml"
+    printf 'notes\n' >"$w/app/notes.txt"
+    git -C "$w/app" submodule add -q "$w/lib.git" lib
+    git -C "$w/app" add Dockerfile .github notes.txt
+    git -C "$w/app" commit -q -m init
+    git -C "$w/app" remote add origin "$w/app.git"
+    git -C "$w/app" push -q origin main
+    pushed=$(git -C "$w/app.git" rev-parse main)
+    git -C "$w/app/lib" commit -q --allow-empty -m forwards
+    local old new
+    old=$(git -C "$w/app" rev-parse HEAD:lib)
+    new=$(git -C "$w/app/lib" rev-parse HEAD)
+    lib_move="lib ${old:0:7} -> ${new:0:7}"
+
+    printf 'ARG V=1.2.3\n' >"$w/app/Dockerfile"
+    mkdir "$w/app/.github/workflows.new"
+    printf 'uses: o/r@%s\n' "$(printf '3%.0s' {1..40})" \
+        >"$w/app/.github/workflows.new/build.yml"
+    local app
+    app=$(readlink -f "$w/app")
+    printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" "" \
+        "${moves[@]}" >"$w/record"
+}
+
+# Runs upgrade-commit in $w/app$1 with the arguments after it, setting rc, out
+# and err.
+run() {
+    local dir=$w/app$1
+    rc=0
+    (cd "$dir" && "$commit" "${@:2}") >"$w/out" 2>"$w/err" || rc=$?
+    out=$(<"$w/out")
+    err=$(<"$w/err")
+}
+
+# Fails case $1 where HEAD has moved from the fixture's commit or the remote
+# has, or the record is gone.
+unchanged() {
+    if [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
+        fail "$1" "a commit was made"
+    elif [ "$(git -C "$w/app.git" rev-parse main)" != "$pushed" ]; then
+        fail "$1" "something was pushed"
+    elif ! [ -f "$w/record" ]; then
+        fail "$1" "the record was removed"
+    fi
+}
+
+# Fails case $1 unless HEAD is one commit past the fixture's, changing exactly
+# the paths after $1, as "Upgrade pins" with a body of the moves where
+# Dockerfile or a lock under Dockerfile.lock is among them and then lib_move
+# where lib is, the remote untouched and the record removed.
+committed() {
+    local name=$1 want message=("Upgrade pins") body=()
+    want=$(printf '%s\n' "${@:2}")
+    if [[ $'\n'$want$'\n' == *$'\nDockerfile\n'* ]] ||
+        [[ $'\n'$want == *$'\nDockerfile.lock/'* ]]; then
+        body+=("${moves[@]}")
+    fi
+    if [[ $'\n'$want$'\n' == *$'\nlib\n'* ]]; then
+        body+=("$lib_move")
+    fi
+    if [ ${#body[@]} -gt 0 ]; then
+        message+=("" "${body[@]}")
+    fi
+    if [ "$rc" != 0 ]; then
+        fail "$name" "exit $rc, not 0: $err"
+    elif [ "$(git -C "$w/app" rev-parse HEAD~1)" != "$pushed" ]; then
+        fail "$name" "HEAD is not one commit past the fixture's"
+    elif [ "$(git -C "$w/app" log -1 --no-show-signature --format=%B)" != \
+        "$(printf '%s\n' "${message[@]}")" ]; then
+        fail "$name" "the message is: $(git -C "$w/app" log -1 --no-show-signature --format=%B)"
+    elif [ "$(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)" != "$want" ]; then
+        fail "$name" "the commit changes: $(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)"
+    elif [ "$(git -C "$w/app.git" rev-parse main)" != "$pushed" ]; then
+        fail "$name" "something was pushed"
+    elif [ -e "$w/record" ]; then
+        fail "$name" "the record was kept"
+    fi
+}
+
+# The recorded paths and the submodule are committed; unstaged and untracked
+# work beside them is not.
+fixture
+printf 'more notes\n' >>"$w/app/notes.txt"
+printf 'x\n' >"$w/app/untracked"
+run "" "$w/record" lib
+committed commits .github/workflows.new/build.yml Dockerfile lib
+if [ "$(git -C "$w/app" status --porcelain)" != $' M notes.txt\n?? untracked' ]; then
+    fail commits "the tree is now: $(git -C "$w/app" status --porcelain)"
+fi
+
+# From a subdirectory, a PATH is read from there, and the recorded paths are
+# absolute.
+fixture
+run /.github "$w/record" ../lib
+committed subdirectory .github/workflows.new/build.yml Dockerfile lib
+
+# A recorded path already staged is no other path.
+fixture
+git -C "$w/app" add Dockerfile
+run "" "$w/record"
+committed own-staged .github/workflows.new/build.yml Dockerfile
+
+# A submodule PATH that did not move adds no line.
+fixture
+git -C "$w/app/lib" checkout -q HEAD~1
+run "" "$w/record" lib
+committed lib-unmoved .github/workflows.new/build.yml Dockerfile
+
+# Where no pin moved, a PATH that changed is still committed: a submodule with
+# its move as the body, any other path with no body.
+fixture
+: >"$w/record"
+run "" "$w/record" lib
+committed lib-only lib
+fixture
+: >"$w/record"
+printf 'more notes\n' >>"$w/app/notes.txt"
+run "" "$w/record" notes.txt
+committed path-only notes.txt
+
+# A record whose only move is a lock's content, in a directory new to the
+# repository, commits that lock with the line as the body.
+fixture
+mkdir -p "$w/app/Dockerfile.lock/m"
+printf 'm-d==1.0 --hash=sha256:%s\n' "$(printf '5%.0s' {1..64})" \
+    >"$w/app/Dockerfile.lock/m/requirements.txt"
+printf '%s\n' "$(readlink -f "$w/app")/Dockerfile.lock/m/requirements.txt" "" \
+    "LOCK m: files changed" >"$w/record"
+saved=("${moves[@]}")
+moves=("LOCK m: files changed")
+run "" "$w/record"
+committed lock-content-only Dockerfile.lock/m/requirements.txt
+moves=("${saved[@]}")
+
+# A submodule's ignore setting hides it from neither the commit nor its body,
+# nor from the check for other paths staged.
+fixture
+git -C "$w/app" config submodule.lib.ignore all
+: >"$w/record"
+run "" "$w/record" lib
+committed lib-only-ignored lib
+fixture
+git -C "$w/app" config submodule.lib.ignore all
+git -C "$w/app" add lib
+run "" "$w/record"
+if [ "$rc" != 1 ] || [ "$err" != $'lib\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
+    fail other-staged-ignored "exit $rc: $err"
+fi
+unchanged other-staged-ignored
+
+# Where neither a pin nor a PATH moved, nothing is staged or committed, and the
+# record goes; with no PATH, what is already staged is not looked at.
+for how in unmoved-path no-path; do
+    fixture
+    : >"$w/record"
+    if [ "$how" = unmoved-path ]; then
+        git -C "$w/app/lib" checkout -q HEAD~1
+        run "" "$w/record" lib
+    else
+        git -C "$w/app" add lib
+        run "" "$w/record"
+    fi
+    if [ "$rc" != 0 ] || [ -n "$out" ] ||
+        [ "$err" != "upgrade-commit: $w/record: nothing moved, so there is nothing to commit" ]; then
+        fail "nothing-moved-$how" "exit $rc: $out$err"
+    elif [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
+        fail "nothing-moved-$how" "a commit was made"
+    elif [ "$how" = unmoved-path ] &&
+        [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
+        fail "nothing-moved-$how" "something was staged"
+    elif [ -e "$w/record" ]; then
+        fail "nothing-moved-$how" "the record was kept"
+    fi
+done
+
+# Where no pin moved, any other path staged is still refused.
+fixture
+: >"$w/record"
+git -C "$w/app" add notes.txt Dockerfile
+run "" "$w/record" lib
+if [ "$rc" != 1 ] || [ "$err" != $'Dockerfile\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
+    fail lib-only-other-staged "exit $rc: $err"
+fi
+unchanged lib-only-other-staged
+
+# Any other path staged is refused, listed as git lists it, before anything is
+# staged; a staged rename lists both its paths.
+for how in modified renamed; do
+    fixture
+    if [ "$how" = modified ]; then
+        printf 'more\n' >>"$w/app/notes.txt"
+        git -C "$w/app" add notes.txt
+        want=notes.txt
+    else
+        git -C "$w/app" mv notes.txt renamed.txt
+        want=$'notes.txt\nrenamed.txt'
+    fi
+    run "" "$w/record" lib
+    if [ "$rc" != 1 ] || [ "$err" != "$want"$'\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
+        fail "other-staged-$how" "exit $rc: $err"
+    elif [ "$(git -C "$w/app" diff --cached --no-renames --name-only)" != "$want" ]; then
+        fail "other-staged-$how" "the index is now: $(git -C "$w/app" diff --cached --no-renames --name-only)"
+    fi
+    unchanged "other-staged-$how"
+done
+
+# A recorded path and a PATH are read literally, never as patterns: f[1] names
+# no f1, so f1 is neither committed with them nor taken as one of them when
+# staged.
+for how in unstaged staged; do
+    fixture
+    printf 'x\n' >"$w/app/f[1]"
+    printf 'x\n' >"$w/app/g[1]"
+    printf 'x\n' >"$w/app/f1"
+    printf 'x\n' >"$w/app/g1"
+    git -C "$w/app" add 'f[1]' 'g[1]' f1 g1
+    git -C "$w/app" commit -q -m globs
+    git -C "$w/app" push -q origin main
+    pushed=$(git -C "$w/app" rev-parse HEAD)
+    printf 'y\n' | tee -a "$w/app/f[1]" "$w/app/g[1]" "$w/app/f1" >>"$w/app/g1"
+    app=$(readlink -f "$w/app")
+    printf '%s\n' "$app/Dockerfile" "$app/f[1]" "" "${moves[@]}" >"$w/record"
+    if [ "$how" = unstaged ]; then
+        run "" "$w/record" 'g[1]'
+        committed glob-unstaged Dockerfile 'f[1]' 'g[1]'
+        if [ "$(git -C "$w/app" status --porcelain -- f1 g1)" != $' M f1\n M g1' ]; then
+            fail glob-unstaged "f1 and g1 are now: $(git -C "$w/app" status --porcelain -- f1 g1)"
+        fi
+    else
+        git -C "$w/app" add f1 g1
+        run "" "$w/record" 'g[1]'
+        if [ "$rc" != 1 ] || [ "$err" != $'f1\ng1\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
+            fail glob-staged "exit $rc: $err"
+        fi
+        unchanged glob-staged
+    fi
+done
+
+# A record docker/upgrade could not have written is refused.
+n_bad=0
+for bad in $'/x\n/y\n' $'\nV 1 -> 2\n' $'/x\n\n' $'/x\n\nV 1 -> 2\n\nW 1 -> 2\n'; do
+    n_bad=$((n_bad + 1))
+    fixture
+    printf '%s' "$bad" >"$w/record"
+    run "" "$w/record"
+    case $n_bad in
+    4) said="$w/record:4: a second blank line" ;;
+    *) said="upgrade-commit: $w/record: not a record docker/upgrade --record writes" ;;
+    esac
+    if [ "$rc" != 1 ] || [ "$err" != "$said" ]; then
+        fail "bad-record-$n_bad" "exit $rc: $err"
+    fi
+    unchanged "bad-record-$n_bad"
+done
+
+# A recorded path git cannot add fails the run, and the record stays.
+fixture
+printf '%s\n' "$w/app/absent" "" "${moves[@]}" >"$w/record"
+run "" "$w/record"
+if [ "$rc" = 0 ] || [[ "$err" != *absent* ]]; then
+    fail add-fails "exit $rc: $err"
+fi
+unchanged add-fails
+
+fixture
+run "" "$w/missing"
+if [ "$rc" != 1 ] || [ "$err" != "upgrade-commit: $w/missing: no such file" ]; then
+    fail missing "exit $rc: $err"
+fi
+unchanged missing
+
+fixture
+mkdir "$w/directory"
+run "" "$w/directory"
+if [ "$rc" != 1 ] || [ "$err" != "upgrade-commit: $w/directory: not a regular file" ]; then
+    fail directory "exit $rc: $err"
+fi
+unchanged directory
+
+for how in none empty; do
+    fixture
+    if [ "$how" = none ]; then
+        run ""
+    else
+        run "" ""
+    fi
+    if [ "$rc" != 2 ] || [ "$err" != "Usage: upgrade-commit RECORD [PATH...]" ]; then
+        fail "usage-$how" "exit $rc: $err"
+    fi
+    unchanged "usage-$how"
+done
+
+# Outside a repository, git's own failure stops the run.
+fixture
+mkdir "$work/norepo"
+rc=0
+(cd "$work/norepo" && "$commit" "$w/record") >"$w/out" 2>"$w/err" || rc=$?
+if [ "$rc" = 0 ] || ! grep -qF "not a git repository" "$w/err"; then
+    fail no-repo "exit $rc: $(<"$w/err")"
+fi
+unchanged no-repo
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

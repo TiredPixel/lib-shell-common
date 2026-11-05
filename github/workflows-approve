@@ -9,22 +9,23 @@
 # origin.
 #
 # Refuses before changing anything when nothing is pending, when a proposal's
-# name is not letters, digits, dots, dashes and underscores ending .yml or
-# .yaml, which keeps the prompt and paths free of control bytes, when anything
-# is already staged, when a proposal is the same as its live workflow, when a
-# live workflow has local changes or is untracked, on a detached HEAD, with no
+# name is not a letter, digit or underscore followed by letters, digits, dots,
+# dashes and underscores ending .yml or .yaml, which keeps the prompt and paths
+# free of control bytes, when a proposal is not a regular file, when anything is
+# already staged, when a proposal is the same as its live workflow, when a live
+# workflow has local changes or is untracked, on a detached HEAD, with no
 # origin, or with no terminal to ask on. Needs only bash and git, so it runs
 # from a fresh clone of a pushed branch whether the proposal is committed or
 # only in the working tree.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-me=${0##*/}
+prog=${0##*/}
 new=.github/workflows.new
 live=.github/workflows
 
 die() {
-    echo "$me: $*" >&2
+    echo "$prog: $*" >&2
     exit 1
 }
 
@@ -39,7 +40,7 @@ entries_of_new() {
 }
 
 if [ $# -ne 0 ]; then
-    echo "Usage: $me" >&2
+    echo "Usage: $prog" >&2
     exit 2
 fi
 
@@ -69,13 +70,14 @@ for f in "${entries[@]}"; do
             "[A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml"
     fi
     if [ -L "$f" ] || ! [ -f "$f" ]; then
-        die "$f is not a regular file"
+        die "refusing, since $(quote "$f") is not a regular file"
     fi
 done
 
 staged=$(git diff --cached --name-only)
 if [ -n "$staged" ]; then
-    echo "$staged" >&2
+    mapfile -t staged_lines <<<"$staged"
+    printf '%s\n' "${staged_lines[@]/#/$prog: }" >&2
     die "refusing, since the paths above are already staged and would be" \
         "committed with the approval"
 fi
@@ -150,7 +152,7 @@ for f in "${entries[@]}"; do
 done
 
 if [ ${#approved[@]} -eq 0 ]; then
-    echo "$me: nothing approved, so nothing is changed" >&2
+    echo "$prog: nothing approved, so nothing is changed" >&2
     exit 0
 fi
 
@@ -183,7 +185,7 @@ fi
 body=$(printf '%s\n' "${lines[@]}")
 if ! git commit -q -m "$subject" -m "$body"; then
     die "commit failed; the approval stays staged, so commit it by hand:" \
-        "git commit -m $(printf %q "$subject") -m $(printf %q "$body")"
+        "git commit -m $(quote "$subject") -m $(quote "$body")"
 fi
 
 # Remote and refspec named, whatever the caller's push.default,
