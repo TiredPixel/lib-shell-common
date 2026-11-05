@@ -2,7 +2,7 @@
 #
 # Tests lint/dockerfile-locks on Dockerfiles written to a scratch directory,
 # each case's own, with the real jq. Nothing is built, since the lint only reads
-# the file.
+# the file. One case puts a failing jq in front of the real one.
 #
 # Run: test/lint/dockerfile-locks.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail

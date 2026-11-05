@@ -153,9 +153,10 @@ pypi)
         python3 -m pip install -q --disable-pip-version-check --upgrade \
             'pip>=22.2' </dev/null
     fi
-    # --dry-run is exempt from pip's PEP 668 externally-managed refusal, as it
-    # installs nothing. PyPI alone is read, whatever index the image's
-    # configuration files or environment name, since the hashes come from it.
+    # --dry-run with --report is exempt from pip's PEP 668 externally-managed
+    # refusal, as it installs nothing. PyPI alone is read, whatever index the
+    # image's configuration files or environment name, since the hashes come
+    # from it.
     PIP_CONFIG_FILE=/dev/null python3 -m pip install -q --isolated \
         --disable-pip-version-check --root-user-action=ignore \
         --index-url=https://pypi.org/simple/ --only-binary=:all: --dry-run \

@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 [ "$*" = describe ] || exit 2
-# A no-tag message as git gives it, or in German unless LC_ALL is C.
+# A no-tag message as git gives it where LC_ALL is C, else the no-names one in
+# German.
 no_tag() {
     if [ "${LC_ALL:-}" = C ]; then
         printf '%s\n' "$1" >&2

@@ -3,7 +3,8 @@
 # Tests docker/upgrade-commit against real repositories in a scratch dir: app,
 # with a bare remote and a submodule lib, in which an upgrade has rewritten the
 # Dockerfile, proposed a workflow and left a record of it, and lib has moved
-# forwards. Every case builds its fixture afresh and runs upgrade-commit in app.
+# forwards. Every case builds its fixture afresh and runs upgrade-commit in app,
+# but one, which runs it outside any repository.
 #
 # Run: test/docker/upgrade-commit.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -14,8 +15,8 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
 # Nothing from the caller's configuration reaches the fixtures, and no fixture
-# finds a repository above the scratch dir. File URLs are refused to submodules
-# by default.
+# finds a repository above the scratch dir. The file protocol, local paths
+# included, is refused to submodules by default.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
 export GIT_CEILING_DIRECTORIES=$work
 export GIT_CONFIG_COUNT=5
@@ -103,9 +104,9 @@ unchanged() {
 }
 
 # Fails case $1 unless HEAD is one commit past the fixture's, changing exactly
-# the paths after $1, as Upgrade pins with a body of the moves where Dockerfile
-# or a lock under Dockerfile.lock is among them and then lib_move where lib is,
-# the remote untouched and the record removed.
+# the paths after $1, as "Upgrade pins" with a body of the moves where
+# Dockerfile or a lock under Dockerfile.lock is among them and then lib_move
+# where lib is, the remote untouched and the record removed.
 committed() {
     local name=$1 want message=("Upgrade pins") body=()
     want=$(printf '%s\n' "${@:2}")

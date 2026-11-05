@@ -108,8 +108,8 @@ outside() {
         "Dockerfile is a tracked change like any other"
 }
 
-# A clean tree passes, reporting the submodule .projects does not name whole:
-# ext2 is not ext.
+# A clean tree passes, reporting the submodule that .projects does not name
+# whole: ext2 is not ext.
 fixture
 run
 expect clean 0 "$unlisted" "$p: ext"

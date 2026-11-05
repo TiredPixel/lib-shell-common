@@ -15,7 +15,7 @@ shopt -s inherit_errexit failglob
 tag_create=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/tag-create
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
-# Resolved, since project/each reports a project by the path git resolves.
+# Resolved, since project/each runs its command from the path git resolves.
 work=$(readlink -f "$work")
 
 mkdir "$work/bin" "$work/gnupg"

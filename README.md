@@ -1,6 +1,6 @@
 # Common library for Shell
 
-Common library for Shell, containing miscellaneous scripts for packaging, etc.
+Shell scripts a repository takes as a submodule to pin and upgrade its Dockerfile and workflows, build and push its images, lint its Dockerfiles, shell, YAML and release version, approve proposed workflows, work across and release several projects together, check its Ansible, and plan and apply its Terraform. The sections up to and including *Planning and applying Terraform* are for such a repository; *Working on this repository* covers working on this one.
 
 ## Requirements
 
@@ -16,28 +16,6 @@ The scripts also run these, which a repository needs wherever it runs them:
 - `terraform/`: Terraform
 
 The scripts assume POSIX utilities, and these GNU forms of them: `readlink -f` and `readlink -m`, `sort -V`, `diff --label`, `timeout --foreground`, and `find`'s `-mindepth`, `-maxdepth` and `-quit`.
-
-Working on this repository needs:
-
-- Docker Engine or Docker Desktop with Compose v2
-- GNU make 3.82 or newer, whose recipes run under Bash 4.4 or newer
-- for `make upgrade` and `make workflows-approve`, which run on the host, the tools listed above for `docker/` and `github/`
-
-## Installation
-
-Clone the repository, and copy `.env.example` to `.env`, which sets local options for Compose:
-
-```sh
-git clone https://github.com/TiredPixel/lib-shell-common.git
-cd lib-shell-common
-cp .env.example .env
-```
-
-Where Docker is rootless or the host user's uid is not 1000, set this in `.env`, so that `make format` and `make coverage` can write to the tree:
-
-```sh
-DC_BIND_USER=0:0
-```
 
 ## Adding the library to a repository
 
@@ -83,7 +61,7 @@ A named workflow names the tag each action follows on a comment line at its top,
 
 `docker/upgrade` never writes a live workflow: each one that moves is proposed as `.github/workflows.new/<name>`, to be approved with `make workflows-approve` once the upgrade is committed (*Approving workflows*), and the run is refused while a proposal for a named workflow is still pending.
 
-The `# TRACK FROM`, `# TRACK ARG`, `# TRACK LOCK` and `# TRACK USES` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and how to hold a version back, are described at the top of `docker/upgrade`.
+The `# TRACK FROM`, `# TRACK ARG`, `# TRACK LOCK` and `# TRACK USES` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, are described at the top of `docker/upgrade`, and how to hold each back in *Holding a pin back*.
 
 A `FROMFREEZE`, `ARGFREEZE` or `USESFREEZE` line, or a `# TRACK ARG` line with a `pypi:` or `npm:` source, which takes a `# TRACK LOCK` line instead (*Migrating from TRACK ARG pypi: and npm: pins*), fails the upgrade rather than being passed over: grep lists every one as `FILE:LINE:TEXT`, to be rewritten, then the run fails. A mistyped or malformed `TRACK` line fails the run at the first one found, with a message naming it.
 
@@ -207,7 +185,13 @@ ENV PATH=/opt/js/node_modules/.bin:$PATH
 
 `node -p` checks snazzy installed, since `snazzy --version` prints nothing.
 
-## Holding a lock back
+## Holding a pin back
+
+A `FROM` is held back by removing its `# TRACK FROM` line, which frees every `FROM` of that image, and writing a comment beside it saying why; a `# TRACK LOCK` line resolving in that image then names its stage with `stage=`, since one without needs the Dockerfile's one `# TRACK FROM`.
+
+A version is held back by removing its `# TRACK ARG` line and writing a comment beside its `ARG` saying why; each `sha256:` pin naming it as `${VAR}` then keeps to it.
+
+An action is held back by removing its `# TRACK USES` line, which frees every `uses:` of it in that workflow, and writing a comment above saying why.
 
 A package is held back by `==VERSION` for PyPI or `@VERSION` for npm on its `# TRACK LOCK` line, with a comment above saying why:
 
@@ -263,8 +247,6 @@ A `FROM` takes the digest its tag names now, which the registry gives:
 docker buildx imagetools inspect docker.io/library/debian:13 --format '{{json .Manifest}}' | jq -r .digest
 ```
 
-A `FROM` is held back by removing its `# TRACK FROM` line, which frees every `FROM` of that image, and writing a comment beside it saying why; a `# TRACK LOCK` line resolving in that image then names its stage with `stage=`, since one without needs the Dockerfile's one `# TRACK FROM`.
-
 A `# TRACK ARG` version is the release's version, its leading `v` dropped, and each `sha256:` pin beside it moves with it, since the build refuses an asset whose hash differs. The hash for each architecture is on the asset's line in the release's checksums file, where the `TRACK ARG` line names one:
 
 ```sh
@@ -277,17 +259,13 @@ Otherwise it is the hash of the asset itself:
 curl -fsSL https://github.com/rhysd/actionlint/releases/download/vVERSION/actionlint_VERSION_linux_arm64.tar.gz | sha256sum
 ```
 
-A version is held back by removing its `# TRACK ARG` line and writing a comment beside its `ARG` saying why; each `sha256:` pin naming it as `${VAR}` then keeps to it.
-
 A `# TRACK USES` action takes the commit its tag names now. `git ls-remote` lists an annotated tag twice, the line ending `^{}` peeled to its commit, which is the one to take, and a lightweight tag once, on the commit itself:
 
 ```sh
 git ls-remote https://github.com/actions/checkout refs/tags/v7 'refs/tags/v7^{}'
 ```
 
-An action is held back by removing its `# TRACK USES` line, which frees every `uses:` of it in that workflow, and writing a comment above saying why.
-
-A hand edit to a tracked lock lasts until the next upgrade, which rebuilds the lock whole from its `# TRACK LOCK` line (*Holding a lock back*). A package in a Python lock is its line in `requirements.txt`, as `name==version` with `--hash=sha256:` for every wheel PyPI lists for that version, which PyPI's JSON gives:
+A hand edit to a tracked lock lasts until the next upgrade, which rebuilds the lock whole from its `# TRACK LOCK` line (*Holding a pin back*). A package in a Python lock is its line in `requirements.txt`, as `name==version` with `--hash=sha256:` for every wheel PyPI lists for that version, which PyPI's JSON gives:
 
 ```sh
 curl -fsSL https://pypi.org/pypi/mdformat/1.0.0/json | jq -r '"mdformat==1.0.0 " + ([.urls[] | select(.packagetype == "bdist_wheel") | "--hash=sha256:" + .digests.sha256] | sort | join(" "))'
@@ -326,15 +304,23 @@ Other comment lines may sit between, so a `# hadolint ignore=` for the same `RUN
 
 ## Checking shell scripts
 
-`lint/shell` runs ShellCheck on every shell script in the directory it is called from and in its `bin/`, found by content rather than by extension, and on each file named as an argument. A sourced fragment with no shebang is reached only by naming it. Finding nothing is reported, not fatal; what it passes over, and why, is at the top of `lint/shell`.
+`lint/shell` runs ShellCheck on every shell script in the directory it is called from and in its `bin/`, found by content rather than by extension, and on each file named as an argument. A sourced fragment with no shebang is reached only by naming it. Finding nothing is reported, not fatal; what it passes over, and why, is in `lint/shell`'s comments.
 
 ```sh
 lib/shell-common/lint/shell
 ```
 
+## Checking YAML key order
+
+`lint/yaml-keys` reads NUL-separated paths on stdin and, for each file whose keys are not in the order `yq -P 'sort_keys(..)'` writes, prints a unified diff from the file to its sorted form; it never writes, and fails where any file is unsorted or yq cannot read it. A repository gives it the same paths as its YAML formatter, or one rewrites a file the other never checks.
+
+```sh
+git ls-files -z '*.yml' '*.yaml' | lib/shell-common/lint/yaml-keys
+```
+
 ## Checking a release version
 
-`lint/version-assert` fails unless `VERSION` names a release a mobile client can publish to both app stores: plain integers as major.minor, or major.minor.patch with `--parts 3`, never the `0.0` or `0.0.0` placeholder, and small enough for the build number derived from it. The default shape, the build-number formula and its bounds are at the top of `lint/version-assert`.
+`lint/version-assert` fails unless `VERSION` names a release a mobile client can publish to both app stores: plain integers as major.minor, or major.minor.patch with `--parts 3`, never the `0.0` or `0.0.0` placeholder, and small enough for the build number derived from it. The default shape is at the top of `lint/version-assert`, and the build-number formula and its bounds in the comments above its checks.
 
 ```sh
 VERSION=1.2.3 lib/shell-common/lint/version-assert --parts 3
@@ -355,7 +341,7 @@ GitHub refuses a push from an agent that touches `.github/workflows/`, so a chan
 
 `github/workflows-approve` shows each proposal as a diff against its live workflow, or as the whole file if it is new, and asks on the terminal whether to approve it. It moves each approved file into place, removes `.github/workflows.new/` once it is empty, commits only that move as `Approve workflow` or `Approve workflows`, with each path marked new or changed as the body, and pushes the current branch to origin. If the push fails, the commit stays, to be pushed by hand.
 
-It refuses before changing anything where nothing is pending, a proposal is not named `[A-Za-z0-9_][A-Za-z0-9._-]*.yml` or `.yaml`, a proposal is not a regular file, anything is already staged, a proposal is the same as its live workflow, a live workflow has local changes or is untracked, HEAD is detached, or there is no origin or terminal.
+It refuses before changing anything where it cannot act safely; what it refuses is at the top of `github/workflows-approve`.
 
 It needs only bash and git, so it runs from anywhere in a fresh clone of the pushed branch, on any machine, with the proposal committed or only in the working tree. A repository's `Makefile` runs it in a `workflows-approve` target, on the host rather than in an image, since it asks on the terminal and pushes:
 
@@ -376,7 +362,7 @@ The `docker/` scripts that build or push tagged images, or log in, such as `dock
 
 They run from that root, building the `Dockerfile` there, and tag each image from the branch checked out, any `/` in its name written as `-`. On a detached HEAD, as in a pull request or a tag push, the tag is the first of CircleCI's `CIRCLE_BRANCH` and `CIRCLE_TAG`, then GitHub Actions' `GITHUB_HEAD_REF` and `GITHUB_REF_NAME`, that is set and not empty; with none, the script fails before building.
 
-Each build passes the `GIT_DESCRIBE` build argument, which a `Dockerfile` reads with `ARG GIT_DESCRIBE` to stamp the image with the commit it was built from. Every script but `docker/build-tags` takes it from `docker/describe`: what `git describe` prints, or empty where no tag describes HEAD, any other git failure stopping the build.
+Each build passes the `GIT_DESCRIBE` build argument, which a `Dockerfile` reads with `ARG GIT_DESCRIBE` to stamp the image with the commit it was built from. Every script but `docker/build-tags` takes it from `docker/describe`: what `git describe` prints, or empty where no tag describes HEAD, any other git failure stopping the build. A `Dockerfile` that needs a version refuses an empty `GIT_DESCRIBE` where it stamps the image.
 
 `docker/build-compose` runs `docker compose build`, its arguments going before `build` as Compose's own options, and tags nothing itself, so it needs no `.dockerrepo`:
 
@@ -384,7 +370,7 @@ Each build passes the `GIT_DESCRIBE` build argument, which a `Dockerfile` reads 
 lib/shell-common/docker/build-compose --profile test
 ```
 
-`docker/build-dev-latest-nopush` builds the `Dockerfile`'s `dev` stage as `REPO:TAG.dev`, and `docker/build-dev-latest` builds it the same way, then pushes it. `docker/build-prd-latest` builds the `prd` stage as `REPO:TAG.prd` and pushes it. The `-stable` forms, `docker/build-dev-stable-nopush`, `docker/build-dev-stable` and `docker/build-prd-stable`, build and push the same tags, taking their build cache from the `testing` and `stable` images as well as the branch's own and the `latest` ones (*Releasing*). Each image carries its cache inline, so a later build reads it from the registry.
+`docker/build-dev-latest-nopush` builds the `Dockerfile`'s `dev` stage as `REPO:TAG.dev`, and `docker/build-dev-latest` builds it the same way, then pushes it. `docker/build-prd-latest` builds the `prd` stage as `REPO:TAG.prd` and pushes it. The `-stable` forms, `docker/build-dev-stable-nopush`, `docker/build-dev-stable` and `docker/build-prd-stable`, build the same tags as their `-latest` counterparts and push where those do, taking their build cache from the `testing` and `stable` images as well as the branch's own and the `latest` ones (*Releasing*). Each image carries its cache inline, so a later build reads it from the registry.
 
 ```sh
 lib/shell-common/docker/build-prd-latest
@@ -497,7 +483,31 @@ lib/shell-common/terraform/deploy-cli
 lib/shell-common/terraform/test-cloud
 ```
 
-## Testing
+## Working on this repository
+
+Working on this repository needs:
+
+- Docker Engine or Docker Desktop with Compose v2
+- GNU make 3.82 or newer, whose recipes run under Bash 4.4 or newer
+- for `make upgrade` and `make workflows-approve`, which run on the host, the tools listed above for `docker/` and `github/`
+
+### Setting up a working copy
+
+Clone the repository, and copy `.env.example` to `.env`, which sets local options for Compose:
+
+```sh
+git clone https://github.com/TiredPixel/lib-shell-common.git
+cd lib-shell-common
+cp .env.example .env
+```
+
+Where Docker is rootless or the host user's uid is not 1000, set this in `.env`, so that `make format` and `make coverage` can write to the tree:
+
+```sh
+DC_BIND_USER=0:0
+```
+
+### Testing
 
 `make test` runs this repository's lint, then its tests, in the `shell_test` container (*Building*). The lint fails where anything is unformatted; `make format` (*Formatting*) fixes it.
 
@@ -519,15 +529,15 @@ make test TESTS=test/docker/upgrade.test
 make lint
 ```
 
-## Measuring coverage
+### Measuring coverage
 
-`make coverage` runs the gate under kcov in the `shell` container and writes its report to `tmp/coverage/`, replacing the last one; `TESTS` narrows it as it does `make test`. Like `make format`, it writes to the tree, so it needs `DC_BIND_USER` set where *Installation* says to.
+`make coverage` runs the lint and tests under kcov in the `shell` container and writes its report to `tmp/coverage/`, replacing the last one; `TESTS` narrows it as it does `make test`. Like `make format`, it writes to the tree, so it needs `DC_BIND_USER` set where *Setting up a working copy* says to.
 
 ```sh
 make coverage
 ```
 
-## Formatting
+### Formatting
 
 `make format` rewrites the tree in place: shfmt, indented by 4, on every Bash script; keys sorted with yq in the YAML files `bin/files` lists; dockerfmt on the `Dockerfile`; mdformat on `README.md`; and dotenv-linter's fixes on `.env.example`.
 
@@ -535,7 +545,7 @@ make coverage
 make format
 ```
 
-## Building
+### Building
 
 The image builds three stages. `wheels` downloads the wheels `Dockerfile.lock/mdformat/requirements.txt` names, each checked against its hash. `dev` is the formatting, linting and test toolchain, running as the unprivileged user `x`, installing mdformat and its plugins from those wheels with no network; it copies nothing in, reading the wheels only through a bind mount, so `make format` runs it on the mounted tree. `test` adds a copy of the repository's tree to it, leaving out every top-level dot path but the project's own, which `.dockerignore` names, so a per-user one, such as an editor's directory, never reaches the image.
 
@@ -547,7 +557,7 @@ The `shell` and `shell_test` services sit under the `test` profile, which every 
 make build
 ```
 
-## Upgrading
+### Upgrading this repository's pins
 
 Base images are pinned by digest, tools downloaded from GitHub by `ARG` and checked against a SHA-256 pinned beside each, mdformat and its plugins by the hashed lock in `Dockerfile.lock/mdformat/`, and the workflow's actions by commit SHA.
 

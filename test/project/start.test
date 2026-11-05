@@ -4,8 +4,9 @@
 # submodule lib, listed in its .projects, with docker faked on PATH. The fake
 # logs the project it runs in and its arguments, a line to a call. compose
 # config --services prints the project's file fake-services, if any, or fails
-# where it holds fake-config-fails; compose up exits FAKE_UP_RC. Any other call
-# fails. Every case builds its fixture afresh and runs project/start in app.
+# where it holds fake-config-fails; compose up exits FAKE_UP_RC; ps does
+# nothing. Any other call fails. Every case builds its fixture afresh and runs
+# project/start in app.
 #
 # Run: test/project/start.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail

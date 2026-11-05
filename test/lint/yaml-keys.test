@@ -2,7 +2,7 @@
 #
 # Tests lint/yaml-keys on YAML files in a scratch directory, with the real yq
 # and diff, giving it each set of paths NUL-separated on stdin as bin/lint does.
-# Two cases put a wrapper on PATH in front of one of them: a yq that drains its
+# Two cases put a stand-in on PATH in front of one of them: a yq that drains its
 # stdin first, as any command could, and a diff that fails as on an I/O error.
 #
 # Run: test/lint/yaml-keys.test. Exits 1 naming each case that failed.

@@ -7,10 +7,8 @@
 # Empty is the right stamp for a working copy with no tag to describe HEAD by,
 # so git's three no-tag failures leave describe empty. Any other failure, such
 # as no repository, has its message passed on and exits 1, with or without
-# errexit, so a build never goes ahead with an accidental empty stamp. A
-# consumer that stamps this value should refuse an empty one at the point that
-# actually stamps. git runs under LC_ALL=C, so its messages are the English ones
-# matched here.
+# errexit, so a build never goes ahead with an accidental empty stamp. git runs
+# under LC_ALL=C, so its messages are the English ones matched here.
 
 describe_err=$(mktemp) || exit 1
 

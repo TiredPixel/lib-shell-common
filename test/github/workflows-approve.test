@@ -243,9 +243,9 @@ for kind in dir link; do
 done
 
 # A name outside [A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml is refused before
-# anything is shown, quoted so that no byte outside printable ASCII reaches the
-# terminal: ESC with a newline, a right-to-left override, a space, another
-# suffix, an upper-case one, and a leading dot or dash.
+# anything is shown: ESC with a newline, a right-to-left override, a space,
+# another suffix, an upper-case one, and a leading dot or dash. The refusal
+# quotes the name so that no byte outside printable ASCII reaches the terminal.
 names=($'x\e[2J\nbuild.yml' $'evil\xe2\x80\xaelmy.yml' 'a b.yml' build.txt build.YML
     .build.yml -build.yml)
 for name in "${names[@]}"; do

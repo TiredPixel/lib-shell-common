@@ -9,12 +9,12 @@
 # origin.
 #
 # Refuses before changing anything when nothing is pending, when a proposal's
-# name is not letters, digits, dots, dashes and underscores ending .yml or
-# .yaml, which keeps the prompt and paths free of control bytes, when a
-# proposal is not a regular file, when anything is already staged, when a
-# proposal is the same as its live workflow, when a live workflow has local
-# changes or is untracked, on a detached HEAD, with no origin, or with no
-# terminal to ask on. Needs only bash and git, so it runs
+# name is not a letter, digit or underscore followed by letters, digits, dots,
+# dashes and underscores ending .yml or .yaml, which keeps the prompt and paths
+# free of control bytes, when a proposal is not a regular file, when anything is
+# already staged, when a proposal is the same as its live workflow, when a live
+# workflow has local changes or is untracked, on a detached HEAD, with no
+# origin, or with no terminal to ask on. Needs only bash and git, so it runs
 # from a fresh clone of a pushed branch whether the proposal is committed or
 # only in the working tree.
 set -Eeuo pipefail

@@ -134,7 +134,8 @@
 # a temporary file beside where it goes, each directory missing above it made,
 # and only once all are written is each moved into place, through any symbolic
 # link and keeping its file's mode, or at 0644 where it is new. A run that
-# fails removes every temporary file and every directory it made.
+# fails removes every temporary file and every directory it made that is left
+# empty.
 #
 # With --record, FILE is written last, for docker/upgrade-commit: the path of
 # each file written, one to a line, then a blank line, then a line for each
@@ -151,10 +152,10 @@
 # reads otherwise, or the lock changed and no move is itemised, the line is
 # LOCK NAME: files changed. Where nothing moved, it is empty. Since the commit
 # takes each path whole, the run first fails where FILE holds an earlier run's
-# record, or where the Dockerfile, followed through any symbolic link, or its
-# BASENAME.lock directory differs from what git has committed, or where the
-# Dockerfile is a symbolic link into another repository, such as a submodule,
-# where the commit cannot add it.
+# record that is not empty, or where the Dockerfile, followed through any
+# symbolic link, or its BASENAME.lock directory differs from what git has
+# committed, or where the Dockerfile is a symbolic link into another repository,
+# such as a submodule, where the commit cannot add it.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -273,8 +274,8 @@ if [ -n "$record" ]; then
         refuse "$lockdir" "has changes not committed; commit or stash them first"
 fi
 
-# A comment line naming a TRACK kind, in any case, joined by any blanks, - or _
-# and with arg as args, read lowercased.
+# A comment line naming a TRACK kind, with or without a trailing s, in any case,
+# joined by any blanks, - or _, read lowercased.
 track='^[[:space:]]*#[[:space:]]*track[-_[:space:]]*(from|arg|uses|lock)s?([^a-z0-9_]|$)'
 
 mapfile -t lines <"$dockerfile"
@@ -1162,8 +1163,8 @@ listing='
     | @tsv'
 # Each requirement in pip's report whose marker names the machine or kernel, so
 # another architecture would resolve it otherwise, as PACKAGE: REQUIREMENT. One
-# gated on an extra, only by extra == "EXTRA" and on nothing else but by and,
-# is passed over unless a requirement resolved asks for that extra, as
+# whose marker also requires an extra, each as extra == "EXTRA", with and and no
+# or, is passed over unless a requirement resolved asks for one of them, as
 # NAME[EXTRA].
 # shellcheck disable=SC2016 # jq's own $variables, not the shell's
 markers='

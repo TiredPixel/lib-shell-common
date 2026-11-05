@@ -10,8 +10,8 @@
 # digest, or in FAKE_HELD, and runs it on the host, reading the file
 # FAKE_OS_RELEASE names for /etc/os-release, with PATH only a copy of the
 # directory FAKE_CONTAINER names, holding the managers, bash, pip and npm the
-# image has, and a few real tools: apt-get, dnf, microdnf, apk, python3 and
-# npm are faked, each manager adding to the copy what it installs, and each
+# image has, and a few real tools, while apt-get, dnf, microdnf, apk, python3
+# and npm are faked, each manager adding to the copy what it installs, and each
 # reading its stdin to the end; pip runs only once its module is there, gives
 # FAKE_PIP_VERSION, 24.0 where unset, and answers with the report in the file
 # FAKE_REPORT names, and npm gives a version or writes the package-lock.json
@@ -898,7 +898,7 @@ check hash-three-urls $'# TRACK ARG H sha256:https://dl.test/t https://dl.test/s
 check hash-names-directory $'# TRACK ARG H sha256:https://dl.test/t/\nARG H=1\n' 1 "is not $sources" \
     $'# TRACK ARG H sha256:https://dl.test/t/\nARG H=1'
 
-# Runs upgrade on a Dockerfile holding $2 and a workflow holding $3, in
+# Runs upgrade on $work/$1.Dockerfile holding $2 and a workflow holding $3 in
 # $work/$1/.github/workflows, and checks its status is $4, its stderr holds $5
 # where that is not empty, with @F@ in it standing for the Dockerfile's path and
 # @W@ for the workflow's, and the Dockerfile afterwards is $6. The workflow must
@@ -1143,7 +1143,7 @@ flow wf-pinned-twice-case "$df" "$wf" 1 "TRACK USES O/R is pinned twice" "$df" "
     "fake curl:"
 
 # A comment line that reads as a mistyped TRACK USES fails, as does a
-# TRACK FROM or TRACK ARG, mistyped or not.
+# TRACK FROM, TRACK ARG or TRACK LOCK, mistyped or not.
 n=0
 for typo in "  # TRACK USES o/r@v1" "#TRACK USES o/r@v1" "#  TRACK USES o/r@v1" \
     "# track uses o/r@v1" "# TRACK USES" "# TRACK  USES o/r@v1" "# TRACKUSES o/r@v1" \
@@ -1436,7 +1436,7 @@ for empty in "" x; do
     fi
 done
 
-# Paths given relative to a directory below the workflow's own place it beside
+# Paths given relative to the workflow's own directory place its proposal beside
 # that workflow's .github/workflows all the same.
 v=$work/relative
 mkdir -p "$v/.github/workflows"
@@ -1589,7 +1589,8 @@ check lock-no-from "$dockerfile" 1 "TRACK LOCK x has no stage=STAGE, so resolves
 dockerfile=$'# TRACK FROM r/x:1\n# TRACK FROM r/y:1\n# TRACK LOCK x pypi:a\nFROM r/x:1\nFROM r/y:1\n'
 check lock-two-froms "$dockerfile" 1 "TRACK LOCK x has no stage=STAGE, so resolves in the image TRACK FROM pins, and needs exactly one TRACK FROM, not 2" \
     "${dockerfile%$'\n'}" "fake docker:"
-# A lock naming its stage needs none, but one beside it naming none still does.
+# A lock naming its stage does not need exactly one TRACK FROM, but one beside
+# it naming no stage still does.
 dockerfile=$'# TRACK FROM r/x:1\n# TRACK FROM r/y:1\n# TRACK LOCK x stage=a pypi:a\n# TRACK LOCK y pypi:a\nFROM r/x:1 AS a\nFROM r/y:1\n'
 check lock-two-froms-one-staged "$dockerfile" 1 "TRACK LOCK y has no stage=STAGE" \
     "${dockerfile%$'\n'}" "fake docker:"
@@ -1825,7 +1826,7 @@ if expect lock-content-only 0 ""; then
     recorded lock-content-only lock-content-only/Dockerfile.lock/m/requirements.txt
 fi
 
-# An old lock is read only as this writes it; one that reads otherwise, as
+# An old lock is read only as upgrade writes it; one that reads otherwise, as
 # another tool or a hand might write it, is recorded as changed. Each case's
 # lines are separated by \n.
 n=0
@@ -1888,7 +1889,8 @@ expect lock-fedora-npm 0 "fake dnf: install -y --setopt=install_weak_deps=False 
 # its values quoted or not, and installs pip or npm with its own manager:
 # microdnf where dnf is missing, and apk adding bash first where it is missing.
 # Each case is OS, the image's directory, pypi or npm, then the lines its
-# manager prints, separated by ;, and a line no other manager's may hold.
+# manager prints, separated by ;. No other manager may print, nor apk add bash
+# where the image has bash.
 n=0
 for data in "ubuntu|container|pypi|fake apt-get: update;fake apt-get: install -y --no-install-recommends python3-pip" \
     "ubuntu|container|npm|fake apt-get: update;fake apt-get: install -y --no-install-recommends npm" \
@@ -2184,9 +2186,9 @@ for data in '{}|latest version on npm, none, is not a version' \
 done
 
 # A requirement whose marker turns on the machine or kernel is refused, unless
-# it is gated on an extra, only by extra == "EXTRA" and nothing else but by
-# and, that nothing resolved asks for; one turning on the operating system
-# alone is not, every image being Linux.
+# it is gated on an extra that nothing resolved asks for, by extra == "EXTRA"
+# joined to the rest only by and; one turning on the operating system alone is
+# not, every image being Linux.
 marked() {
     jq -n --arg r "$1" --arg also "${2:-}" '{install: [
         {metadata: {name: "m-d", version: "2.0.1",

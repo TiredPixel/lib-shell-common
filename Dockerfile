@@ -61,8 +61,9 @@ RUN apt-get update \
         yamllint \
     && rm -rf /var/lib/apt/lists/*
 
-# A UTF-8 locale besides C.UTF-8, under which [0-9] also matches other scripts'
-# digits, so test/lint/version-assert.test can catch that in the image.
+# A UTF-8 locale other than C.UTF-8: under such a locale [0-9] also matches
+# other scripts' digits, so test/lint/version-assert.test can catch that in the
+# image.
 RUN localedef -i en_US -f UTF-8 en_US.UTF-8
 
 ENV LANG=C.UTF-8 \
@@ -178,8 +179,8 @@ RUN case $(dpkg --print-architecture) in \
 # so every version is the lock's. pipx's shared venv is made here, from
 # Debian's bundled pip, since pipx would otherwise fetch pip unpinned to make
 # it, and in the same RUN as the inject, since pipx upgrades it from PyPI once
-# its pip is 30 days old. DL3013 asks for each version written here, which the
-# lock alone pins.
+# it is old enough. DL3013 asks for each version written here, which the lock
+# alone pins.
 # hadolint ignore=DL3013
 RUN --network=none \
     --mount=type=bind,from=wheels,source=/wheels,target=/wheels \

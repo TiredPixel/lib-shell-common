@@ -82,9 +82,9 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
         fi
 
         # A pointer move is M with a gitlink either side. A is a submodule added
-        # and not committed; D a directory that is not checked out, which git
-        # commit --only would record as the submodule's removal; T one replaced
-        # by a regular file.
+        # and not committed; D one whose directory is gone, which git commit
+        # --only would record as the submodule's removal; T one replaced by a
+        # regular file, or the reverse.
         if [ "$status" != M ] ||
             [ "$srcmode" != 160000 ] || [ "$dstmode" != 160000 ]; then
             refused+=("$status $path")

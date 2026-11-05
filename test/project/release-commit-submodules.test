@@ -116,9 +116,8 @@ move() {
     echo "$1 ${2:0:9}..${3:0:9} ($4)"
 }
 
-# Records a failure of case $1 unless app's HEAD is one commit on from the
-# fixture's, subject "Release 1.2" and body $3, recording lib at $2 and changing
-# only lib.
+# Records a failure of case $1 unless app's HEAD is one commit on from $head,
+# subject "Release 1.2" and body $3, recording lib at $2 and changing only lib.
 expect_committed() {
     expect "$1" "the commit's parent" "$(git -C "$w/app" rev-parse HEAD~)" \
         "$head"
