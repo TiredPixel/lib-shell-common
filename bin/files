@@ -5,10 +5,13 @@
 # shell options, since it runs under its caller's; any failure here ends the
 # caller's run.
 
-# Indented by 4 spaces, departing from shfmt's default indent (see
-# `shfmt --help`), since spaces are the common practice for shell. Read only by
-# the runners that source this file, so it looks unused here.
+# Before the first command, so it covers the whole file: every array here is
+# read only by the runners that source this file, and ShellCheck takes the
+# nameref files_find assigns through mapfile for unused.
 # shellcheck disable=SC2034
+
+# Indented by 4 spaces, departing from shfmt's default indent (see
+# `shfmt --help`), since spaces are the common practice for shell.
 shfmt_args=(-i 4)
 
 # Reads into the array named by $1 what find, given the arguments after $2,
@@ -37,12 +40,14 @@ files_find() {
 }
 
 # Appends to shell_files each file directly in directory $1 whose first line is
-# a bash shebang, since the scripts carry no suffix. Checked on this scan's own
-# result, so a directory that is missing or yields nothing fails the run rather
-# than quietly narrowing the lint.
+# a bash shebang or, for a file that is sourced and so carries none,
+# ShellCheck's shell=bash directive, since the scripts carry no suffix. Checked
+# on this scan's own result, so a directory that is missing or yields nothing
+# fails the run rather than quietly narrowing the lint.
 files_shell_in() {
     local dir=$1 f first
-    local pattern='^#!.*[/[:space:]]bash([[:space:]]|$)'
+    local shebang='#!.*[/[:space:]]bash([[:space:]]|$)'
+    local pattern="^($shebang|# shellcheck shell=bash\$)"
     local -a entries found=()
 
     if ! [ -d "$dir" ]; then
@@ -68,9 +73,6 @@ for files_dir in ansible docker github lint project terraform bin; do
     files_shell_in "$files_dir"
 done
 unset files_dir
-# Carry no shebang, since they are sourced.
-shell_files+=(ansible/lint-args bin/files docker/describe docker/init
-    project/release-onto)
 
 compose_files=(docker-compose.yml)
 # A proposed workflow waits in .github/workflows.new/ until it is moved into
@@ -83,25 +85,13 @@ if [ -d .github ]; then
 fi
 yaml_files=("${compose_files[@]}" .hadolint.yaml "${workflow_files[@]}")
 
-# Read only by the runners that source this file, so it looks unused here.
-# shellcheck disable=SC2034
 docker_files=(Dockerfile)
-# Read only by the runners that source this file, so it looks unused here.
-# shellcheck disable=SC2034
 markdown_files=(README.md)
-# Read only by the runners that source this file, so it looks unused here.
-# shellcheck disable=SC2034
 make_files=(Makefile)
-# Read only by the runners that source this file, so it looks unused here.
-# shellcheck disable=SC2034
 dotenv_files=(.env.example)
-# --newline, so each keeps its final newline. Read only by the runners that
-# source this file, so it looks unused here.
-# shellcheck disable=SC2034
+# --newline, so each keeps its final newline.
 dockerfmt_args=(--newline)
-# --wrap no, so each paragraph is one line, which renderers reflow. Read only by
-# the runners that source this file, so it looks unused here.
-# shellcheck disable=SC2034
+# --wrap no, so each paragraph is one line, which renderers reflow.
 mdformat_args=(--wrap no)
 
 # No formatter or linter exists for what else is tracked: the .dockerignore,

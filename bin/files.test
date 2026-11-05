@@ -69,7 +69,7 @@ tree() {
 }
 
 # The shell lines for a tree as tree made it, with $1 inserted after the docker/
-# line.
+# line; bin/files, sourced, is found by its shell=bash directive.
 shells() {
     local d
     for d in "${dirs[@]}"; do
@@ -78,11 +78,7 @@ shells() {
             echo "$1"
         fi
     done
-    echo "shell ansible/lint-args"
     echo "shell bin/files"
-    echo "shell docker/describe"
-    echo "shell docker/init"
-    echo "shell project/release-onto"
 }
 
 # Reports a failure of case $1 at once, each line of $2 under the program and
@@ -111,18 +107,23 @@ check() {
     fi
 }
 
-# Only a bash shebang is taken, in either form, with or without arguments, and
-# only directly in the directory; the workflow directory is absent.
+# Only a bash shebang is taken, in either form, with or without arguments, or a
+# first line of ShellCheck's shell=bash directive alone, and only directly in
+# the directory; the workflow directory is absent.
 t=$(tree shebangs)
 printf '#!/bin/bash\n' >"$t/docker/b"
 printf '#!/bin/bash -e\n' >"$t/docker/b2"
+printf '# shellcheck shell=bash\ntrue\n' >"$t/docker/b3"
+printf '# shellcheck shell=sh\n' >"$t/docker/h"
+printf '# shellcheck shell=bash x\n' >"$t/docker/i"
+printf 'true\n# shellcheck shell=bash\n' >"$t/docker/j"
 printf '#!/bin/sh\n' >"$t/docker/c"
 printf 'echo no shebang\n#!/usr/bin/env bash\n' >"$t/docker/d"
 printf '#!/usr/bin/env bashful\n' >"$t/docker/e"
 : >"$t/docker/f"
 mkdir "$t/docker/sub"
 printf '#!/usr/bin/env bash\n' >"$t/docker/sub/g"
-check shebangs "$t" 0 "$(shells "shell docker/b"$'\n'"shell docker/b2")"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+check shebangs "$t" 0 "$(shells "shell docker/b"$'\n'"shell docker/b2"$'\n'"shell docker/b3")"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
 
 # Both workflow directories are read, only for *.yml and *.yaml directly in
 # them, the two suffixes GitHub runs a workflow under (GitHub's workflow syntax
@@ -162,10 +163,17 @@ t=$(tree empty-docker)
 rm -- "$t/docker/a"
 check empty-docker "$t" 1 "" "bin/files: docker/ holds no bash script"
 
-# bin/files alone is not enough: it carries no shebang.
+# A bin/ holding no bash file fails too, bin/files sourced from outside the
+# tree, since its own shell=bash line would otherwise count.
 t=$(tree no-scripts-bin)
+rm -- "$t/bin/a" "$t/bin/files"
+printf '#!/bin/sh\n' >"$t/bin/b"
+FILES=$files check no-scripts-bin "$t" 1 "" "bin/files: bin/ holds no bash script"
+
+# bin/files alone is enough, found by its shell=bash line.
+t=$(tree only-files-bin)
 rm -- "$t/bin/a"
-check no-scripts-bin "$t" 1 "" "bin/files: bin/ holds no bash script"
+check only-files-bin "$t" 0 "$(shells | grep -vxF 'shell bin/a')"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
 
 for d in docker .github; do
     t=$(tree "find-fails-$d")
