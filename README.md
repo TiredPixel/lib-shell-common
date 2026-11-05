@@ -72,7 +72,7 @@ Dockerfile:12: npm install resolves versions itself, where npm ci installs a loc
 upgrade: Dockerfile: each line above is refused by lint/dockerfile-locks
 ```
 
-Where the lint itself fails, with any status but 1, such as 3 where `jq` fails to read an exec-form `RUN`, the upgrade fails with `upgrade: DOCKERFILE: lint/dockerfile-locks failed with status N`.
+Where the lint itself fails, with any status but 1, such as 3 where `jq` fails to read an exec-form `RUN`, the upgrade fails with `upgrade: DOCKERFILE: lint/dockerfile-locks failed with status N`. A test can run another lint in its place by naming it in `DOCKERFILE_LOCKS_LINT`; unset or empty, the library's own runs.
 
 With `--record`, `docker/upgrade` notes each file it wrote and each pin that moved.
 
@@ -328,7 +328,7 @@ VERSION=1.2.3 lib/shell-common/lint/version-assert --parts 3
 
 ## Approving workflows
 
-GitHub refuses a push from an agent that touches `.github/workflows/`, so a change to a workflow is proposed as the whole file in `.github/workflows.new/`, which the lint covers as it does the live workflows. CI fails while a proposal is pending, through a step that runs `github/workflows-pending` and lists each pending file. A repository taking the library runs it after a checkout that takes submodules, since without them `lib/shell-common` is an empty directory:
+An agent's GitHub credential may be set up without the `workflow` scope or the Workflows permission, so that no push it makes can touch `.github/workflows/` (GitHub's documentation, *Scopes for OAuth apps* and *Permissions required for GitHub Apps*, checked 2026-11); a change to a workflow is therefore proposed as the whole file in `.github/workflows.new/`, which the lint covers as it does the live workflows. CI fails while a proposal is pending, through a step that runs `github/workflows-pending` and lists each pending file. A repository taking the library runs it after a checkout that takes submodules, since without them `lib/shell-common` is an empty directory:
 
 ```yaml
 - uses: actions/checkout@SHA
@@ -512,10 +512,17 @@ cd lib-shell-common
 cp .env.example .env
 ```
 
-Where Docker is rootless or the host user's uid is not 1000, set this in `.env`, so that `make format` can write to the tree:
+`make format` writes to the tree as the container's user, uid and gid 1000 by default. Where Docker is rootless, uid 0 in the container is the host user, so set this in `.env`:
 
 ```sh
 DC_BIND_USER=0:0
+```
+
+Where Docker is rootful and the host user's uid or gid is not 1000, leave `DC_BIND_USER` unset and instead set the host user's ids in `.env`, as `id -g` and `id -u` print them, then rebuild with `make build`:
+
+```sh
+DC_GID=1001
+DC_UID=1001
 ```
 
 ### Testing

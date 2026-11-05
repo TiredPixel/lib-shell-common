@@ -113,7 +113,11 @@
 # refuses a RUN, its FILE:LINE: lines stand on stderr above a warning and the
 # upgrade carries on, since a project's own lint runs lint/dockerfile-locks,
 # which fails on them; where the lint itself fails, with any status but 1, such
-# as 3 where jq fails to read an exec-form RUN, so does the run.
+# as 3 where jq fails to read an exec-form RUN, so does the run. The lint is the
+# file DOCKERFILE_LOCKS_LINT names, where it is set and not empty, as in a test,
+# else this library's own; a bare name is taken in the current directory, and a
+# path that is not an executable regular file fails the run before anything is
+# read.
 #
 # FROM and ARG are matched in any case, as Docker reads them, and on logical
 # lines, as docker/dockerfile-parse reads them: continued lines joined at the
@@ -174,6 +178,12 @@ fi
 dockerfile=${1:-Dockerfile}
 workflows=("${@:2}")
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+locklint=${DOCKERFILE_LOCKS_LINT:-$here/../lint/dockerfile-locks}
+# A bare name would be looked up on PATH rather than run from where it is.
+case $locklint in
+*/*) ;;
+*) locklint=./$locklint ;;
+esac
 
 refuse() {
     echo "${0##*/}: $1: ${*:2}" >&2
@@ -194,6 +204,10 @@ refuse_at() {
     exit 1
 }
 
+[ -e "$locklint" ] || refuse "$locklint" "no such file"
+if ! [ -f "$locklint" ] || ! [ -x "$locklint" ]; then
+    refuse "$locklint" "not an executable regular file"
+fi
 [ -e "$dockerfile" ] || die "no such file"
 [ -f "$dockerfile" ] || die "not a regular file"
 for w in "${!workflows[@]}"; do
@@ -949,7 +963,6 @@ done
 
 # The lint's own check, so an upgrade does not pass unremarked a Dockerfile the
 # lint would fail. A leading - would read as an option.
-locklint=$here/../lint/dockerfile-locks
 status=0
 case $dockerfile in
 -*) "$locklint" "./$dockerfile" || status=$? ;;

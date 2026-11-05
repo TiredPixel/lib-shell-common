@@ -197,13 +197,18 @@ RUN --network=none \
     && echo "$version" | grep -qF 'mdformat-gfm ' \
     && echo "$version" | grep -qF 'mdformat_frontmatter '
 
-# uid 1000 so the source make format bind-mounts is writable from a host whose
-# user is the usual 1000.
-RUN useradd -u 1000 x -m \
+# The host user's ids, so the source make format bind-mounts is writable under
+# rootful Docker; 1000 is the usual first user. -o, since a host's gid may be
+# one Debian already uses, such as 100; -l, so a large uid does not grow the
+# lastlog and faillog files.
+ARG USER_GID=1000
+ARG USER_UID=1000
+RUN groupadd -o -g "$USER_GID" x \
+    && useradd -l -o -u "$USER_UID" -g x -m x \
     && mkdir /home/x/r \
     && chown -R x:x /home/x
 #-------------------------------------------------------------------------------
-USER 1000:1000
+USER $USER_UID:$USER_GID
 
 WORKDIR /home/x/r
 

@@ -32,11 +32,11 @@
 # given exactly the search upgrade makes for FREEZE lines, and otherwise runs
 # the real one.
 #
-# upgrade runs from a copy beside a fake lint/dockerfile-locks, which names on
-# stderr the file it checks and passes it, unless FAKE_LINT=fail, where it
-# refuses it as the real one would, FAKE_LINT=usage, where it fails as on a
-# usage error, or FAKE_LINT=unreadable, where it fails as on a file it cannot
-# read.
+# upgrade runs where it is, so coverage measures it, with DOCKERFILE_LOCKS_LINT
+# naming a fake lint/dockerfile-locks, which names on stderr the file it checks
+# and passes it, unless FAKE_LINT=fail, where it refuses it as the real one
+# would, FAKE_LINT=usage, where it fails as on a usage error, or
+# FAKE_LINT=unreadable, where it fails as on a file it cannot read.
 #
 # Run: test/docker/upgrade.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -46,11 +46,11 @@ source=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
-mkdir -p "$work/lib/docker" "$work/lib/lint"
-cp -- "$source/upgrade" "$source/lock-resolve" "$source/dockerfile-parse" "$work/lib/docker/"
-upgrade=$work/lib/docker/upgrade
-export FAKE_RESOLVER=$work/lib/docker/lock-resolve
-cat >"$work/lib/lint/dockerfile-locks" <<'EOF'
+upgrade=$source/upgrade
+export FAKE_RESOLVER=$source/lock-resolve
+mkdir "$work/lint"
+export DOCKERFILE_LOCKS_LINT=$work/lint/dockerfile-locks
+cat >"$DOCKERFILE_LOCKS_LINT" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -74,7 +74,7 @@ unreadable)
     ;;
 esac
 EOF
-chmod +x "$work/lib/lint/dockerfile-locks"
+chmod +x "$DOCKERFILE_LOCKS_LINT"
 
 mkdir "$work/bin" "$work/container"
 cat >"$work/bin/docker" <<'EOF'
@@ -1581,6 +1581,45 @@ rc=0
 (cd "$work" && "$upgrade" -lead.Dockerfile) >/dev/null 2>"$work/err" || rc=$?
 if [ "$rc" != 0 ] || ! grep -qxF "fake lint: ./-lead.Dockerfile" "$work/err"; then
     fail lint-leading-dash "exit $rc: $(<"$work/err")"
+fi
+
+# DOCKERFILE_LOCKS_LINT is refused before anything is read where it names no
+# executable regular file, and a bare name is taken in the current directory.
+fromdf=$'# TRACK FROM r/x:1\nFROM r/x:1\n'
+DOCKERFILE_LOCKS_LINT=$work/lint/absent check lint-missing "$fromdf" 1 \
+    "upgrade: $work/lint/absent: no such file" "${fromdf%$'\n'}" "fake "
+cp -- "$DOCKERFILE_LOCKS_LINT" "$work/lint/plain"
+chmod -x "$work/lint/plain"
+DOCKERFILE_LOCKS_LINT=$work/lint/plain check lint-not-executable "$fromdf" 1 \
+    "upgrade: $work/lint/plain: not an executable regular file" \
+    "${fromdf%$'\n'}" "fake "
+DOCKERFILE_LOCKS_LINT=$work/lint check lint-directory "$fromdf" 1 \
+    "upgrade: $work/lint: not an executable regular file" "${fromdf%$'\n'}" \
+    "fake "
+file=$work/lint-bare-name.Dockerfile
+printf 'FROM x\n' >"$file"
+rc=0
+(cd "$work/lint" && DOCKERFILE_LOCKS_LINT=dockerfile-locks "$upgrade" "$file") \
+    >/dev/null 2>"$work/err" || rc=$?
+if [ "$rc" != 0 ] || ! grep -qxF "fake lint: $file" "$work/err"; then
+    fail lint-bare-name "exit $rc: $(<"$work/err")"
+fi
+
+# Where DOCKERFILE_LOCKS_LINT is empty or unset, the library's own lint runs.
+npm=$'# TRACK FROM r/x:1\nFROM r/x:1\nRUN npm install x\n'
+DOCKERFILE_LOCKS_LINT='' check lint-default-empty "$npm" 0 \
+    "upgrade: @F@: each line above is refused by lint/dockerfile-locks" \
+    $'# TRACK FROM r/x:1\nFROM r/x@'"$new"$'\nRUN npm install x' "fake lint:"
+file=$work/lint-default-unset.Dockerfile
+printf '%s' "$npm" >"$file"
+rm -f -- "$FAKE_PULLED"
+rc=0
+env -u DOCKERFILE_LOCKS_LINT "$upgrade" "$file" >"$work/out" 2>"$work/err" ||
+    rc=$?
+if [ "$rc" != 0 ] || ! grep -qF -- "$file:3: " "$work/err" ||
+    ! grep -qxF -- "upgrade: $file: each line above is refused by lint/dockerfile-locks" \
+        "$work/err" || grep -qF "fake lint:" "$work/err"; then
+    fail lint-default-unset "exit $rc: $(<"$work/err")"
 fi
 
 # Each malformed TRACK LOCK is refused before anything is looked up.
