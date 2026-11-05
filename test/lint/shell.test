@@ -137,6 +137,22 @@ printf 'echo sourced\n' >"$p/fragment"
 script run
 check named-and-found 0 "fragment"$'\n'"./run" "$sc fragment ./run" fragment
 
+# A named file the scan also found is checked once, however its leading ./ is
+# written, and a named file the scan did not find is kept beside it.
+project
+script run
+script bin/tool
+printf 'echo sourced\n' >"$p/fragment"
+check named-found 0 "fragment"$'\n'"./run"$'\n'"bin/tool" \
+    "$sc fragment ./run bin/tool" run fragment ./bin/tool
+check named-found-dot 0 "./run"$'\n'"bin/tool" "$sc ./run bin/tool" \
+    ./run bin/tool
+
+# A named wrapper the scan passes over is still checked.
+project
+script gradlew
+check named-gradle 0 "gradlew" "$sc gradlew" gradlew
+
 project
 script run
 FAKE_SHELLCHECK=1 check shellcheck-fails 1 "./run" "$sc ./run"
