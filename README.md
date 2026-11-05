@@ -505,12 +505,12 @@ lib/shell-common/terraform/test-cloud
 make test
 ```
 
-The lint is ShellCheck and shfmt on every Bash script; `lint/yaml-keys`, which shows each file whose keys are not sorted as a unified diff against its sorted form, and yamllint on the YAML files `bin/files` lists, with `docker-compose config` on `docker-compose.yml` and actionlint on the workflows; dockerfmt, hadolint and `lint/dockerfile-locks` on the `Dockerfile`; mdformat on `README.md`; checkmake on the `Makefile`; and dotenv-linter on `.env.example`. The tests are the `*/*.test` scripts, run side by side, as many at a time as there are CPUs; each failing test is named, and the run fails if any did.
+The lint is ShellCheck and shfmt on every Bash script; `lint/yaml-keys`, which shows each file whose keys are not sorted as a unified diff against its sorted form, and yamllint on the YAML files `bin/files` lists, with `docker-compose config` on `docker-compose.yml` and actionlint on the workflows; dockerfmt, hadolint and `lint/dockerfile-locks` on the `Dockerfile`; mdformat on `README.md`; checkmake on the `Makefile`; and dotenv-linter on `.env.example`. The tests are the `test/*/*.test` scripts, each at the path of the script it tests under `test/`, run side by side, as many at a time as there are CPUs; each failing test is named, and the run fails if any did.
 
-Named tests skip the lint, and each must be a `*/*.test` path from the repository's root:
+Named tests skip the lint, and each must be a `test/*/*.test` path from the repository's root:
 
 ```sh
-make test TESTS=docker/upgrade.test
+make test TESTS=test/docker/upgrade.test
 ```
 
 `make lint` runs the lint alone:

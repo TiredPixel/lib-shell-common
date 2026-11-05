@@ -1,0 +1,527 @@
+#!/usr/bin/env bash
+#
+# Tests github/workflows-approve against real repositories in a scratch dir:
+# repo, pushed to the bare origin.git and holding a live workflow, build.yml.
+# Each run answers through a terminal that script(1) gives it, fed the answers
+# on stdin, and keeps its stdout and stderr in files unless a case wants stdout
+# on that terminal. Every case builds its fixture afresh.
+#
+# Run: test/github/workflows-approve.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+approve=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../github")/workflows-approve
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+work=$(readlink -f "$work")
+
+# Nothing from the caller's configuration reaches the fixtures, and nothing
+# above the scratch dir is taken for a repository.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$work
+export GIT_CONFIG_COUNT=3
+export GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=test
+export GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=test@example.com
+export GIT_CONFIG_KEY_2=init.defaultBranch GIT_CONFIG_VALUE_2=main
+# script(1) runs its command through $SHELL.
+SHELL=$(command -v bash)
+export SHELL APPROVE=$approve
+
+# Runs workflows-approve in RUN_DIR, its stdout to RUN_OUT unless RUN_TTY is
+# set, its stderr to RUN_ERR, and its stdin from file RUN_STDIN if that is set
+# rather than from the terminal.
+cat >"$work/run" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+cd "$RUN_DIR"
+if [ -n "${RUN_STDIN:-}" ]; then
+    exec <"$RUN_STDIN"
+fi
+if [ -n "${RUN_TTY:-}" ]; then
+    exec "$APPROVE" 2>"$RUN_ERR"
+fi
+exec "$APPROVE" >"$RUN_OUT" 2>"$RUN_ERR"
+EOF
+chmod +x "$work/run"
+
+# Fails the call whose arguments start with FAKE_FAIL as an error would, and
+# runs the real git for every call workflows-approve makes up to its diff of a
+# proposal; refuses any other.
+mkdir "$work/fake"
+cat >"$work/fake/git" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [[ "\$*" == "\${FAKE_FAIL:?}"* ]]; then
+    echo "fake git: diff failed" >&2
+    exit 2
+fi
+case "\$*" in
+"rev-parse --show-toplevel" | "diff --cached --name-only" | \\
+    "symbolic-ref -q --short HEAD" | "remote get-url origin" | \\
+    "ls-files -- :(literal)"* | "diff --quiet -- :(literal)"* | \\
+    "diff --no-index --quiet -- "*)
+    exec $(printf %q "$(command -v git)") "\$@"
+    ;;
+esac
+echo "fake git: unexpected arguments: \$*" >&2
+exit 99
+EOF
+chmod +x "$work/fake/git"
+
+# Stands in for gpg as git's gpg.program: appends its arguments to
+# $FAKE_GPG_LOG, reports the signature made on the status descriptor git passes
+# it, 2, and prints a signature carrying a marker.
+mkdir "$work/gpg"
+cat >"$work/gpg/gpg" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+printf '%s\n' "$*" >>"${FAKE_GPG_LOG:?}"
+cat >/dev/null
+printf '[GNUPG:] BEGIN_SIGNING\n[GNUPG:] SIG_CREATED D 1 8 00 0 0\n' >&2
+printf '%s\n' '-----BEGIN PGP SIGNATURE-----' '' 'fake-gpg-signature' \
+    '-----END PGP SIGNATURE-----'
+EOF
+chmod +x "$work/gpg/gpg"
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
+n=0
+
+# A fresh fixture in $w: repo on main, pushed to origin.git, holding
+# .github/workflows/build.yml unless $1 is "bare", when it holds a README alone.
+fixture() {
+    n=$((n + 1))
+    w=$work/$n
+    r=$w/repo
+    mkdir "$w"
+    git init -q --bare "$w/origin.git"
+    git init -q "$r"
+    if [ "${1:-}" = bare ]; then
+        echo readme >"$r/README"
+        git -C "$r" add README
+    else
+        mkdir -p "$r/.github/workflows"
+        printf 'name: old\n' >"$r/.github/workflows/build.yml"
+        git -C "$r" add .github
+    fi
+    git -C "$r" commit -q -m init
+    git -C "$r" remote add origin "$w/origin.git"
+    git -C "$r" push -q -u origin main
+}
+
+# Writes proposal .github/workflows.new/$1 in repo holding $2.
+propose() {
+    mkdir -p "$r/.github/workflows.new"
+    printf '%s\n' "$2" >"$r/.github/workflows.new/$1"
+}
+
+# Runs workflows-approve in directory $1 of repo, feeding it answers $2, one a
+# line, keeping its status in rc and what reached the terminal in $w/tty.
+run() {
+    rc=0
+    printf '%b' "$2" |
+        RUN_DIR=$r/$1 RUN_OUT=$w/out RUN_ERR=$w/err \
+            script -qec "$work/run" /dev/null >"$w/tty" || rc=$?
+    touch "$w/out" "$w/err"
+}
+
+# What a run printed, for a failure's message.
+said() {
+    echo "out: $(<"$w/out") err: $(<"$w/err") tty: $(<"$w/tty")"
+}
+
+# Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
+expect() {
+    if [ "$3" != "$4" ]; then
+        fail "$1" "$2 is $3, not $4: $(said)"
+    fi
+}
+
+# Records a failure of case $1 unless file $2 of the run holds $3.
+expect_in() {
+    grep -qF -- "$3" "$w/$2" || fail "$1" "$2 lacks '$3': $(said)"
+}
+
+# Records a failure of case $1 where file $2 of the run holds $3.
+expect_not_in() {
+    if grep -qF -- "$3" "$w/$2"; then
+        fail "$1" "$2 holds '$3': $(said)"
+    fi
+}
+
+# Records a failure of case $1 unless the run exited 1, printed nothing on
+# stdout and printed exactly $2 on stderr.
+expect_refused() {
+    expect "$1" status "$rc" 1
+    expect "$1" stdout "$(<"$w/out")" ""
+    expect "$1" stderr "$(<"$w/err")" "$2"
+}
+
+# What live workflow $1 holds, or "(missing)".
+content() {
+    cat -- "$r/.github/workflows/$1" 2>/dev/null || echo "(missing)"
+}
+
+# HEAD's commit and the tree's status, compared before and after a run that
+# should change nothing.
+state() {
+    git -C "$r" rev-parse HEAD
+    git -C "$r" status --porcelain --untracked-files=all
+}
+
+# Records a failure of case $1 unless the run left repo as state found it, $2.
+expect_unchanged() {
+    expect "$1" state "$(state)" "$2"
+}
+
+# Records a failure of case $1 unless repo's last commit says $2 and origin's
+# main is that commit, nothing is staged and nothing is left untracked.
+expect_committed() {
+    expect "$1" message \
+        "$(git -C "$r" log -1 --no-show-signature --format=%B)" "$2"
+    expect "$1" "origin's main" "$(git -C "$w/origin.git" rev-parse main)" \
+        "$(git -C "$r" rev-parse HEAD)"
+    expect "$1" "git status" "$(git -C "$r" status --porcelain --untracked-files=all)" ""
+}
+
+# Nothing pending: workflows.new/ absent.
+fixture
+before=$(state)
+run . ""
+expect_refused absent \
+    "workflows-approve: nothing to approve: .github/workflows.new/ is absent"
+expect_unchanged absent "$before"
+
+# Any argument is a usage error, before anything is looked at.
+fixture
+propose build.yml 'name: new'
+before=$(state)
+rc=0
+(cd "$r" && "$approve" .github/workflows.new/build.yml) \
+    >"$w/out" 2>"$w/err" </dev/null || rc=$?
+: >"$w/tty"
+expect usage status "$rc" 2
+expect usage stdout "$(<"$w/out")" ""
+expect usage stderr "$(<"$w/err")" "Usage: workflows-approve"
+expect_unchanged usage "$before"
+
+# Nothing pending: workflows.new/ empty, which a dot file would not be.
+fixture
+mkdir "$r/.github/workflows.new"
+before=$(state)
+run . ""
+expect_refused empty \
+    "workflows-approve: nothing to approve: .github/workflows.new/ is empty"
+expect_unchanged empty "$before"
+
+# A directory or a symlink in workflows.new/ is refused.
+for kind in dir link; do
+    fixture
+    propose build.yml 'name: new'
+    if [ "$kind" = dir ]; then
+        mkdir "$r/.github/workflows.new/x.yml"
+    else
+        ln -s build.yml "$r/.github/workflows.new/x.yml"
+    fi
+    before=$(state)
+    run . ""
+    expect_refused "irregular-$kind" \
+        "workflows-approve: refusing, since .github/workflows.new/x.yml is not a regular file"
+    expect_unchanged "irregular-$kind" "$before"
+done
+
+# A name outside [A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml is refused before
+# anything is shown, quoted so that no byte outside printable ASCII reaches the
+# terminal: ESC with a newline, a right-to-left override, a space, another
+# suffix, an upper-case one, and a leading dot or dash.
+names=($'x\e[2J\nbuild.yml' $'evil\xe2\x80\xaelmy.yml' 'a b.yml' build.txt build.YML
+    .build.yml -build.yml)
+for name in "${names[@]}"; do
+    fixture
+    propose "$name" 'name: new'
+    before=$(state)
+    LC_ALL=C.UTF-8 run . ""
+    quoted=$(LC_ALL=C printf %q ".github/workflows.new/$name")
+    expect_refused "name $quoted" "workflows-approve: refusing, since $quoted is not named [A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml"
+    if LC_ALL=C grep -q '[^[:print:]]' "$w/err"; then
+        fail "name $quoted" "stderr holds a byte outside printable ASCII: $(said)"
+    fi
+    expect_unchanged "name $quoted" "$before"
+done
+
+# Anything already staged is refused, naming it.
+fixture
+propose build.yml 'name: new'
+echo other >"$r/other"
+git -C "$r" add other
+before=$(state)
+run . ""
+expect_refused staged "workflows-approve: other
+workflows-approve: refusing, since the paths above are already staged and would be committed with the approval"
+expect_unchanged staged "$before"
+
+# A detached HEAD is refused.
+fixture
+propose build.yml 'name: new'
+git -C "$r" checkout -q --detach
+before=$(state)
+run . ""
+expect_refused detached "workflows-approve: refusing on a detached HEAD, since there is no branch to push"
+expect_unchanged detached "$before"
+
+# No origin is refused.
+fixture
+propose build.yml 'name: new'
+git -C "$r" remote remove origin
+before=$(state)
+run . ""
+expect_refused no-origin "workflows-approve: refusing, since there is no origin to push to"
+expect_unchanged no-origin "$before"
+
+# No terminal is refused: setsid leaves the run without one.
+fixture
+propose build.yml 'name: new'
+before=$(state)
+rc=0
+RUN_DIR=$r RUN_OUT=$w/out RUN_ERR=$w/err setsid -w "$work/run" \
+    </dev/null >"$w/tty" 2>&1 || rc=$?
+expect_refused no-terminal \
+    "workflows-approve: refusing, since there is no terminal to ask on"
+expect_unchanged no-terminal "$before"
+
+# A changed workflow proposed only in the working tree, approved from a
+# subdirectory with stdout not on a terminal: the diff is shown uncoloured, the
+# file moved, workflows.new/ removed, the move committed and pushed.
+fixture
+propose build.yml 'name: new'
+mkdir "$r/sub"
+touch "$r/sub/.keep"
+git -C "$r" add sub
+git -C "$r" commit -q -m sub
+git -C "$r" push -q
+run sub 'y\n'
+expect changed status "$rc" 0
+expect_in changed out "--- a/.github/workflows/build.yml"
+expect_in changed out "+++ b/.github/workflows.new/build.yml"
+expect_in changed out "-name: old"
+expect_in changed out "+name: new"
+expect_not_in changed out $'\e['
+expect_in changed err "Approve .github/workflows.new/build.yml? [y/n] "
+expect_not_in changed tty "Approve"
+expect changed content "$(content build.yml)" "name: new"
+expect changed workflows.new "$([ -e "$r/.github/workflows.new" ] || echo gone)" \
+    gone
+expect_committed changed "Approve workflow"$'\n\n'".github/workflows/build.yml (changed)"
+
+# A new workflow proposed in a commit, with no .github/workflows/ yet: the whole
+# file is shown, and the commit removes it from workflows.new/.
+fixture bare
+propose new.yml 'name: added'
+git -C "$r" add .github
+git -C "$r" commit -q -m propose
+git -C "$r" push -q
+run . 'y\n'
+expect new status "$rc" 0
+expect_in new out "--- /dev/null"
+expect_in new out "+name: added"
+expect new content "$(content new.yml)" "name: added"
+expect new "tracked proposal" "$(git -C "$r" ls-files .github/workflows.new)" ""
+expect_committed new "Approve workflow"$'\n\n'".github/workflows/new.yml (new)"
+
+# Several approved, after an answer that is neither y nor n, which is asked
+# again.
+fixture
+propose build.yml 'name: new'
+propose other.yml 'name: other'
+run . 'maybe\ny\ny\n'
+expect several status "$rc" 0
+expect several prompts \
+    "$(grep -o 'Approve .github/workflows.new/build.yml?' "$w/err" | wc -l)" 2
+expect_committed several "Approve workflows"$'\n\n'".github/workflows/build.yml (changed)"$'\n'".github/workflows/other.yml (new)"
+
+# One approved and one declined: only the approved one moves, and the declined
+# one stays pending, tracked as it was.
+fixture
+propose build.yml 'name: new'
+propose other.yml 'name: other'
+git -C "$r" add .github
+git -C "$r" commit -q -m propose
+git -C "$r" push -q
+run . 'n\ny\n'
+expect partial status "$rc" 0
+expect partial content "$(content build.yml)" "name: old"
+expect partial content "$(content other.yml)" "name: other"
+expect partial pending "$(git -C "$r" ls-files .github/workflows.new)" \
+    .github/workflows.new/build.yml
+expect_committed partial "Approve workflow"$'\n\n'".github/workflows/other.yml (new)"
+
+# Nothing approved changes nothing.
+fixture
+propose build.yml 'name: new'
+before=$(state)
+run . 'n\n'
+expect declined status "$rc" 0
+expect_in declined err "workflows-approve: nothing approved, so nothing is changed"
+expect_unchanged declined "$before"
+
+# The terminal closing before an answer changes nothing.
+fixture
+propose build.yml 'name: new'
+before=$(state)
+run . ''
+expect eof status "$rc" 1
+expect eof stderr "$(<"$w/err")" "Approve .github/workflows.new/build.yml? [y/n] workflows-approve: no answer read from the terminal"
+expect_unchanged eof "$before"
+
+# stdout on a terminal: the diff is coloured.
+fixture
+propose build.yml 'name: new'
+RUN_TTY=1 run . 'y\n'
+expect colour status "$rc" 0
+expect_in colour tty $'\e['
+expect_in colour tty "name: new"
+
+# git's diff failing, whether checking for a proposal that changes nothing or
+# showing one, ends the run before anything changes.
+for call in "diff --no-index --quiet" "--no-pager diff --no-index"; do
+    fixture
+    propose build.yml 'name: new'
+    before=$(state)
+    FAKE_FAIL=$call PATH=$work/fake:$PATH run . 'y\n'
+    expect "diff-fails $call" status "$rc" 2
+    expect_in "diff-fails $call" err "fake git: diff failed"
+    expect_unchanged "diff-fails $call" "$before"
+done
+
+# A proposal the same as its live workflow is refused, whether it is tracked or
+# only in the working tree.
+for kind in untracked tracked; do
+    fixture
+    propose build.yml 'name: old'
+    if [ "$kind" = tracked ]; then
+        git -C "$r" add .github
+        git -C "$r" commit -q -m propose
+    fi
+    before=$(state)
+    run . 'y\n'
+    expect_refused "identical-$kind" "workflows-approve: refusing, since .github/workflows.new/build.yml is the same as .github/workflows/build.yml; remove it"
+    expect_unchanged "identical-$kind" "$before"
+done
+
+# A live workflow with local changes, an edit or a removal, is refused, since
+# the move would overwrite them unreviewed.
+for kind in edited removed; do
+    fixture
+    propose build.yml 'name: new'
+    if [ "$kind" = edited ]; then
+        printf 'name: local\n' >"$r/.github/workflows/build.yml"
+    else
+        rm "$r/.github/workflows/build.yml"
+    fi
+    before=$(state)
+    run . 'y\n'
+    expect_refused "local-$kind" "workflows-approve: refusing, since .github/workflows/build.yml has local changes the approval would overwrite"
+    expect_unchanged "local-$kind" "$before"
+done
+
+# An untracked live workflow is refused.
+fixture bare
+mkdir -p "$r/.github/workflows"
+printf 'name: stray\n' >"$r/.github/workflows/build.yml"
+propose build.yml 'name: new'
+before=$(state)
+run . 'y\n'
+expect_refused untracked-live "workflows-approve: refusing, since .github/workflows/build.yml is untracked"
+expect_unchanged untracked-live "$before"
+
+# Answers come from the terminal, not stdin: stdin saying n does not decline.
+fixture
+propose build.yml 'name: new'
+printf 'n\n' >"$w/stdin"
+RUN_STDIN=$w/stdin run . 'y\n'
+expect stdin status "$rc" 0
+expect stdin content "$(content build.yml)" "name: new"
+expect_committed stdin "Approve workflow"$'\n\n'".github/workflows/build.yml (changed)"
+
+# A failed commit leaves the approval staged, pushes nothing, and gives the
+# commit to run by hand, which then makes the commit the run would have.
+fixture
+propose build.yml 'name: new'
+printf '#!/bin/sh\necho "hook refuses" >&2\nexit 1\n' >"$r/.git/hooks/pre-commit"
+chmod +x "$r/.git/hooks/pre-commit"
+head=$(git -C "$r" rev-parse HEAD)
+run . 'y\n'
+expect commit-fails status "$rc" 1
+expect_in commit-fails err "workflows-approve: commit failed; the approval stays staged, so commit it by hand: git commit -m "
+expect commit-fails HEAD "$(git -C "$r" rev-parse HEAD)" "$head"
+expect commit-fails "origin's main" "$(git -C "$w/origin.git" rev-parse main)" "$head"
+expect commit-fails "git status" \
+    "$(git -C "$r" status --porcelain --untracked-files=all)" \
+    "M  .github/workflows/build.yml"
+rm "$r/.git/hooks/pre-commit"
+hand=$(sed -n 's/^.*commit it by hand: //p' "$w/err")
+(cd "$r" && eval "$hand") >/dev/null
+expect commit-fails "commit by hand" \
+    "$(git -C "$r" log -1 --no-show-signature --format=%B)" \
+    "Approve workflow"$'\n\n'".github/workflows/build.yml (changed)"
+
+# A failed push keeps the commit and says how to push by hand.
+fixture
+propose build.yml 'name: new'
+git -C "$r" remote set-url origin "$w/missing.git"
+run . 'y\n'
+expect push-fails status "$rc" 1
+expect push-fails message "$(git -C "$r" log -1 --no-show-signature --format=%s)" \
+    "Approve workflow"
+expect_in push-fails err "workflows-approve: push failed; the commit stays"
+expect_in push-fails err "git push --no-follow-tags origin HEAD:refs/heads/main"
+
+# The push names its remote and refspec: a branch with no upstream reaches
+# origin under its own name whatever push.default says, and push.followTags
+# takes no tag along.
+fixture
+propose build.yml 'name: new'
+git -C "$r" checkout -q -b feature/x
+git -C "$r" config push.default nothing
+git -C "$r" config push.followTags true
+git -C "$r" tag -a -m t t1
+run . 'y\n'
+expect refspec status "$rc" 0
+expect refspec "origin's feature/x" \
+    "$(git -C "$w/origin.git" rev-parse -q --verify refs/heads/feature/x)" \
+    "$(git -C "$r" rev-parse HEAD)"
+expect refspec "origin's t1" \
+    "$(git -C "$w/origin.git" rev-parse -q --verify refs/tags/t1 || echo none)" \
+    none
+
+# With commit.gpgSign on, the approval commit is signed through gpg.program,
+# here the fake, with a scratch GNUPGHOME so no real keyring is reached.
+fixture
+propose build.yml 'name: new'
+mkdir -m 700 "$w/gnupg"
+GIT_CONFIG_COUNT=5 \
+    GIT_CONFIG_KEY_3=commit.gpgSign GIT_CONFIG_VALUE_3=true \
+    GIT_CONFIG_KEY_4=gpg.program GIT_CONFIG_VALUE_4=$work/gpg/gpg \
+    GNUPGHOME=$w/gnupg FAKE_GPG_LOG=$w/gpg.log run . 'y\n'
+expect signed status "$rc" 0
+expect_committed signed "Approve workflow"$'\n\n'".github/workflows/build.yml (changed)"
+touch "$w/gpg.log"
+expect_in signed gpg.log "-bsau"
+expect signed signature \
+    "$(git -C "$r" cat-file commit HEAD | grep -cxF ' fake-gpg-signature')" 1
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

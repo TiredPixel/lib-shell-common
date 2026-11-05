@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+#
+# Tests docker/init, sourced in a shell with no options set and in one under the
+# strict mode its callers run, in scratch projects with git faked on PATH:
+# the fake answers HEAD's branch as FAKE_BRANCH, "HEAD" where that is the
+# detached state. Each case prints what a child of the sourcing shell sees of
+# REPO, TAG and DOCKER_BUILDKIT, so only what init exports counts. Sourcing must
+# set none of the shell's options.
+#
+# Run: test/docker/init.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+init=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/init
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/project" "$work/missing" "$work/empty"
+cat >"$work/bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+case $* in
+"rev-parse --abbrev-ref HEAD") echo "$FAKE_BRANCH" ;;
+*) exit 2 ;;
+esac
+EOF
+chmod +x "$work/bin/git"
+echo r/x >"$work/project/.dockerrepo"
+: >"$work/empty/.dockerrepo"
+export PATH=$work/bin:$PATH
+
+# The shells that source init are scripts in files rather than -c strings, as
+# its callers are, so $0 names the script as it names a caller. The
+# sourcing shell runs show, a child that sees only what init exports.
+cat >"$work/source" <<'EOF'
+if [ "$1" = strict ]; then
+    set -Eeuo pipefail
+    shopt -s inherit_errexit failglob
+fi
+source "$2"
+bash --norc --noprofile "$3"
+EOF
+cat >"$work/show" <<'EOF'
+echo "${REPO:-} ${TAG:-} ${DOCKER_BUILDKIT:-}"
+EOF
+cat >"$work/options" <<'EOF'
+before=$SHELLOPTS:$BASHOPTS
+source "$1"
+[ "$SHELLOPTS:$BASHOPTS" = "$before" ]
+EOF
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Sources init in the scratch project named by $project, in a bash with no
+# options or, where $2 is strict, under the callers' strict mode, with the
+# environment after $4, and checks its status is $3 and a child then prints $4
+# where it passes, or stderr holds $4 where it fails.
+project=project
+check() {
+    local name=$1 mode=$2 status=$3 want=$4 rc=0
+    shift 4
+    (cd "$work/$project" && env -u CIRCLE_BRANCH -u CIRCLE_TAG \
+        -u GITHUB_HEAD_REF -u GITHUB_REF_NAME "$@" bash --norc --noprofile \
+        "$work/source" "$mode" "$init" "$work/show") >"$work/out" \
+        2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ "$status" = 0 ] && [ "$(<"$work/out")" != "$want" ]; then
+        fail "$name" "a child sees: $(<"$work/out")"
+    elif [ "$status" != 0 ] && ! grep -qF -- "$want" "$work/err"; then
+        fail "$name" "stderr lacks '$want': $(<"$work/err")"
+    fi
+}
+
+for mode in plain strict; do
+    check "$mode-branch" "$mode" 0 "r/x a-b 1" FAKE_BRANCH=a/b
+    check "$mode-circle" "$mode" 0 "r/x c-d 1" FAKE_BRANCH=HEAD \
+        CIRCLE_BRANCH=c/d CIRCLE_TAG=x GITHUB_HEAD_REF=e GITHUB_REF_NAME=f
+    check "$mode-circle-tag" "$mode" 0 "r/x 1.2 1" FAKE_BRANCH=HEAD \
+        CIRCLE_TAG=1.2 GITHUB_HEAD_REF=e GITHUB_REF_NAME=f
+    check "$mode-pull-request" "$mode" 0 "r/x e-f 1" FAKE_BRANCH=HEAD \
+        GITHUB_HEAD_REF=e/f GITHUB_REF_NAME=g
+    check "$mode-push" "$mode" 0 "r/x 1.2 1" FAKE_BRANCH=HEAD \
+        GITHUB_REF_NAME=1.2
+    check "$mode-detached" "$mode" 1 \
+        "source: TAG: detached HEAD and no CI branch or tag variable set" \
+        FAKE_BRANCH=HEAD
+    # A CI that exports its branch or tag variable empty is refused all the
+    # same.
+    check "$mode-empty-variable" "$mode" 1 \
+        "source: TAG: detached HEAD and no CI branch or tag variable set" \
+        FAKE_BRANCH=HEAD \
+        CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=
+done
+
+# A project with no .dockerrepo, or an empty one, is refused on a branch.
+for project in missing empty; do
+    for mode in plain strict; do
+        check "$mode-$project-dockerrepo" "$mode" 1 \
+            "source: REPO: .dockerrepo missing or empty" FAKE_BRANCH=a/b
+    done
+done
+
+# Sourcing changes none of the shell's options.
+(cd "$work/project" && FAKE_BRANCH=a/b bash --norc --noprofile \
+    "$work/options" "$init") ||
+    fail options "sourcing changed the shell's options"
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

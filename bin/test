@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# The gate: bin/lint, then every */*.test, at most nproc at a time, each one's
-# output shown once it ends. Every test runs whatever the others do, and each
-# that fails, by its exit status alone, is named. Its headings, each test's
-# output and the summary go to stderr; bin/lint's tools report on stdout, as
-# they do when it runs alone. Runs from the root of the repository.
+# The gate: bin/lint, then every test/*/*.test, at most nproc at a time, each
+# one's output shown once it ends. Every test runs whatever the others do, and
+# each that fails, by its exit status alone, is named. Its headings, each
+# test's output and the summary go to stderr; bin/lint's tools report on stdout,
+# as they do when it runs alone. Runs from the root of the repository.
 #
 # Tests named as arguments run alone, without the lint: it covers the whole
 # tree, so running it for a handful of named tests costs far more than the tests
@@ -17,9 +17,9 @@ bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 if [ $# -gt 0 ]; then
     tests=("$@")
     for t in "${tests[@]}"; do
-        if ! [[ $t =~ ^[^/]+/[^/]+\.test$ ]]; then
-            printf 'bin/test: %q is not a */*.test\n' "$t" >&2
-            echo "Usage: bin/test [DIR/NAME.test...]" >&2
+        if ! [[ $t =~ ^test/[^/]+/[^/]+\.test$ ]]; then
+            printf 'bin/test: %q is not a test/*/*.test\n' "$t" >&2
+            echo "Usage: bin/test [test/DIR/NAME.test...]" >&2
             exit 2
         fi
     done
@@ -27,11 +27,11 @@ else
     # failglob would end the run on bash's own "no match" error.
     shopt -u failglob
     shopt -s nullglob
-    tests=(*/*.test)
+    tests=(test/*/*.test)
     shopt -u nullglob
     shopt -s failglob
     if [ ${#tests[@]} -eq 0 ]; then
-        echo "bin/test: no */*.test found" >&2
+        echo "bin/test: no test/*/*.test found" >&2
         exit 1
     fi
     "$bin/lint"

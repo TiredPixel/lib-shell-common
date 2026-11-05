@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# Tests ansible/lint-args, sourced in a shell with no options set and in one
+# under the strict mode its callers run: each must leave ansible_lint_args set
+# and non-empty, print nothing and succeed. Sourcing must set none of the
+# shell's options.
+#
+# Run: test/ansible/lint-args.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+args=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../ansible")/lint-args
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+# The shells that source lint-args are scripts in files rather than -c strings,
+# as its callers are.
+cat >"$work/source" <<'EOF'
+if [ "$1" = strict ]; then
+    set -Eeuo pipefail
+    shopt -s inherit_errexit failglob
+fi
+source "$2"
+[ ${#ansible_lint_args[@]} -gt 0 ]
+EOF
+cat >"$work/options" <<'EOF'
+before=$SHELLOPTS:$BASHOPTS
+source "$1"
+[ "$SHELLOPTS:$BASHOPTS" = "$before" ]
+EOF
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
+
+# Sources lint-args in a bash with no options or, where $1 is strict, under the
+# callers' strict mode, and checks it succeeds with the array set, printing
+# nothing.
+check() {
+    local mode=$1 rc=0
+    bash --norc --noprofile "$work/source" "$mode" "$args" \
+        >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        fail "$mode" "exit $rc, not 0: $(<"$work/err")"
+    elif [ -s "$work/out" ] || [ -s "$work/err" ]; then
+        fail "$mode" "printed: $(<"$work/out")$(<"$work/err")"
+    fi
+}
+
+check plain
+check strict
+
+bash --norc --noprofile "$work/options" "$args" ||
+    fail options "sourcing changed the shell's options"
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi
