@@ -15,6 +15,8 @@ The scripts also run these, which a repository needs wherever it runs them:
 - `ansible/`: ansible-lint, and `jq` for `ansible/inventory-ssh-known-hosts`
 - `terraform/`: Terraform
 
+The scripts assume POSIX utilities, and these GNU forms of them: `readlink -f` and `readlink -m`, `sort -V`, `diff --label`, `timeout --foreground`, and `find`'s `-mindepth`, `-maxdepth` and `-quit`.
+
 Working on this repository needs:
 
 - Docker Engine or Docker Desktop with Compose v2
@@ -322,6 +324,22 @@ RUN npm install --no-save semistandard@latest snazzy@latest
 
 Other comment lines may sit between, so a `# hadolint ignore=` for the same `RUN`, which hadolint reads only on the line directly above, goes below the suppression. The nearest suppression is the one read, and one with no reason is itself refused.
 
+## Checking shell scripts
+
+`lint/shell` runs ShellCheck on every shell script in the directory it is called from and in its `bin/`, found by content rather than by extension, and on each file named as an argument. A sourced fragment with no shebang is reached only by naming it. Finding nothing is reported, not fatal; what it passes over, and why, is at the top of `lint/shell`.
+
+```sh
+lib/shell-common/lint/shell
+```
+
+## Checking a release version
+
+`lint/version-assert` fails unless `VERSION` names a release a mobile client can publish to both app stores: plain integers as major.minor, or major.minor.patch with `--parts 3`, never the `0.0` or `0.0.0` placeholder, and small enough for the build number derived from it. The default shape, the build-number formula and its bounds are at the top of `lint/version-assert`.
+
+```sh
+VERSION=1.2.3 lib/shell-common/lint/version-assert --parts 3
+```
+
 ## Approving workflows
 
 GitHub refuses a push from an agent that touches `.github/workflows/`, so a change to a workflow is proposed as the whole file in `.github/workflows.new/`, which the lint covers as it does the live workflows. CI fails while a proposal is pending, through a step that runs `github/workflows-pending` and lists each pending file. A repository taking the library runs it after a checkout that takes submodules, since without them `lib/shell-common` is an empty directory:
@@ -355,6 +373,34 @@ make workflows-approve
 ## Building and pushing images
 
 The `docker/` scripts that build or push tagged images, or log in, such as `docker/build-dev-latest` and `docker/login`, read the image repository, such as `ghcr.io/OWNER/NAME`, from a `.dockerrepo` file at the calling repository's root.
+
+They run from that root, building the `Dockerfile` there, and tag each image from the branch checked out, any `/` in its name written as `-`. On a detached HEAD, as in a pull request or a tag push, the tag is the first of CircleCI's `CIRCLE_BRANCH` and `CIRCLE_TAG`, then GitHub Actions' `GITHUB_HEAD_REF` and `GITHUB_REF_NAME`, that is set and not empty; with none, the script fails before building.
+
+Each build passes the `GIT_DESCRIBE` build argument, which a `Dockerfile` reads with `ARG GIT_DESCRIBE` to stamp the image with the commit it was built from. Every script but `docker/build-tags` takes it from `docker/describe`: what `git describe` prints, or empty where no tag describes HEAD, any other git failure stopping the build.
+
+`docker/build-compose` runs `docker compose build`, its arguments going before `build` as Compose's own options, and tags nothing itself, so it needs no `.dockerrepo`:
+
+```sh
+lib/shell-common/docker/build-compose --profile test
+```
+
+`docker/build-dev-latest-nopush` builds the `Dockerfile`'s `dev` stage as `REPO:TAG.dev`, and `docker/build-dev-latest` builds it the same way, then pushes it. `docker/build-prd-latest` builds the `prd` stage as `REPO:TAG.prd` and pushes it. The `-stable` forms, `docker/build-dev-stable-nopush`, `docker/build-dev-stable` and `docker/build-prd-stable`, build and push the same tags, taking their build cache from the `testing` and `stable` images as well as the branch's own and the `latest` ones (*Releasing*). Each image carries its cache inline, so a later build reads it from the registry.
+
+```sh
+lib/shell-common/docker/build-prd-latest
+```
+
+`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release and each shorter prefix of it, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`, then pushes each tag, naming it on stderr. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building.
+
+```sh
+lib/shell-common/docker/build-tags
+```
+
+`docker/login` logs in to the registry `.dockerrepo` names, or to Docker Hub where it names none, as `DOCKER_USERNAME`, passing `DOCKER_PASSWORD` on standard input; both must be set.
+
+```sh
+lib/shell-common/docker/login
+```
 
 ## Working across projects
 
@@ -409,6 +455,46 @@ A tag that already exists in any project, locally or on its origin, is refused b
 
 ```sh
 lib/shell-common/project/tag-list
+```
+
+## Checking Ansible
+
+`ansible/test` runs ansible-lint, which also syntax-checks each playbook, and `ansible/format` applies its fixes, both from the repository's root with the same options, set in `ansible/lint-args`: offline, warnings failing, and `lib/` and vault files left out.
+
+```sh
+lib/shell-common/ansible/test
+```
+
+`ansible/inventory-ssh-known-hosts` is a dynamic inventory listing every host in a `known_hosts` file whose first name ends in `.DOMAIN`. Ansible passes an inventory only `--list` or `--host`, so a wrapper script of the repository's own gives the file and domain before them. A host matched gets no variables, and a file with none fails the run:
+
+```sh
+lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.com --list
+```
+
+## Planning and applying Terraform
+
+`terraform/format` formats every Terraform file under the directory it is called from, and `terraform/upgrade` runs `terraform init -upgrade` there.
+
+```sh
+lib/shell-common/terraform/format
+```
+
+`terraform/test-cli` fails on any unformatted file, showing the diff, then initialises and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
+
+```sh
+lib/shell-common/terraform/test-cli
+```
+
+`terraform/deploy-cli`, run later in the same directory, applies that saved plan and nothing else; Terraform refuses it once the state has moved on since the plan was made.
+
+```sh
+lib/shell-common/terraform/deploy-cli
+```
+
+`terraform/test-cloud` checks formatting and plans the same way for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
+
+```sh
+lib/shell-common/terraform/test-cloud
 ```
 
 ## Testing
