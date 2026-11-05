@@ -76,7 +76,7 @@ Where the lint itself fails, with any status but 1, such as 3 where `jq` fails t
 
 With `--record`, `docker/upgrade` notes each file it wrote and each pin that moved.
 
-`docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with a line for each move as the body, a submodule's included, so a library bump is committed even where no pin moved. It refuses where anything else is staged, commits nothing where neither a pin nor a path given moved, and never pushes.
+`docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with the body a list holding an item for each move, a submodule's included, so a library bump is committed even where no pin moved. It refuses where anything else is staged, commits nothing where neither a pin nor a path given moved, and never pushes.
 
 With `--record`, `docker/upgrade` refuses to start while an earlier record that is not empty is still there, or while the `Dockerfile`, followed through any symbolic link, or its `Dockerfile.lock/` directory differs from what git has committed, untracked files included, since the commit takes each recorded file whole. It also refuses a `Dockerfile` that is a symbolic link into another repository, such as a submodule, since the commit cannot add a file there; such a link is re-pinned without `--record`, or in the repository it links into.
 
@@ -572,7 +572,7 @@ make build
 
 Base images are pinned by digest, tools downloaded from GitHub by `ARG` and checked against a SHA-256 pinned beside each, mdformat and its plugins by the hashed lock in `Dockerfile.lock/mdformat/`, and the workflow's actions by commit SHA.
 
-`make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` names on a `# TRACK USES` line, and to resolve anew the lock the `Dockerfile` names on its `# TRACK LOCK` line, proposing re-pinned workflows in `.github/workflows.new/`, then builds, tests and commits the result as `Upgrade pins`, with a line for each move as the body, so a bump that breaks the repository shows before it is committed. It never pushes.
+`make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` names on a `# TRACK USES` line, and to resolve anew the lock the `Dockerfile` names on its `# TRACK LOCK` line, proposing re-pinned workflows in `.github/workflows.new/`, then builds, tests and commits the result as `Upgrade pins`, with the body a list holding an item for each move, so a bump that breaks the repository shows before it is committed. It never pushes.
 
 ```sh
 make upgrade

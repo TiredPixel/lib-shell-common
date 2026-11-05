@@ -141,9 +141,9 @@
 #
 # With --record, FILE is written last, for docker/upgrade-commit: the path of
 # each file written, one to a line, then a blank line, then a line for each
-# value a pin moved from, as NAME OLD -> NEW for a TRACK ARG,
-# REPO:TAG OLD -> NEW for a TRACK FROM, OLD a digest or REPO:TAG, and
-# OWNER/REPO TAG: OLD -> NEW for a TRACK USES, with a digest or hash cut to 12
+# value a pin moved from, as SUBJECT OLD -> NEW, SUBJECT as its TRACK line
+# writes it: NAME for a TRACK ARG, REPO:TAG for a TRACK FROM, OLD a digest or
+# REPO:TAG, and OWNER/REPO@TAG for a TRACK USES, with a digest or hash cut to 12
 # hex digits and a commit to 7. A TRACK LOCK's lines are
 # LOCK NAME PACKAGE OLD -> NEW for each package it names, or an npm lock's root
 # depended on, that moved, OLD none where the lock lacked it and NEW none where
@@ -1509,7 +1509,7 @@ for pin in "${pins[@]}"; do
     for ref in "${refs[@]}"; do
         add_was "$ref"
     done
-    add_move "${pin%@*} ${pin##*@}:" "${commits[$pin]}"
+    add_move "$pin" "${commits[$pin]}"
 done
 
 if [ -n "$record" ]; then

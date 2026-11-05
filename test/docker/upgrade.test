@@ -1319,8 +1319,8 @@ real=$(readlink -f "$work")
 said=$(printf '%s\n' "$real/rec/Dockerfile" "$real/rec/.github/workflows.new/1.yml" \
     "$real/rec/.github/workflows.new/3.yml" "" "r/x:1 r/x:1 -> sha256:aaaaaaaaaaaa" \
     "r/x:1 sha256:000000000000 -> sha256:aaaaaaaaaaaa" "V 1.0.0 -> 1.2.3" \
-    "H dddddddddddd -> cccccccccccc" "o/r v1: v0 -> 3333333" "o/r v1: 1111111 -> 3333333" \
-    "o/a v2: v1 -> 2222222")
+    "H dddddddddddd -> cccccccccccc" "o/r@v1 v0 -> 3333333" "o/r@v1 1111111 -> 3333333" \
+    "o/a@v2 v1 -> 2222222")
 rc=0
 "$upgrade" --record "$work/recdir/sub/record" "$r/Dockerfile" "$r/.github/workflows/1.yml" \
     "$r/.github/workflows/2.yml" "$r/.github/workflows/3.yml" >"$work/out" 2>"$work/err" || rc=$?
@@ -1474,7 +1474,7 @@ rc=0
 (cd "$v/.github/workflows" && "$upgrade" --record ../../rec ../../Dockerfile w.yml) \
     >/dev/null 2>"$work/err" || rc=$?
 said=$(printf '%s\n' "$real/relative/Dockerfile" "$real/relative/.github/workflows.new/w.yml" "" \
-    "V 1 -> 1.2.3" "o/r v1: v0 -> 3333333")
+    "V 1 -> 1.2.3" "o/r@v1 v0 -> 3333333")
 if [ "$rc" != 0 ]; then
     fail relative "exit $rc, not 0: $(<"$work/err")"
 elif [ "$(<"$v/rec")" != "$said" ] ||
