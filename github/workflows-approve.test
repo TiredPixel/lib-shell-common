@@ -86,7 +86,17 @@ printf '%s\n' '-----BEGIN PGP SIGNATURE-----' '' 'fake-gpg-signature' \
 EOF
 chmod +x "$work/gpg/gpg"
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 n=0
 
 # A fresh fixture in $w: repo on main, pushed to origin.git, holding
@@ -135,19 +145,19 @@ said() {
 # Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
 expect() {
     if [ "$3" != "$4" ]; then
-        failed+=("$1: $2 is $3, not $4: $(said)")
+        fail "$1" "$2 is $3, not $4: $(said)"
     fi
 }
 
 # Records a failure of case $1 unless file $2 of the run holds $3.
 expect_in() {
-    grep -qF -- "$3" "$w/$2" || failed+=("$1: $2 lacks '$3': $(said)")
+    grep -qF -- "$3" "$w/$2" || fail "$1" "$2 lacks '$3': $(said)"
 }
 
 # Records a failure of case $1 where file $2 of the run holds $3.
 expect_not_in() {
     if grep -qF -- "$3" "$w/$2"; then
-        failed+=("$1: $2 holds '$3': $(said)")
+        fail "$1" "$2 holds '$3': $(said)"
     fi
 }
 
@@ -246,7 +256,7 @@ for name in "${names[@]}"; do
     quoted=$(LC_ALL=C printf %q ".github/workflows.new/$name")
     expect_refused "name $quoted" "workflows-approve: refusing, since $quoted is not named [A-Za-z0-9_][A-Za-z0-9._-]*.yml or .yaml"
     if LC_ALL=C grep -q '[^[:print:]]' "$w/err"; then
-        failed+=("name $quoted: stderr holds a byte outside printable ASCII: $(said)")
+        fail "name $quoted" "stderr holds a byte outside printable ASCII: $(said)"
     fi
     expect_unchanged "name $quoted" "$before"
 done
@@ -512,14 +522,6 @@ expect_in signed gpg.log "-bsau"
 expect signed signature \
     "$(git -C "$r" cat-file commit HEAD | grep -cxF ' fake-gpg-signature')" 1
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

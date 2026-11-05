@@ -13,7 +13,17 @@ inventory=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/inventory-ssh-known-ho
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 
 # Quotes in a hostname must come through as JSON strings.
 cat >"$work/known_hosts" <<'EOF'
@@ -49,13 +59,13 @@ check() {
         got=$(jq -c . <<<"$got")
     fi
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$got" != "$out" ]; then
-        failed+=("$name: stdout is: $got")
+        fail "$name" "stdout is: $got"
     elif [ -z "$said" ] && [ -s "$work/err" ]; then
-        failed+=("$name: stderr is: $(<"$work/err")")
+        fail "$name" "stderr is: $(<"$work/err")"
     elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
-        failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+        fail "$name" "stderr lacks '$said': $(<"$work/err")"
     fi
 }
 
@@ -90,15 +100,6 @@ check host-missing 2 "" "$kh" example.com --host
 check host-extra 2 "" "$kh" example.com --host a.example.com b
 check list-extra 2 "" "$kh" example.com --list a.example.com
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi
-echo "ok"

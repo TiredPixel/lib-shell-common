@@ -39,7 +39,18 @@ export GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=test
 export GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=test@example.com
 export GIT_CONFIG_KEY_2=init.defaultBranch GIT_CONFIG_VALUE_2=main
 
-failed=()
+failures=0
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
 n=0
 
 # A fresh fixture in $w: app, holding one commit, with a lightweight tag 1.1
@@ -65,13 +76,13 @@ check() {
     local name=$1 status=$2 want=$3 err=${4:-} rc=0
     (cd "$w/app" && "$list") >"$w/out" 2>"$w/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$w/err")")
+        fail "$name" "exit $rc, not $status: $(<"$w/err")"
     fi
     if [ "$(<"$w/out")" != "$want" ]; then
-        failed+=("$name: listed: $(<"$w/out")")
+        fail "$name" "listed: $(<"$w/out")"
     fi
     if [ -n "$err" ] && ! grep -qF -- "$err" "$w/err"; then
-        failed+=("$name: stderr lacks '$err': $(<"$w/err")")
+        fail "$name" "stderr lacks '$err': $(<"$w/err")"
     fi
 }
 
@@ -92,17 +103,9 @@ fixture
 git -C "$w/app" remote set-url origin "$w/missing.git"
 check unreachable 128 ""
 if grep -qF "did not answer" "$w/err"; then
-    failed+=("unreachable: reported as an expiry: $(<"$w/err")")
+    fail unreachable "reported as an expiry: $(<"$w/err")"
 fi
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

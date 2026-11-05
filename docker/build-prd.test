@@ -66,7 +66,16 @@ export FAKE_DESCRIBE=v1.2-3-gabcdef0
 export PATH=$work/bin:$PATH
 cd "$work/project"
 
-failed=()
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
 
 # Runs docker/$2 and checks its status is $3, docker was called as $4 has it, a
 # line to a call, and its stdout is $5 and its stderr $6.
@@ -75,13 +84,13 @@ check() {
     : >"$FAKE_LOG"
     "$dir/$script" >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$FAKE_LOG")" != "$calls" ]; then
-        failed+=("$name: docker was called as: $(<"$FAKE_LOG")")
+        fail "$name" "docker was called as: $(<"$FAKE_LOG")"
     elif [ "$(<"$work/out")" != "$out" ]; then
-        failed+=("$name: stdout is: $(<"$work/out")")
+        fail "$name" "stdout is: $(<"$work/out")"
     elif [ "$(<"$work/err")" != "$err" ]; then
-        failed+=("$name: stderr is: $(<"$work/err")")
+        fail "$name" "stderr is: $(<"$work/err")"
     fi
 }
 
@@ -125,14 +134,6 @@ for model in latest stable; do
         "fake docker: building"
 done
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

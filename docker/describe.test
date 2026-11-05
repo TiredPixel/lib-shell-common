@@ -76,7 +76,16 @@ source "$1"
 [ "$SHELLOPTS:$BASHOPTS" = "$before" ]
 EOF
 
-failed=()
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
 
 # Sources describe with FAKE_GIT set to $3, in a bash with no options or, where
 # $2 is strict, under the callers' strict mode, with TMPDIR $4, and checks its
@@ -89,14 +98,14 @@ check() {
         >"$work/out" 2>"$work/err" || rc=$?
     left=$(find "$work/tmp" -mindepth 1)
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$work/out")" != "$out" ]; then
-        failed+=("$name: stdout is: $(<"$work/out")")
+        fail "$name" "stdout is: $(<"$work/out")"
     elif [ "$(<"$work/err")" != "$err" ]; then
-        failed+=("$name: stderr is: $(<"$work/err")")
+        fail "$name" "stderr is: $(<"$work/err")"
     fi
     if [ -n "$left" ]; then
-        failed+=("$name: left behind: $left")
+        fail "$name" "left behind: $left"
         find "$work/tmp" -mindepth 1 -delete
     fi
 }
@@ -128,16 +137,8 @@ done
 # Sourcing changes none of the shell's options.
 FAKE_GIT=tagged TMPDIR=$work/tmp bash --norc --noprofile "$work/options" \
     "$describe" ||
-    failed+=("options: sourcing changed the shell's options")
+    fail options "sourcing changed the shell's options"
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

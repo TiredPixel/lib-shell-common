@@ -55,7 +55,17 @@ source "$1"
 [ "$SHELLOPTS:$BASHOPTS" = "$before" ]
 EOF
 
-failed=()
+failures=0
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
 
 # The calls a whole release of tag $2 onto branch $1 makes, in order.
 calls() {
@@ -76,9 +86,9 @@ check() {
     bash --norc --noprofile "$work/release" "$mode" "$helper" \
         "$work/project" "$branch" "$tag" >/dev/null 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$FAKE_LOG")" != "$want" ]; then
-        failed+=("$name: the calls were: $(<"$FAKE_LOG")")
+        fail "$name" "the calls were: $(<"$FAKE_LOG")"
     fi
 }
 
@@ -95,16 +105,8 @@ done
 
 # Sourcing changes none of the shell's options.
 bash --norc --noprofile "$work/options" "$helper" ||
-    failed+=("options: sourcing changed the shell's options")
+    fail options "sourcing changed the shell's options"
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

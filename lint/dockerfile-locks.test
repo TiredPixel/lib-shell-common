@@ -12,7 +12,17 @@ locks=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/dockerfile-locks
 work=$(mktemp -d)
 trap 'chmod -R u+rwx -- "$work" && rm -rf -- "$work"' EXIT
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 
 # Runs dockerfile-locks in $work with the arguments from $4 on, and $PREPATH,
 # where set, in front of PATH, and checks its status is $2, its stdout is empty
@@ -24,11 +34,11 @@ run() {
         cd "$work" && PATH=${PREPATH:+$PREPATH:}$PATH && "$locks" "$@"
     ) >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ -s "$work/out" ]; then
-        failed+=("$name: stdout is: $(<"$work/out")")
+        fail "$name" "stdout is: $(<"$work/out")"
     elif [ "$(<"$work/err")" != "$err" ]; then
-        failed+=("$name: stderr is: $(<"$work/err")")
+        fail "$name" "stderr is: $(<"$work/err")"
     fi
 }
 
@@ -374,12 +384,6 @@ FROM x
 RUN npm i
 DOCKERFILE
 
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

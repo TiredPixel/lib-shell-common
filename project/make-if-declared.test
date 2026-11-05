@@ -31,7 +31,17 @@ chmod +x "$work/fake/make"
 # A locale make would translate its diagnostics in, were it installed.
 export LC_ALL=C.UTF-8
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 n=0
 
 # A fresh project in $w, with the Makefile named $1 holding $2, unless $1 is
@@ -54,21 +64,21 @@ run() {
     shift 2
     (cd "$w" && "$declared" "$@") >/dev/null 2>"$w/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$w/err")")
+        fail "$name" "exit $rc, not $status: $(<"$w/err")"
     fi
 }
 
 # Records a failure of case $1 unless the log is $2.
 expect_log() {
     if [ "$(<"$FAKE_LOG")" != "$2" ]; then
-        failed+=("$1: the log is: $(<"$FAKE_LOG")")
+        fail "$1" "the log is: $(<"$FAKE_LOG")"
     fi
 }
 
 # Records a failure of case $1 unless stderr holds $2.
 expect_err() {
     if ! grep -qF -- "$2" "$w/err"; then
-        failed+=("$1: stderr lacks $2: $(<"$w/err")")
+        fail "$1" "stderr lacks $2: $(<"$w/err")"
     fi
 }
 
@@ -151,7 +161,7 @@ for args in no-target empty-target; do
     [ "$args" = no-target ] || target=('')
     run "$args" 2 "${target[@]}"
     if [ "$(<"$w/err")" != "Usage: make-if-declared TARGET [COMMAND...]" ]; then
-        failed+=("$args: stderr is: $(<"$w/err")")
+        fail "$args" "stderr is: $(<"$w/err")"
     fi
     expect_log "$args" ""
 done
@@ -184,14 +194,6 @@ project Makefile "build:\n"
 FAKE_ERR="make: *** No rule to make target 'build'.  Stop." \
     run literal-target 1 'b*'
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

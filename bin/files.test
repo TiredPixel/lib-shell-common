@@ -85,7 +85,17 @@ shells() {
     echo "shell project/release-onto"
 }
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 
 # Runs show in tree $2 and checks its status is $3, its stdout is $4, and its
 # stderr holds $5 where that is not empty.
@@ -93,11 +103,11 @@ check() {
     local name=$1 t=$2 status=$3 out=$4 said=$5 rc=0
     (cd "$t" && "$work/show") >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$work/out")" != "$out" ]; then
-        failed+=("$name: stdout is: $(<"$work/out")")
+        fail "$name" "stdout is: $(<"$work/out")"
     elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
-        failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+        fail "$name" "stderr lacks '$said': $(<"$work/err")"
     fi
 }
 
@@ -176,18 +186,9 @@ t=$(tree term)
 mkdir "$work/term-tmp"
 TMPDIR=$work/term-tmp FAKE_FIND_TERM=1 check term "$t" 143 "" "" 2>/dev/null
 if [ -n "$(ls -A -- "$work/term-tmp")" ]; then
-    failed+=("term: TMPDIR holds: $(ls -A -- "$work/term-tmp")")
+    fail term "TMPDIR holds: $(ls -A -- "$work/term-tmp")"
 fi
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi
-echo "ok"

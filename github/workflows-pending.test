@@ -18,7 +18,17 @@ export GIT_CEILING_DIRECTORIES=$work
 # Fixes the order the glob lists entries in.
 export LC_ALL=C
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 n=0
 
 # A fresh repository in $r, with a subdirectory sub.
@@ -41,11 +51,11 @@ run() {
 # stdout and printed $3 on stderr.
 check() {
     if [ "$rc" != "$2" ]; then
-        failed+=("$1: exit $rc, not $2: $(<"$r.err")")
+        fail "$1" "exit $rc, not $2: $(<"$r.err")"
     elif [ -s "$r.out" ]; then
-        failed+=("$1: stdout is: $(<"$r.out")")
+        fail "$1" "stdout is: $(<"$r.out")"
     elif [ "$(<"$r.err")" != "$3" ]; then
-        failed+=("$1: stderr is: $(<"$r.err")")
+        fail "$1" "stderr is: $(<"$r.err")"
     fi
 }
 
@@ -85,14 +95,6 @@ mkdir "$r/.github"
 run . "$pending"
 check not-dir 1 "workflows-pending: .github/workflows.new is not a directory"
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

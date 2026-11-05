@@ -24,7 +24,18 @@ export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
-failed=()
+failures=0
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
 n=0
 
 # A fresh fixture in $w, as the header describes, lib's remote being
@@ -59,9 +70,9 @@ check() {
     local name=$1 status=$2 want=$3 rc=0
     (cd "$w/app" && "$tag_list") >"$w/out" 2>"$w/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$w/err")")
+        fail "$name" "exit $rc, not $status: $(<"$w/err")"
     elif [ "$status" = 0 ] && [ "$(<"$w/out")" != "$want" ]; then
-        failed+=("$name: listed: $(<"$w/out")")
+        fail "$name" "listed: $(<"$w/out")"
     fi
 }
 
@@ -92,14 +103,6 @@ mkdir "$w/app/plain"
 echo plain >>"$w/app/.projects"
 check sweep-fails 1 ""
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

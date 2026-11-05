@@ -38,7 +38,16 @@ export FAKE_LOG=$work/log
 export PATH=$work/bin:$PATH
 export DOCKER_USERNAME=u DOCKER_PASSWORD=p
 
-failed=()
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
 
 # Runs docker/login with .dockerrepo holding $2, and checks it exits 0 and
 # docker login is given server $3, or no server where $3 is empty, with the
@@ -50,9 +59,9 @@ check() {
     (cd "$work/project" && "$dir/login") >"$work/out" 2>&1 || rc=$?
     want="login -u u --password-stdin${server:+ $server}"$'\n'"stdin p"
     if [ "$rc" -ne 0 ]; then
-        failed+=("$name: exit $rc: $(<"$work/out")")
+        fail "$name" "exit $rc: $(<"$work/out")"
     elif [ "$(<"$FAKE_LOG")" != "$want" ]; then
-        failed+=("$name: docker was called as: $(<"$FAKE_LOG")")
+        fail "$name" "docker was called as: $(<"$FAKE_LOG")"
     fi
 }
 
@@ -64,14 +73,6 @@ check hub o/n ""
 check hub-library n ""
 check hub-dotted-name a.b ""
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

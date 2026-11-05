@@ -27,7 +27,16 @@ export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 # turns it off.
 export GIT_CONFIG_KEY_4=diff.renames GIT_CONFIG_VALUE_4=true
 
-failed=()
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
 n=0
 moves=("V 1.0.0 -> 1.2.3" "o/r v1: v0 -> 3333333")
 
@@ -85,11 +94,11 @@ run() {
 # has, or the record is gone.
 unchanged() {
     if [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
-        failed+=("$1: a commit was made")
+        fail "$1" "a commit was made"
     elif [ "$(git -C "$w/app.git" rev-parse main)" != "$pushed" ]; then
-        failed+=("$1: something was pushed")
+        fail "$1" "something was pushed"
     elif ! [ -f "$w/record" ]; then
-        failed+=("$1: the record was removed")
+        fail "$1" "the record was removed"
     fi
 }
 
@@ -111,18 +120,18 @@ committed() {
         message+=("" "${body[@]}")
     fi
     if [ "$rc" != 0 ]; then
-        failed+=("$name: exit $rc, not 0: $err")
+        fail "$name" "exit $rc, not 0: $err"
     elif [ "$(git -C "$w/app" rev-parse HEAD~1)" != "$pushed" ]; then
-        failed+=("$name: HEAD is not one commit past the fixture's")
+        fail "$name" "HEAD is not one commit past the fixture's"
     elif [ "$(git -C "$w/app" log -1 --no-show-signature --format=%B)" != \
         "$(printf '%s\n' "${message[@]}")" ]; then
-        failed+=("$name: the message is: $(git -C "$w/app" log -1 --no-show-signature --format=%B)")
+        fail "$name" "the message is: $(git -C "$w/app" log -1 --no-show-signature --format=%B)"
     elif [ "$(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)" != "$want" ]; then
-        failed+=("$name: the commit changes: $(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)")
+        fail "$name" "the commit changes: $(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)"
     elif [ "$(git -C "$w/app.git" rev-parse main)" != "$pushed" ]; then
-        failed+=("$name: something was pushed")
+        fail "$name" "something was pushed"
     elif [ -e "$w/record" ]; then
-        failed+=("$name: the record was kept")
+        fail "$name" "the record was kept"
     fi
 }
 
@@ -134,7 +143,7 @@ printf 'x\n' >"$w/app/untracked"
 run "" "$w/record" lib
 committed commits .github/workflows.new/build.yml Dockerfile lib
 if [ "$(git -C "$w/app" status --porcelain)" != $' M notes.txt\n?? untracked' ]; then
-    failed+=("commits: the tree is now: $(git -C "$w/app" status --porcelain)")
+    fail commits "the tree is now: $(git -C "$w/app" status --porcelain)"
 fi
 
 # From a subdirectory, a PATH is read from there, and the recorded paths are
@@ -193,7 +202,7 @@ git -C "$w/app" config submodule.lib.ignore all
 git -C "$w/app" add lib
 run "" "$w/record"
 if [ "$rc" != 1 ] || [ "$err" != $'lib\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
-    failed+=("other-staged-ignored: exit $rc: $err")
+    fail other-staged-ignored "exit $rc: $err"
 fi
 unchanged other-staged-ignored
 
@@ -211,14 +220,14 @@ for how in unmoved-path no-path; do
     fi
     if [ "$rc" != 0 ] || [ -n "$out" ] ||
         [ "$err" != "upgrade-commit: $w/record: nothing moved, so there is nothing to commit" ]; then
-        failed+=("nothing-moved-$how: exit $rc: $out$err")
+        fail "nothing-moved-$how" "exit $rc: $out$err"
     elif [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
-        failed+=("nothing-moved-$how: a commit was made")
+        fail "nothing-moved-$how" "a commit was made"
     elif [ "$how" = unmoved-path ] &&
         [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
-        failed+=("nothing-moved-$how: something was staged")
+        fail "nothing-moved-$how" "something was staged"
     elif [ -e "$w/record" ]; then
-        failed+=("nothing-moved-$how: the record was kept")
+        fail "nothing-moved-$how" "the record was kept"
     fi
 done
 
@@ -228,7 +237,7 @@ fixture
 git -C "$w/app" add notes.txt Dockerfile
 run "" "$w/record" lib
 if [ "$rc" != 1 ] || [ "$err" != $'Dockerfile\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
-    failed+=("lib-only-other-staged: exit $rc: $err")
+    fail lib-only-other-staged "exit $rc: $err"
 fi
 unchanged lib-only-other-staged
 
@@ -246,9 +255,9 @@ for how in modified renamed; do
     fi
     run "" "$w/record" lib
     if [ "$rc" != 1 ] || [ "$err" != "$want"$'\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
-        failed+=("other-staged-$how: exit $rc: $err")
+        fail "other-staged-$how" "exit $rc: $err"
     elif [ "$(git -C "$w/app" diff --cached --no-renames --name-only)" != "$want" ]; then
-        failed+=("other-staged-$how: the index is now: $(git -C "$w/app" diff --cached --name-only)")
+        fail "other-staged-$how" "the index is now: $(git -C "$w/app" diff --cached --no-renames --name-only)"
     fi
     unchanged "other-staged-$how"
 done
@@ -273,13 +282,13 @@ for how in unstaged staged; do
         run "" "$w/record" 'g[1]'
         committed glob-unstaged Dockerfile 'f[1]' 'g[1]'
         if [ "$(git -C "$w/app" status --porcelain -- f1 g1)" != $' M f1\n M g1' ]; then
-            failed+=("glob-unstaged: f1 and g1 are now: $(git -C "$w/app" status --porcelain -- f1 g1)")
+            fail glob-unstaged "f1 and g1 are now: $(git -C "$w/app" status --porcelain -- f1 g1)"
         fi
     else
         git -C "$w/app" add f1 g1
         run "" "$w/record" 'g[1]'
         if [ "$rc" != 1 ] || [ "$err" != $'f1\ng1\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
-            failed+=("glob-staged: exit $rc: $err")
+            fail glob-staged "exit $rc: $err"
         fi
         unchanged glob-staged
     fi
@@ -297,7 +306,7 @@ for bad in $'/x\n/y\n' $'\nV 1 -> 2\n' $'/x\n\n' $'/x\n\nV 1 -> 2\n\nW 1 -> 2\n'
     *) said="upgrade-commit: $w/record: not a record docker/upgrade --record writes" ;;
     esac
     if [ "$rc" != 1 ] || [ "$err" != "$said" ]; then
-        failed+=("bad-record-$n_bad: exit $rc: $err")
+        fail "bad-record-$n_bad" "exit $rc: $err"
     fi
     unchanged "bad-record-$n_bad"
 done
@@ -307,14 +316,14 @@ fixture
 printf '%s\n' "$w/app/absent" "" "${moves[@]}" >"$w/record"
 run "" "$w/record"
 if [ "$rc" = 0 ] || [[ "$err" != *absent* ]]; then
-    failed+=("add-fails: exit $rc: $err")
+    fail add-fails "exit $rc: $err"
 fi
 unchanged add-fails
 
 fixture
 run "" "$w/missing"
 if [ "$rc" != 1 ] || [ "$err" != "upgrade-commit: $w/missing: no such file" ]; then
-    failed+=("missing: exit $rc: $err")
+    fail missing "exit $rc: $err"
 fi
 unchanged missing
 
@@ -326,7 +335,7 @@ for how in none empty; do
         run "" ""
     fi
     if [ "$rc" != 2 ] || [ "$err" != "Usage: upgrade-commit RECORD [PATH...]" ]; then
-        failed+=("usage-$how: exit $rc: $err")
+        fail "usage-$how" "exit $rc: $err"
     fi
     unchanged "usage-$how"
 done
@@ -337,18 +346,10 @@ mkdir "$work/norepo"
 rc=0
 (cd "$work/norepo" && "$commit" "$w/record") >"$w/out" 2>"$w/err" || rc=$?
 if [ "$rc" = 0 ] || ! grep -qF "not a git repository" "$w/err"; then
-    failed+=("no-repo: exit $rc: $(<"$w/err")")
+    fail no-repo "exit $rc: $(<"$w/err")"
 fi
 unchanged no-repo
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

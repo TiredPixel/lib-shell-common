@@ -65,7 +65,18 @@ export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 export GIT_CONFIG_KEY_4=gpg.program GIT_CONFIG_VALUE_4=$work/bin/gpg
 export GIT_CONFIG_KEY_5=user.signingKey GIT_CONFIG_VALUE_5=test-key
 
-failed=()
+failures=0
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
 n=0
 
 # A fresh fixture in $w, as the header describes, each repository holding its
@@ -98,13 +109,13 @@ run() {
 # Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
 expect() {
     if [ "$3" != "$4" ]; then
-        failed+=("$1: $2 is $3, not $4: $(<"$w/err")")
+        fail "$1" "$2 is $3, not $4: $(<"$w/err")"
     fi
 }
 
 # Records a failure of case $1 unless stderr holds $2.
 expect_out() {
-    grep -qF -- "$2" "$w/err" || failed+=("$1: stderr lacks '$2': $(<"$w/err")")
+    grep -qF -- "$2" "$w/err" || fail "$1" "stderr lacks '$2': $(<"$w/err")"
 }
 
 # The object tag $2 names in repository $1, or "none".
@@ -119,7 +130,7 @@ expect_tagged() {
     for r in app app/lib; do
         if ! git -C "$w/$r" cat-file tag "$2" 2>/dev/null |
             grep -qFx -- '-----BEGIN PGP SIGNATURE-----'; then
-            failed+=("$1: $r has no signed tag $2: $(<"$w/err")")
+            fail "$1" "$r has no signed tag $2: $(<"$w/err")"
         fi
         expect "$1" "$r's origin's $2" "$(tag_of "$w/${r##*/}.git" "$2")" \
             "$(tag_of "$w/$r" "$2")"
@@ -214,7 +225,7 @@ expect remote-exists "lib's 1.2" "$(tag_of "$w/app/lib" 1.2)" none
 fixture
 git -C "$w/app/lib" remote set-url origin "$w/missing.git"
 run 1.2
-[ "$rc" -ne 0 ] || failed+=("unreachable: exit 0, not a failure: $(<"$w/err")")
+[ "$rc" -ne 0 ] || fail unreachable "exit 0, not a failure: $(<"$w/err")"
 expect_untagged unreachable 1.2
 expect unreachable "lib's 1.2" "$(tag_of "$w/app/lib" 1.2)" none
 
@@ -255,14 +266,6 @@ expect extra stderr "$(<"$w/err")" "Usage: tag-create TAG"
 expect extra stdout "$(<"$w/out")" ""
 expect_untagged extra 1.2
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

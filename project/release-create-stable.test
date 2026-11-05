@@ -49,7 +49,18 @@ export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 export GIT_CONFIG_KEY_4=gpg.program GIT_CONFIG_VALUE_4=$work/bin/gpg
 export GIT_CONFIG_KEY_5=user.signingKey GIT_CONFIG_VALUE_5=test-key
 
-failed=()
+failures=0
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
 n=0
 
 # Creates bare remote $w/$1.git, its default branch testing, and $w/$1.up, a
@@ -94,7 +105,7 @@ run() {
 # Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
 expect() {
     if [ "$3" != "$4" ]; then
-        failed+=("$1: $2 is $3, not $4: $(<"$w/err")")
+        fail "$1" "$2 is $3, not $4: $(<"$w/err")"
     fi
 }
 
@@ -118,7 +129,7 @@ expect_testing() {
     for r in app app/lib; do
         if ! git -C "$w/$r" cat-file tag 1.2 |
             grep -qFx -- '-----BEGIN PGP SIGNATURE-----'; then
-            failed+=("$1: $r's 1.2 is not signed: $(<"$w/err")")
+            fail "$1" "$r's 1.2 is not signed: $(<"$w/err")"
         fi
         expect "$1" "$r's origin's 1.2" \
             "$(git -C "$w/${r##*/}.git" rev-parse -q --verify refs/tags/1.2)" \
@@ -163,7 +174,7 @@ git -C "$w/app.up" commit -q --allow-empty -m own
 git -C "$w/app.up" push -q origin stable
 own=$(git -C "$w/app.up" rev-parse HEAD)
 run 1.2
-[ "$rc" -ne 0 ] || failed+=("merge-fails: exit 0, not a failure: $(<"$w/err")")
+[ "$rc" -ne 0 ] || fail merge-fails "exit 0, not a failure: $(<"$w/err")"
 expect_testing merge-fails
 expect merge-fails "app's origin's stable" "$(commit_of "$w/app.git" stable)" \
     "$own"
@@ -185,18 +196,10 @@ for args in no-tag empty-tag extra; do
     expect "$args" "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$init"
     expect "$args" "lib's HEAD" "$(git -C "$w/app/lib" rev-parse HEAD)" "$one"
     if git -C "$w/app/lib" symbolic-ref -q HEAD >/dev/null; then
-        failed+=("$args: lib was checked out on a branch")
+        fail "$args" "lib was checked out on a branch"
     fi
 done
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

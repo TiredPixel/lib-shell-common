@@ -32,8 +32,18 @@ echo "$PWD $*" >>"$FAKE_LOG"
 EOF
 chmod +x "$work/record"
 
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
 name='ap\tp'
-failed=()
+failures=0
 n=0
 
 # A fresh fixture in $w, with the project at $app, its submodules lib1 and lib2
@@ -69,9 +79,9 @@ run() {
 # called as $3 has it.
 expect() {
     if [ "$rc" != "$2" ]; then
-        failed+=("$1: exit $rc, not $2: $(<"$w/err")")
+        fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
-        failed+=("$1: the calls were: $(<"$FAKE_LOG")")
+        fail "$1" "the calls were: $(<"$FAKE_LOG")"
     fi
 }
 
@@ -88,10 +98,10 @@ expect top 0 "$(swept)"
 want=$(printf '%s\n' "each-without-project: lib1" "each-without-project: lib2" \
     "each: $name")
 if [ "$(<"$w/err")" != "$want" ]; then
-    failed+=("top: stderr is: $(<"$w/err")")
+    fail top "stderr is: $(<"$w/err")"
 fi
 if [ -s "$w/out" ]; then
-    failed+=("top: stdout is: $(<"$w/out")")
+    fail top "stdout is: $(<"$w/out")"
 fi
 
 # The command's stdout passes through untouched, a line it ends without a
@@ -101,7 +111,7 @@ rc=0
 (cd "$app" && "$each" printf %s x) >"$w/out" 2>"$w/err" || rc=$?
 expect stdout 0 ""
 if [ "$(<"$w/out")" != xxx ]; then
-    failed+=("stdout: stdout is: $(<"$w/out")")
+    fail stdout "stdout is: $(<"$w/out")"
 fi
 
 # With no command, the usage is printed and nothing runs.
@@ -110,7 +120,7 @@ rc=0
 (cd "$app" && "$each") >"$w/out" 2>"$w/err" || rc=$?
 expect usage 2 ""
 if [ "$(<"$w/err")" != "Usage: each COMMAND [ARG...]" ]; then
-    failed+=("usage: stderr is: $(<"$w/err")")
+    fail usage "stderr is: $(<"$w/err")"
 fi
 
 # From a subdirectory, the command runs at the top level too.
@@ -146,14 +156,6 @@ rc=0
     >/dev/null 2>"$w/err" || rc=$?
 expect outside-repository 128 ""
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

@@ -23,7 +23,17 @@ export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 n=0
 
 # Creates bare remote $w/$1.git, its default branch $2, and $w/$1.up, a clone
@@ -110,14 +120,14 @@ run() {
 # Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
 expect() {
     if [ "$3" != "$4" ]; then
-        failed+=("$1: $2 is $3, not $4: $(<"$w/out")")
+        fail "$1" "$2 is $3, not $4: $(<"$w/out")"
     fi
 }
 
 # Records a failure of case $1 unless project/pull failed.
 expect_failure() {
     if [ "$rc" -eq 0 ]; then
-        failed+=("$1: exit 0, not a failure: $(<"$w/out")")
+        fail "$1" "exit 0, not a failure: $(<"$w/out")"
     fi
 }
 
@@ -252,14 +262,6 @@ upcommit lib lib2
 run
 expect_failure sub-diverged
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

@@ -25,7 +25,18 @@ export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
 p=release-assert
-failed=()
+failures=0
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
 n=0
 
 # A fresh fixture in $w, as the header describes.
@@ -56,7 +67,7 @@ run() {
     rc=0
     (cd "$w/app/${1:-}" && "$assert") >"$w/out" 2>"$w/err" || rc=$?
     if [ -s "$w/out" ]; then
-        failed+=("run in app/${1:-}: stdout carries: $(<"$w/out")")
+        fail "run in app/${1:-}" "stdout carries: $(<"$w/out")"
     fi
 }
 
@@ -66,12 +77,12 @@ expect() {
     local name=$1 status=$2 line
     shift 2
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$w/err")")
+        fail "$name" "exit $rc, not $status: $(<"$w/err")"
         return
     fi
     for line in "$@"; do
         grep -qFx -- "$line" "$w/err" ||
-            failed+=("$name: stderr lacks '$line': $(<"$w/err")")
+            fail "$name" "stderr lacks '$line': $(<"$w/err")"
     done
 }
 
@@ -81,9 +92,9 @@ expect_exact() {
     local name=$1 status=$2
     shift 2
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$w/err")")
+        fail "$name" "exit $rc, not $status: $(<"$w/err")"
     elif [ "$(<"$w/err")" != "$(printf '%s\n' "$@")" ]; then
-        failed+=("$name: stderr is: $(<"$w/err")")
+        fail "$name" "stderr is: $(<"$w/err")"
     fi
 }
 
@@ -100,7 +111,7 @@ outside() {
 fixture
 run
 expect clean 0 "$unlisted" ext
-grep -qFx lib "$w/err" && failed+=("clean: lib reported: $(<"$w/err")")
+grep -qFx "$p: lib" "$w/err" && fail clean "lib reported: $(<"$w/err")"
 
 # With every submodule named, nothing is reported.
 fixture
@@ -108,7 +119,7 @@ printf '%s\n' lib ext >"$w/app/.projects"
 git -C "$w/app" commit -q -am "name ext"
 run
 expect all-listed 0
-[ -s "$w/err" ] && failed+=("all-listed: output: $(<"$w/err")")
+[ -s "$w/err" ] && fail all-listed "output: $(<"$w/err")"
 
 # Without .projects, every submodule is reported.
 fixture
@@ -203,14 +214,6 @@ expect_exact not-a-repository 1 \
     "$p: git reads its pointer as unchanged, so a release would record the \
 commit already held rather than what is in the tree"
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

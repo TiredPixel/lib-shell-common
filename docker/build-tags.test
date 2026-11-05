@@ -61,7 +61,16 @@ echo r/x >"$work/project/.dockerrepo"
 export FAKE_LOG=$work/log
 cd "$work/project"
 
-failed=()
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
 
 # Runs docker/build-tags with HEAD on branch $3, described as $4 with latest
 # annotated tag $5, and the environment after $6, and checks its status is $2,
@@ -76,13 +85,13 @@ check() {
         FAKE_BRANCH="$branch" FAKE_DESCRIBE="$version" FAKE_RELEASE="$release" \
         "$@" "$dir/build-tags" >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$FAKE_LOG")" != "$calls" ]; then
-        failed+=("$name: docker was called as: $(<"$FAKE_LOG")")
+        fail "$name" "docker was called as: $(<"$FAKE_LOG")"
     elif [ "$(<"$work/out")" != "$want_out" ]; then
-        failed+=("$name: stdout is: $(<"$work/out")")
+        fail "$name" "stdout is: $(<"$work/out")"
     elif [ "$(<"$work/err")" != "$want_err" ]; then
-        failed+=("$name: stderr is: $(<"$work/err")")
+        fail "$name" "stderr is: $(<"$work/err")"
     fi
 }
 
@@ -141,14 +150,6 @@ check build-fails 3 a/b 1.2 1.2 "$build" FAKE_BUILD=3
 want_out+=$'\n'"fake docker: pushed r/x:a-b"
 check push-fails 4 a/b 1.2 1.2 "$build"$'\n'"push r/x:a-b" FAKE_PUSH=4
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

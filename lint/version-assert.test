@@ -12,7 +12,17 @@ assert=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/version-assert
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 
 # Runs version-assert with the arguments from $5 on and VERSION set to $2, or
 # unset where $2 is "-unset-", and checks its status is $3, its stdout is empty,
@@ -28,15 +38,15 @@ check() {
         VERSION=$version "$assert" "$@" >"$work/out" 2>"$work/err" || rc=$?
     fi
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ -s "$work/out" ]; then
-        failed+=("$name: stdout is: $(<"$work/out")")
+        fail "$name" "stdout is: $(<"$work/out")"
     elif [ -z "$said" ] && [ -s "$work/err" ]; then
-        failed+=("$name: stderr is: $(<"$work/err")")
+        fail "$name" "stderr is: $(<"$work/err")"
     elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
-        failed+=("$name: stderr lacks '$said': $(<"$work/err")")
+        fail "$name" "stderr lacks '$said': $(<"$work/err")"
     elif [ "$rc" = 1 ] && grep -qv -e '^version-assert: .*[^.]$' "$work/err"; then
-        failed+=("$name: a line lacks the prefix or ends in a full stop: $(<"$work/err")")
+        fail "$name" "a line lacks the prefix or ends in a full stop: $(<"$work/err")"
     fi
 }
 
@@ -105,7 +115,7 @@ while read -r loc <&3; do
     LC_ALL=$loc check "three-arabic-indic-$loc" $'1.2.\xd9\xa3' 1 "a release is major.minor.patch and nothing else" --parts 3
 done 3< <(locale -a)
 if [ "$utf8" = 0 ]; then
-    failed+=("utf8-locales: locale -a lists none to run the digit cases under")
+    fail utf8-locales "locale -a lists none to run the digit cases under"
 fi
 
 # Arguments are checked before VERSION.
@@ -117,14 +127,6 @@ check unknown-option 14.655 2 "Usage: version-assert [--parts 2|3]" --bogus
 check positional 14.655 2 "Usage:" 14.655
 check usage-before-unset -unset- 2 "Usage:" --parts 4
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi

@@ -34,7 +34,17 @@ chmod +x "$work/bin/shellcheck" "$work/badfile/file"
 export FAKE_LOG=$work/log
 export PATH=$work/bin:$PATH
 
-failed=()
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
 n=0
 
 # A fresh, empty project directory in $p.
@@ -66,13 +76,13 @@ check() {
     (cd "$p" && PATH=${PREPATH:+$PREPATH:}$PATH && "$shell" "$@") \
         >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        failed+=("$name: exit $rc, not $status: $(<"$work/err")")
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ -s "$work/out" ]; then
-        failed+=("$name: stdout is: $(<"$work/out")")
+        fail "$name" "stdout is: $(<"$work/out")"
     elif [ "$(<"$work/err")" != "$err" ]; then
-        failed+=("$name: stderr is: $(<"$work/err")")
+        fail "$name" "stderr is: $(<"$work/err")"
     elif [ "$(<"$FAKE_LOG")" != "$log" ]; then
-        failed+=("$name: the log is: $(<"$FAKE_LOG")")
+        fail "$name" "the log is: $(<"$FAKE_LOG")"
     fi
 }
 
@@ -132,14 +142,6 @@ project
 script run
 PREPATH=$work/badfile check file-fails 1 "fake file: broken" ""
 
-# Every line of a failure carries the program and the case, captured output
-# included.
-if [ ${#failed[@]} -gt 0 ]; then
-    for f in "${failed[@]}"; do
-        failed_case=${f%%: *}
-        while IFS= read -r failed_line <&3; do
-            echo "${0##*/}: $failed_case: $failed_line" >&2
-        done 3<<<"${f#"$failed_case: "}"
-    done
+if [ "$failures" -gt 0 ]; then
     exit 1
 fi
