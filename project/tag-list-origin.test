@@ -106,6 +106,14 @@ if grep -qF "did not answer" "$w/err"; then
     fail unreachable "reported as an expiry: $(<"$w/err")"
 fi
 
+# Any argument is a usage error.
+rc=0
+"$list" x >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "Usage: tag-list-origin" ]; then
+    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
+fi
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

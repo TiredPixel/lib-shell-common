@@ -87,7 +87,7 @@ check() {
 }
 
 none="shell: no shell scripts found in . or bin/, so nothing was checked"
-sc="-x -P SCRIPTDIR"
+sc="-x -P SCRIPTDIR --"
 
 # An empty directory is the nothing-found case, not a glob failure.
 project
@@ -126,6 +126,11 @@ check gradle-skipped 0 "bin/tool" "$sc bin/tool"
 project
 printf 'echo sourced\n' >"$p/fragment"
 check named-only 0 "fragment" "$sc fragment" fragment
+
+# A named file that looks like an option is still a file, after --.
+project
+printf 'echo sourced\n' >"$p/-x"
+check named-dash 0 "-x" "$sc -x" -x
 
 project
 printf 'echo sourced\n' >"$p/fragment"

@@ -137,7 +137,7 @@ expect_committed() {
 # from $1 to $2 in direction $3.
 committing() {
     echo "$p: $w/app: committing submodule pointers:"
-    move lib "$@"
+    echo "$p: $(move lib "$@")"
 }
 
 # Nothing moved, nothing is committed.
@@ -262,7 +262,7 @@ rm -rf -- "$w/app/ext"
 run
 expect gone status "$rc" 1
 expect_out gone "$p: $w/app: refusing to commit, these are not pointer moves:" \
-    "D ext" "$p: in a release run the sweep has already checked out and pulled \
+    "$p: D ext" "$p: in a release run the sweep has already checked out and pulled \
 every project by this point; nothing is tagged or pushed either way"
 expect gone "lines of output" "$(wc -l <"$w/err")" 3
 expect gone "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
@@ -272,7 +272,7 @@ mkrepo new one
 git -C "$w/app" submodule add -q "$w/new.git" new
 run
 expect added status "$rc" 1
-expect_out added "A new"
+expect_out added "$p: A new"
 expect added "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
 
 fixture
@@ -281,7 +281,7 @@ echo x >"$w/app/ext"
 git -C "$w/app" add ext
 run
 expect replaced status "$rc" 1
-expect_out replaced "T ext"
+expect_out replaced "$p: T ext"
 expect replaced "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
 
 # A conflicted pointer (U) is refused, listed once though it has three stages,
@@ -300,8 +300,8 @@ unmerge_lib
 run
 expect unmerged status "$rc" 1
 expect_out unmerged \
-    "$p: $w/app: refusing to commit, these are not pointer moves:" "U lib"
-expect unmerged "U lines" "$(grep -c '^U ' "$w/err")" 1
+    "$p: $w/app: refusing to commit, these are not pointer moves:" "$p: U lib"
+expect unmerged "U lines" "$(grep -c "^$p: U " "$w/err")" 1
 expect unmerged "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
 
 fixture
@@ -309,7 +309,7 @@ git -C "$w/app" submodule deinit -q lib
 unmerge_lib
 run
 expect unmerged-empty status "$rc" 1
-expect_out unmerged-empty "U lib"
+expect_out unmerged-empty "$p: U lib"
 expect unmerged-empty "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
 
 # A pointer move staged for a submodule whose directory is empty is refused

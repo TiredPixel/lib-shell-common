@@ -21,8 +21,10 @@ shopt -s inherit_errexit failglob
 shopt -s lastpipe
 
 # git ls-files prints paths from the current directory and git submodule
-# resolves them against it; at the root the two agree.
-cd "$(git rev-parse --show-toplevel)"
+# resolves them against it; at the root the two agree. Assigned on its own, so
+# that errexit sees git fail outside a repository.
+toplevel=$(git rev-parse --show-toplevel)
+cd "$toplevel"
 
 git submodule sync
 

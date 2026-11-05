@@ -21,8 +21,11 @@ fi
 record=$1
 extra=("${@:2}")
 
-if [ ! -f "$record" ]; then
+if [ ! -e "$record" ]; then
     echo "${0##*/}: $record: no such file" >&2
+    exit 1
+elif [ ! -f "$record" ]; then
+    echo "${0##*/}: $record: not a regular file" >&2
     exit 1
 fi
 

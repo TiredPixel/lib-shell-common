@@ -238,7 +238,7 @@ for kind in dir link; do
     before=$(state)
     run . ""
     expect_refused "irregular-$kind" \
-        "workflows-approve: .github/workflows.new/x.yml is not a regular file"
+        "workflows-approve: refusing, since .github/workflows.new/x.yml is not a regular file"
     expect_unchanged "irregular-$kind" "$before"
 done
 
@@ -268,7 +268,7 @@ echo other >"$r/other"
 git -C "$r" add other
 before=$(state)
 run . ""
-expect_refused staged "other
+expect_refused staged "workflows-approve: other
 workflows-approve: refusing, since the paths above are already staged and would be committed with the approval"
 expect_unchanged staged "$before"
 

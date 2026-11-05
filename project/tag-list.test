@@ -103,6 +103,14 @@ mkdir "$w/app/plain"
 echo plain >>"$w/app/.projects"
 check sweep-fails 1 ""
 
+# Any argument is a usage error.
+rc=0
+"$tag_list" x >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "Usage: tag-list" ]; then
+    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
+fi
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

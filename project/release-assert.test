@@ -112,7 +112,7 @@ outside() {
 # ext2 is not ext.
 fixture
 run
-expect clean 0 "$unlisted" ext
+expect clean 0 "$unlisted" "$p: ext"
 grep -qFx "$p: lib" "$w/err" && fail clean "lib reported: $(<"$w/err")"
 
 # With every submodule named, nothing is reported.
@@ -128,7 +128,7 @@ fixture
 git -C "$w/app" rm -q .projects
 git -C "$w/app" commit -q -m "drop .projects"
 run
-expect no-projects 0 "$unlisted" lib ext
+expect no-projects 0 "$unlisted" "$p: lib" "$p: ext"
 
 # Below the top level, the release is refused.
 fixture
@@ -197,7 +197,7 @@ expect_exact missing 1 \
 fixture
 git -C "$w/app" submodule deinit -q -f ext
 run
-expect uninitialised 0 "$unlisted" ext
+expect uninitialised 0 "$unlisted" "$p: ext"
 
 # A submodule directory holding content but no repository of its own is
 # refused.

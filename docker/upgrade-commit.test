@@ -327,6 +327,14 @@ if [ "$rc" != 1 ] || [ "$err" != "upgrade-commit: $w/missing: no such file" ]; t
 fi
 unchanged missing
 
+fixture
+mkdir "$w/directory"
+run "" "$w/directory"
+if [ "$rc" != 1 ] || [ "$err" != "upgrade-commit: $w/directory: not a regular file" ]; then
+    fail directory "exit $rc: $err"
+fi
+unchanged directory
+
 for how in none empty; do
     fixture
     if [ "$how" = none ]; then

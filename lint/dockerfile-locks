@@ -476,7 +476,8 @@ check_file() {
     local script="" reason
     local -a lines=() logical=() bodies=() docs=() words=() found=() comments=()
 
-    [ -f "$dockerfile" ] || die "$dockerfile: no such file"
+    [ -e "$dockerfile" ] || die "$dockerfile: no such file"
+    [ -f "$dockerfile" ] || die "$dockerfile: not a regular file"
     mapfile -t lines 2>/dev/null <"$dockerfile" ||
         die "$dockerfile: cannot be read"
     for line in "${lines[@]}"; do

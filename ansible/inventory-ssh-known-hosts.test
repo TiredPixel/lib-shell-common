@@ -70,24 +70,24 @@ check() {
 }
 
 kh=$work/known_hosts
-usage="Usage: $inventory KNOWN_HOSTS DOMAIN --list | --host HOST"
+usage="Usage: inventory-ssh-known-hosts KNOWN_HOSTS DOMAIN --list | --host HOST"
 
 said=""
 check list 0 \
     '{"ungrouped":{"hosts":["a.example.com","b.example.com","o'"'"'neil.example.com","say\"hi.example.com","e.example.com"]},"_meta":{"hostvars":{}}}' \
     "$kh" example.com --list
-said="$inventory: no host in $work/known_hosts_dot ends in .example.com"
+said="inventory-ssh-known-hosts: no host in $work/known_hosts_dot ends in .example.com"
 check list-dot-literal 1 "" "$work/known_hosts_dot" example.com --list
 
 said=""
 check host 0 '{}' "$kh" example.com --host a.example.com
 
-said="$inventory: no host in $kh ends in .example.net"
+said="inventory-ssh-known-hosts: no host in $kh ends in .example.net"
 check no-match 1 "" "$kh" example.net --list
 
-said="$inventory: $work/missing is not a readable file"
+said="inventory-ssh-known-hosts: $work/missing is not a readable file"
 check missing-file 1 "" "$work/missing" example.com --list
-said="$inventory: $work is not a readable file"
+said="inventory-ssh-known-hosts: $work is not a readable file"
 check directory-file 1 "" "$work" example.com --list
 
 said=$usage

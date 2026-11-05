@@ -191,10 +191,12 @@ refuse_at() {
     exit 1
 }
 
-[ -f "$dockerfile" ] || die "no such file"
+[ -e "$dockerfile" ] || die "no such file"
+[ -f "$dockerfile" ] || die "not a regular file"
 for w in "${!workflows[@]}"; do
     workflow=${workflows[$w]}
-    [ -f "$workflow" ] || refuse "$workflow" "no such file"
+    [ -e "$workflow" ] || refuse "$workflow" "no such file"
+    [ -f "$workflow" ] || refuse "$workflow" "not a regular file"
     [ ! "$workflow" -ef "$dockerfile" ] || refuse "$workflow" "is named twice"
     for other in "${workflows[@]:0:w}"; do
         [ ! "$workflow" -ef "$other" ] || refuse "$workflow" "is named twice"
@@ -332,6 +334,13 @@ heredoc="^[0-9]*<<(-?)(\"($delimiter)\"|'($delimiter)'|($delimiter))\$"
 froms=()
 args=()
 locks=()
+# The line each TRACK line was first read from, keyed by its kind, a space and
+# the rest of the line, for refusals naming it.
+declare -A track_at=()
+# Notes that TRACK line $1 is the current line, unless it was read before.
+read_at() {
+    [ -n "${track_at[$1]+set}" ] || track_at[$1]=$((i + 1))
+}
 logical=()
 ends=()
 docs=()
@@ -348,9 +357,18 @@ for i in "${!lines[@]}"; do
     fi
     if [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]]; then
         case $line in
-        "# TRACK FROM "*) froms+=("${line#"# TRACK FROM "}") ;;
-        "# TRACK ARG "*) args+=("${line#"# TRACK ARG "}") ;;
-        "# TRACK LOCK "*) locks+=("${line#"# TRACK LOCK "}") ;;
+        "# TRACK FROM "*)
+            froms+=("${line#"# TRACK FROM "}")
+            read_at "FROM ${froms[-1]}"
+            ;;
+        "# TRACK ARG "*)
+            args+=("${line#"# TRACK ARG "}")
+            read_at "ARG ${args[-1]}"
+            ;;
+        "# TRACK LOCK "*)
+            locks+=("${line#"# TRACK LOCK "}")
+            read_at "LOCK ${locks[-1]}"
+            ;;
         *)
             [[ "${line,,}" =~ $track ]] || continue
             case ${BASH_REMATCH[1]} in
@@ -424,7 +442,8 @@ for data in "${froms[@]}"; do
     # A tag holding / is a registry's port, as in localhost:5000/x, with no tag.
     if [ -z "$repo" ] || [ -z "$tag" ] || [ "$repo" = "$data" ] ||
         [[ "$tag" == */* ]]; then
-        die "TRACK FROM $data is not REPO:TAG"
+        refuse_at "$dockerfile" "${track_at["FROM $data"]}" \
+            "TRACK FROM $data is not REPO:TAG"
     fi
     [ -z "${targets["FROM $repo"]+set}" ] ||
         die "TRACK FROM $repo is pinned twice"
@@ -527,11 +546,13 @@ for data in "${args[@]}"; do
     name=${data%% *}
     source=${data#* }
     if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [ "$source" = "$data" ]; then
-        die "TRACK ARG $data is not $forms"
+        refuse_at "$dockerfile" "${track_at["ARG $data"]}" \
+            "TRACK ARG $data is not $forms"
     fi
     [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
         [[ "$source" =~ ^sha256:$https_url(\ $https_url)?$ ]] ||
-        die "TRACK ARG $name: $source is not $sources"
+        refuse_at "$dockerfile" "${track_at["ARG $data"]}" \
+            "TRACK ARG $name: $source is not $sources"
     [ -z "${kinds[$name]+set}" ] || die "TRACK ARG $name is pinned twice"
     kinds[$name]=${source%%:*}
     scan_arg "$name" "TRACK ARG $name"
@@ -597,7 +618,8 @@ for data in "${locks[@]}"; do
     read -r -a words <<<"$data"
     name=${words[0]:-}
     if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || [ ${#words[@]} -lt 2 ]; then
-        die "TRACK LOCK $data is not $lockforms"
+        refuse_at "$dockerfile" "${track_at["LOCK $data"]}" \
+            "TRACK LOCK $data is not $lockforms"
     fi
     [ -z "${lock_kinds[$name]+set}" ] || die "TRACK LOCK $name is named twice"
     kind=""
@@ -922,7 +944,8 @@ for w in "${!workflows[@]}"; do
         fi
         data=${line#"# TRACK USES "}
         [[ "$data" =~ $trackuses ]] ||
-            refuse "$workflow" "TRACK USES $data is not OWNER/REPO@TAG"
+            refuse_at "$workflow" $((i + 1)) \
+                "TRACK USES $data is not OWNER/REPO@TAG"
         repo=${BASH_REMATCH[1]}
         [ -z "${follows[${repo,,}]+set}" ] ||
             refuse "$workflow" "TRACK USES $repo is pinned twice"
@@ -1231,7 +1254,8 @@ for name in "${lock_names[@]}"; do
             die "TRACK LOCK $name: lock-resolve gave no pip report"
         gated=$(jq -r "$markers" <<<"$report")
         if [ -n "$gated" ]; then
-            printf '%s\n' "$gated" >&2
+            mapfile -t gated_lines <<<"$gated"
+            printf '%s\n' "${gated_lines[@]/#/${0##*/}: }" >&2
             die "TRACK LOCK $name: each requirement above turns on the" \
                 "platform, so its lock would not hold on another architecture"
         fi

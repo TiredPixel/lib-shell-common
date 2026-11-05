@@ -34,7 +34,7 @@ shopt -s failglob
 if [ ${#entries[@]} -eq 0 ]; then
     exit 0
 fi
-printf '%s\n' "${entries[@]}" >&2
+printf '%s\n' "${entries[@]/#/$prog: }" >&2
 echo "$prog: proposals pending; approve them with" \
     "$(dirname -- "$0")/workflows-approve" >&2
 exit 1

@@ -36,8 +36,10 @@ shopt -s lastpipe
 
 # Every path question settled in one place. Pathspecs handed to git commit are
 # resolved against the current directory, and git diff-index prints from the
-# root. At the root the two agree.
-cd "$(git rev-parse --show-toplevel)"
+# root. At the root the two agree. Assigned on its own, so that errexit sees git
+# fail outside a repository.
+toplevel=$(git rev-parse --show-toplevel)
+cd "$toplevel"
 
 bumped=()
 recorded=()
@@ -96,7 +98,7 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
 
 if [ "${#refused[@]}" -gt 0 ]; then
     echo "$prog: $PWD: refusing to commit, these are not pointer moves:" >&2
-    printf '%s\n' "${refused[@]}" >&2
+    printf '%s\n' "${refused[@]/#/$prog: }" >&2
     echo "$prog: in a release run the sweep has already checked out and" \
         "pulled every project by this point; nothing is tagged or pushed" \
         "either way" >&2
@@ -152,7 +154,7 @@ if [ "${#bumped[@]}" -gt 0 ]; then
         esac
 
         moves+=("$path ${was:0:9}..${now:0:9} ($direction)")
-        printf '%s\n' "${moves[-1]}" >&2
+        printf '%s\n' "$prog: ${moves[-1]}" >&2
 
         # :(literal) as pathspec magic rather than the global
         # --literal-pathspecs, which exports GIT_LITERAL_PATHSPECS=1 into every

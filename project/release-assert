@@ -148,5 +148,5 @@ done
 if [ "${#unlisted[@]}" -gt 0 ]; then
     echo "$prog: $PWD: not named in $f_projects," \
         "so this release will not tag:" >&2
-    printf '%s\n' "${unlisted[@]}" >&2
+    printf '%s\n' "${unlisted[@]/#/$prog: }" >&2
 fi

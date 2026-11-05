@@ -573,10 +573,17 @@ if "$upgrade" "$file" 2>"$work/err" ||
     fail missing "not refused naming it"
 fi
 
+file=$work/directory.Dockerfile
+mkdir "$file"
+if "$upgrade" "$file" 2>"$work/err" ||
+    [ "$(<"$work/err")" != "upgrade: $file: not a regular file" ]; then
+    fail directory "not refused naming it: $(<"$work/err")"
+fi
+
 check from-rewrites $'# TRACK FROM r/x:1\nFROM r/x:1 AS dev\nFROM r/x@'"$old"$'\nFROM r/x:2\nFROM r/xy:1\nFROM base\n' \
     0 "" $'# TRACK FROM r/x:1\nFROM r/x@'"$new"$' AS dev\nFROM r/x@'"$new"$'\nFROM r/x@'"$new"$'\nFROM r/xy:1\nFROM base'
 
-check from-bad-form $'# TRACK FROM nocolon\nFROM nocolon\n' 1 "is not REPO:TAG" \
+check from-bad-form $'# TRACK FROM nocolon\nFROM nocolon\n' 1 "@F@:1: TRACK FROM nocolon is not REPO:TAG" \
     $'# TRACK FROM nocolon\nFROM nocolon'
 
 check from-names-nothing $'# TRACK FROM r/x:1\nFROM r/xy:1\n' 1 "names no FROM r/x line" \
@@ -595,7 +602,7 @@ FAKE_REDIRECT=https://github.com/o/p/releases/tag/0.16.9 check arg-unprefixed-ta
     $'# TRACK ARG V github:o/p\nARG V=0.1\n' 0 "" $'# TRACK ARG V github:o/p\nARG V=0.16.9'
 
 check arg-bad-form $'# TRACK ARG V\nARG V=1\n' 1 \
-    "is not $forms" \
+    "@F@:1: TRACK ARG V is not $forms" \
     $'# TRACK ARG V\nARG V=1'
 
 check arg-bad-name $'# TRACK ARG 1V github:o/p\nARG V=1\n' 1 \
@@ -603,7 +610,7 @@ check arg-bad-name $'# TRACK ARG 1V github:o/p\nARG V=1\n' 1 \
     $'# TRACK ARG 1V github:o/p\nARG V=1'
 
 check arg-bad-source $'# TRACK ARG V gitlab:o/p\nARG V=1\n' 1 \
-    "is not $sources" $'# TRACK ARG V gitlab:o/p\nARG V=1'
+    "@F@:1: TRACK ARG V: gitlab:o/p is not $sources" $'# TRACK ARG V gitlab:o/p\nARG V=1'
 
 check arg-names-nothing $'# TRACK ARG V github:o/p\nARG W=1\n' 1 "names no ARG V line" \
     $'# TRACK ARG V github:o/p\nARG W=1'
@@ -1165,7 +1172,7 @@ n=0
 for data in o/r o@v1 'o/r@v1*' o/r@ 'o/r@v1 v2' 'o/r/p@v1' ' o/r@v1'; do
     n=$((n + 1))
     wf=$(printf '%s\n' "# TRACK USES $data" "  - uses: o/r@v0")
-    flow "wf-bad-trackuses-$n" "$df" "$wf" 1 "TRACK USES $data is not OWNER/REPO@TAG" \
+    flow "wf-bad-trackuses-$n" "$df" "$wf" 1 "@W@:1: TRACK USES $data is not OWNER/REPO@TAG" \
         "$df" "$wf" "fake curl:"
 done
 
@@ -1233,6 +1240,11 @@ done
 if "$upgrade" "$file" "$work/absent.yml" 2>"$work/err" ||
     ! grep -qxF "upgrade: $work/absent.yml: no such file" "$work/err"; then
     fail wf-missing "not refused naming it: $(<"$work/err")"
+fi
+mkdir "$work/directory.yml"
+if "$upgrade" "$file" "$work/directory.yml" 2>"$work/err" ||
+    ! grep -qxF "upgrade: $work/directory.yml: not a regular file" "$work/err"; then
+    fail wf-directory "not refused naming it: $(<"$work/err")"
 fi
 
 # The proposal's temporary file cannot be made once the Dockerfile's has been,
@@ -1549,7 +1561,7 @@ n=0
 for data in ".x pypi:a" "-x pypi:a" ".. pypi:a" "a/b pypi:a" "x" ""; do
     n=$((n + 1))
     dockerfile="# TRACK FROM r/x:1"$'\n'"# TRACK LOCK $data"$'\nFROM r/x:1\n'
-    check "lock-bad-name-$n" "$dockerfile" 1 "TRACK LOCK $data is not $lockforms" \
+    check "lock-bad-name-$n" "$dockerfile" 1 "@F@:2: TRACK LOCK $data is not $lockforms" \
         "${dockerfile%$'\n'}" "fake docker:"
 done
 n=0
@@ -2196,7 +2208,7 @@ for data in 'x ;platform_machine=="x86_64"|' \
     marked "${data%|*}" "${data#*|}"
     lockcase "lock-marker-$n" "$pdf"
     FAKE_REPORT=$work/report-marked.json lockgo
-    if expect "lock-marker-$n" 1 "m-d: ${data%|*}"$'\n'"TRACK LOCK m: each requirement above turns on the platform, so its lock would not hold on another architecture" \
+    if expect "lock-marker-$n" 1 "upgrade: m-d: ${data%|*}"$'\n'"TRACK LOCK m: each requirement above turns on the platform, so its lock would not hold on another architecture" \
         "fake curl: https://pypi.org/"; then
         [ ! -e "$d/Dockerfile.lock" ] || fail "lock-marker-$n" "a lock was written"
     fi

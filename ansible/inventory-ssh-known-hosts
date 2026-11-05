@@ -7,7 +7,7 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 usage() {
-    echo "Usage: $0 KNOWN_HOSTS DOMAIN --list | --host HOST" >&2
+    echo "Usage: ${0##*/} KNOWN_HOSTS DOMAIN --list | --host HOST" >&2
     exit 2
 }
 
@@ -19,7 +19,7 @@ if [ -z "$f" ] || [ -z "$domain" ]; then
     usage
 fi
 if ! [ -f "$f" ] || ! [ -r "$f" ]; then
-    echo "$0: $f is not a readable file" >&2
+    echo "${0##*/}: $f is not a readable file" >&2
     exit 1
 fi
 
@@ -39,7 +39,7 @@ cmd_list() {
     ' "$f")
 
     if [ "$hosts" = "[]" ]; then
-        echo "$0: no host in $f ends in .$domain" >&2
+        echo "${0##*/}: no host in $f ends in .$domain" >&2
         exit 1
     fi
 

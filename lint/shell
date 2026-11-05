@@ -74,4 +74,4 @@ printf '%s\n' "${named[@]}" "${scripts[@]}" >&2
 
 # -P SCRIPTDIR, so a source of a file beside the script is followed rather than
 # reported as unresolved.
-shellcheck -x -P SCRIPTDIR "${named[@]}" "${scripts[@]}"
+shellcheck -x -P SCRIPTDIR -- "${named[@]}" "${scripts[@]}"

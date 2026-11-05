@@ -77,9 +77,9 @@ mkdir -p "$r/.github/workflows.new/dir"
 : >"$r/.github/workflows.new/.hidden"
 cp -- "$pending" "$r/sub/workflows-pending"
 run sub ./workflows-pending
-check pending 1 ".github/workflows.new/.hidden
-.github/workflows.new/build.yml
-.github/workflows.new/dir
+check pending 1 "workflows-pending: .github/workflows.new/.hidden
+workflows-pending: .github/workflows.new/build.yml
+workflows-pending: .github/workflows.new/dir
 workflows-pending: proposals pending; approve them with ./workflows-approve"
 
 # Any argument is a usage error, even with proposals pending.
