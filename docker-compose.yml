@@ -1,9 +1,11 @@
 ---
 services:
-  # Runs bin/format and bin/coverage, whose writes have to reach the host tree,
-  # which only this mount carries there. The whole tree is bound rather than
-  # file by file, since a single-file bind pins an inode and goes stale when an
-  # editor saves by rename.
+  # Runs bin/format, whose rewrites have to reach the host tree. Only the paths
+  # it reads or rewrites, as bin/files lists them, are bound, each by name, so
+  # .env, .git, tmp/ and per-user directories stay out of the container; a
+  # missing one fails the run rather than being made on the host. Each run's
+  # container is fresh, so a single-file bind, which pins an inode, cannot go
+  # stale across an editor's save by rename.
   shell:
     build:
       context: .
@@ -14,9 +16,79 @@ services:
       - test
     user: ${DC_BIND_USER:-}
     volumes:
-      - .:/home/x/r
-  # Runs bin/lint and bin/test on the tree the test stage copied: no mount, so
-  # what a run checks cannot change under it. init, as PID 1, passes make test's
+      - bind:
+          create_host_path: false
+        source: ./.env.example
+        target: /home/x/r/.env.example
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./.github
+        target: /home/x/r/.github
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./.hadolint.yaml
+        target: /home/x/r/.hadolint.yaml
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./Dockerfile
+        target: /home/x/r/Dockerfile
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./README.md
+        target: /home/x/r/README.md
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./ansible
+        target: /home/x/r/ansible
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./bin
+        target: /home/x/r/bin
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./docker
+        target: /home/x/r/docker
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./docker-compose.yml
+        target: /home/x/r/docker-compose.yml
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./github
+        target: /home/x/r/github
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./lint
+        target: /home/x/r/lint
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./project
+        target: /home/x/r/project
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./terraform
+        target: /home/x/r/terraform
+        type: bind
+      - bind:
+          create_host_path: false
+        source: ./test
+        target: /home/x/r/test
+        type: bind
+  # Runs bin/lint, bin/test and bin/coverage on the tree the test stage copied:
+  # no mount, so what a run checks cannot change under it, and bin/coverage
+  # hands its report out as a tar on stdout. init, as PID 1, passes make test's
   # signals on, where bin/test as PID 1 would ignore a TERM or INT it sets no
   # trap for.
   shell_test:

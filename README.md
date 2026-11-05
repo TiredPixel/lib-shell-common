@@ -494,6 +494,7 @@ Working on this repository needs:
 - Docker Engine or Docker Desktop with Compose v2
 - GNU make 3.82 or newer, whose recipes run under Bash 4.4 or newer
 - for `make upgrade` and `make workflows-approve`, which run on the host, the tools listed above for `docker/` and `github/`
+- for `make coverage`, `tar`, which unpacks its report on the host
 
 ### Setting up a working copy
 
@@ -505,7 +506,7 @@ cd lib-shell-common
 cp .env.example .env
 ```
 
-Where Docker is rootless or the host user's uid is not 1000, set this in `.env`, so that `make format` and `make coverage` can write to the tree:
+Where Docker is rootless or the host user's uid is not 1000, set this in `.env`, so that `make format` can write to the tree:
 
 ```sh
 DC_BIND_USER=0:0
@@ -535,7 +536,7 @@ make lint
 
 ### Measuring coverage
 
-`make coverage` runs the lint and tests under kcov in the `shell` container and writes its report to `tmp/coverage/`, replacing the last one; `TESTS` narrows it as it does `make test`. Like `make format`, it writes to the tree, so it needs `DC_BIND_USER` set where *Setting up a working copy* says to.
+`make coverage` runs the lint and tests under kcov in the `shell_test` container, which hands the report out as a tar on stdout, and `bin/coverage --extract` unpacks it on the host into `tmp/coverage/`. The report replaces the last one only once it is wholly unpacked, so a bad test name, a failed build or an export cut short leaves the last one; a run whose tests fail still replaces it, and the target fails. `TESTS` narrows it as it does `make test`.
 
 ```sh
 make coverage
@@ -551,9 +552,9 @@ make format
 
 ### Building
 
-The image builds three stages. `wheels` downloads the wheels `Dockerfile.lock/mdformat/requirements.txt` names, each checked against its hash. `dev` is the formatting, linting and test toolchain, running as the unprivileged user `x`, installing mdformat and its plugins from those wheels with no network; it copies nothing in, reading the wheels only through a bind mount, so `make format` runs it on the mounted tree. `test` adds a copy of the repository's tree to it, leaving out every top-level dot path but the project's own, which `.dockerignore` names, so a per-user one, such as an editor's directory, never reaches the image.
+The image builds three stages. `wheels` downloads the wheels `Dockerfile.lock/mdformat/requirements.txt` names, each checked against its hash. `dev` is the formatting, linting and test toolchain, running as the unprivileged user `x`, installing mdformat and its plugins from those wheels with no network; it copies nothing in, reading the wheels only through a bind mount, so `make format` runs it on the source it mounts. `test` adds a copy of the repository's tree to it, leaving out every top-level dot path but the project's own, which `.dockerignore` names, so a per-user one, such as an editor's directory, never reaches the image.
 
-The `shell` and `shell_test` services sit under the `test` profile, which every make target that runs Compose passes. The `shell` service runs `bin/format` and `bin/coverage` from `dev` on the tree mounted read-write, since their writes must reach it. The `shell_test` service runs the gates from `test` on its own copy, with no mount and no network.
+The `shell` and `shell_test` services sit under the `test` profile, which every make target that runs Compose passes. The `shell` service runs `bin/format` from `dev`, with each path it reads or rewrites, as `bin/files` lists them, bound read-write by name, since its writes must reach the tree; nothing else of the checkout, such as `.env`, `.git` or `tmp/`, is mounted, and a missing path fails the run. The `shell_test` service runs the gates and `bin/coverage` from `test` on its own copy, with no mount and no network.
 
 `make build` builds `dev` and `test`, and `wheels` with them:
 

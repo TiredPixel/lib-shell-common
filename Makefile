@@ -6,10 +6,14 @@ SHELL := bash
 # on demand by the --build the other targets carry.
 build:
 	docker/build-compose --profile test
-# The shell service, since its mount is the one that lets the report reach
-# tmp/coverage/ on the host.
+# In shell_test, as make test runs, which mounts nothing: the report leaves it
+# as a tar on stdout, which bin/coverage --extract unpacks on the host into
+# tmp/coverage/. Built first rather than with run --build, whose progress would
+# go to stdout too; -T, so no terminal mangles the stream.
 coverage:
-	docker compose --profile test run --rm --build shell coverage $(TESTS)
+	docker compose --profile test build shell_test
+	docker compose --profile test run --rm -T shell_test coverage --tar $(TESTS) \
+		| bin/coverage --extract
 format:
 	docker compose --profile test run --rm --build shell format
 lint:

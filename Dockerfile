@@ -21,9 +21,9 @@
 #
 # wheels downloads the wheels Dockerfile.lock/mdformat names, each checked
 # against its hash, for dev to install offline. dev copies nothing in, reading
-# the wheels only through a bind mount, so make format runs it on the mounted
-# tree; test adds the tree for the gate. README.md, Building, describes the
-# stages.
+# the wheels only through a bind mount, so make format runs it on the source
+# paths it mounts by name; test adds the tree for the gate and coverage.
+# README.md, Building, describes the stages.
 #===============================================================================
 FROM docker.io/library/debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 AS wheels
 
@@ -197,8 +197,8 @@ RUN --network=none \
     && echo "$version" | grep -qF 'mdformat-gfm ' \
     && echo "$version" | grep -qF 'mdformat_frontmatter '
 
-# uid 1000 so a bind-mounted tree is writable from a host whose user is the
-# usual 1000.
+# uid 1000 so the source make format bind-mounts is writable from a host whose
+# user is the usual 1000.
 RUN useradd -u 1000 x -m \
     && mkdir /home/x/r \
     && chown -R x:x /home/x
