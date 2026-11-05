@@ -17,9 +17,9 @@ shfmt_args=(-i 4)
 # Reads into the array named by $1 what find, given the arguments after $2,
 # prints, NUL-separated and sorted; a failure ends the run naming directory $2.
 # find runs as a background job into a file and its status is checked through
-# wait, since bash can lose a process substitution's status. The file is
-# removed once it is open for both, so no later exit, by a signal included,
-# leaves it behind.
+# wait, since bash can lose a process substitution's status. The file is removed
+# once it is open for both, so no later exit, by a signal included, leaves it
+# behind.
 files_find() {
     local -n files_find_into=$1
     local files_find_dir=$2 files_find_out files_find_write files_find_read

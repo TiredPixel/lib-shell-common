@@ -5,8 +5,8 @@
 # repository. The fake docker logs each call's arguments, a line to a call, and
 # exits with FAKE_BUILD's status from a build and FAKE_PUSH's from a push. The
 # fake git puts HEAD on branch a/b and describes it as FAKE_DESCRIBE, failing as
-# an untagged repository does where that is empty, or as a broken one does
-# where it is "broken".
+# an untagged repository does where that is empty, or as a broken one does where
+# it is "broken".
 #
 # Run: test/docker/build-prd.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail

@@ -2,9 +2,9 @@
 #
 # The gate: bin/lint, then every test/*/*.test, at most nproc at a time, each
 # one's output shown once it ends. Every test runs whatever the others do, and
-# each that fails, by its exit status alone, is named. Its headings, each
-# test's output and the summary go to stderr; bin/lint's tools report on stdout,
-# as they do when it runs alone. Runs from the root of the repository.
+# each that fails, by its exit status alone, is named. Its headings, each test's
+# output and the summary go to stderr; bin/lint's tools report on stdout, as
+# they do when it runs alone. Runs from the root of the repository.
 #
 # Tests named as arguments run alone, without the lint: it covers the whole
 # tree, so running it for a handful of named tests costs far more than the tests

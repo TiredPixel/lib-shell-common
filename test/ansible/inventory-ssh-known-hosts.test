@@ -41,8 +41,7 @@ e.example.com	ssh-ed25519 AAAA
 
 EOF
 
-# The X stands where a regex would read the dot in example.com as any
-# character.
+# The X stands where a regex would read the dot in example.com as any character.
 cat >"$work/known_hosts_dot" <<'EOF'
 web.exampleXcom ssh-ed25519 AAAA
 EOF

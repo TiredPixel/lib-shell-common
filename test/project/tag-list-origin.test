@@ -53,9 +53,9 @@ fail() {
 
 n=0
 
-# A fresh fixture in $w: app, holding one commit, with a lightweight tag 1.1
-# and an annotated tag 1.2 pushed to its bare origin, $w/app.git, and a tag 1.3
-# that is not.
+# A fresh fixture in $w: app, holding one commit, with a lightweight tag 1.1 and
+# an annotated tag 1.2 pushed to its bare origin, $w/app.git, and a tag 1.3 that
+# is not.
 fixture() {
     n=$((n + 1))
     w=$work/$n
@@ -86,8 +86,8 @@ check() {
     fi
 }
 
-# The origin's tags, each once, without the annotated one's peeled line, and
-# not the tag only held locally.
+# The origin's tags, each once, without the annotated one's peeled line, and not
+# the tag only held locally.
 fixture
 check lists 0 "$(printf '%s\trefs/tags/%s\n' \
     "$(git -C "$w/app" rev-parse 1.1)" 1.1 \

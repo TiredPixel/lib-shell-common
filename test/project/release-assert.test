@@ -158,8 +158,8 @@ git -C "$w/app/ext" commit -q --allow-empty -m moved
 run
 expect submodule-work 0 "$unlisted"
 
-# An unmerged path is refused, a submodule's pointer included, with no
-# operation in progress to catch it.
+# An unmerged path is refused, a submodule's pointer included, with no operation
+# in progress to catch it.
 fixture
 lib=$(git -C "$w/app" rev-parse HEAD:lib)
 printf '%s\t%s\n' "0 0000000000000000000000000000000000000000" lib \
@@ -199,8 +199,7 @@ git -C "$w/app" submodule deinit -q -f ext
 run
 expect uninitialised 0 "$unlisted" "$p: ext"
 
-# A submodule directory holding content but no repository of its own is
-# refused.
+# A submodule directory holding content but no repository of its own is refused.
 fixture
 git -C "$w/app" submodule deinit -q -f ext
 echo x >"$w/app/ext/file"

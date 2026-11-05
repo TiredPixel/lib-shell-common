@@ -6,11 +6,11 @@
 # after it have passed, as "Upgrade pins" with a line for each pin that moved as
 # the body. It stages exactly the paths RECORD lists and each PATH, such as a
 # library submodule taken forwards beside the upgrade, and refuses, listing
-# them, where any other path is already staged, since the commit would carry
-# it. A submodule PATH that moved adds a line as PATH OLD -> NEW, each commit
-# cut to 7 hex digits, so a PATH that changed is committed even where no pin
-# moved. Where neither a pin nor a PATH moved, it commits nothing. It never
-# pushes. RECORD is removed once used, so a second run cannot commit it again.
+# them, where any other path is already staged, since the commit would carry it.
+# A submodule PATH that moved adds a line as PATH OLD -> NEW, each commit cut to
+# 7 hex digits, so a PATH that changed is committed even where no pin moved.
+# Where neither a pin nor a PATH moved, it commits nothing. It never pushes.
+# RECORD is removed once used, so a second run cannot commit it again.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 

@@ -34,8 +34,8 @@ fail() {
     failures=$((failures + 1))
 }
 
-# Runs docker/build-compose with the arguments after $5 and checks its status
-# is $2, docker was called as $3 has it, and its stdout and stderr are $4 and
+# Runs docker/build-compose with the arguments after $5 and checks its status is
+# $2, docker was called as $3 has it, and its stdout and stderr are $4 and
 # $5.
 check() {
     local name=$1 status=$2 calls=$3 out=$4 err=$5 rc=0

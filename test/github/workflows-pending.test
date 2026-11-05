@@ -69,8 +69,8 @@ run . "$pending"
 check empty 0 ""
 
 # Every entry is listed, a dot file and a directory included, and the pointer to
-# workflows-approve sits beside the path workflows-pending was run as, here
-# from a subdirectory.
+# workflows-approve sits beside the path workflows-pending was run as, here from
+# a subdirectory.
 fixture
 mkdir -p "$r/.github/workflows.new/dir"
 : >"$r/.github/workflows.new/build.yml"

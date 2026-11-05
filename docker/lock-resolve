@@ -139,9 +139,9 @@ fi
 
 case $kind in
 pypi)
-    # pip gained --dry-run and --report in 22.2; an older one, as RHEL 9
-    # ships, is upgraded here, in a container thrown away after, under the
-    # image's own Python.
+    # pip gained --dry-run and --report in 22.2; an older one, as RHEL 9 ships,
+    # is upgraded here, in a container thrown away after, under the image's own
+    # Python.
     version=$(python3 -m pip --version </dev/null)
     if ! [[ "$version" =~ ^pip\ ([0-9]+)\.([0-9]+) ]]; then
         echo "lock-resolve: pip --version gave $version" >&2

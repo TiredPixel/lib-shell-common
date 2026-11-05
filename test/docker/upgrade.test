@@ -24,13 +24,13 @@
 # with FAKE_LS_REMOTE where it is set, and otherwise with the file
 # OWNER/REPO/TAG under FAKE_TAGS, or nothing where there is none; the status of
 # one literal path, and a directory's top level, it passes to the real git,
-# which a --record run asks for.
-# FAKE_PULL=fail, FAKE_RUN=fail, FAKE_PIP=fail, FAKE_CURL=fail and FAKE_GIT=fail
-# make each fail as the real one would, and FAKE_GIT=timeout exits silently
-# with timeout's 124. A fake mktemp fails for the template FAKE_MKTEMP_FAIL
-# names, and otherwise runs the real one. Where FAKE_GREP=fail, a fake grep
-# fails as the real one would on an unreadable file, given exactly the search
-# upgrade makes for FREEZE lines, and otherwise runs the real one.
+# which a --record run asks for. FAKE_PULL=fail, FAKE_RUN=fail, FAKE_PIP=fail,
+# FAKE_CURL=fail and FAKE_GIT=fail make each fail as the real one would, and
+# FAKE_GIT=timeout exits silently with timeout's 124. A fake mktemp fails for
+# the template FAKE_MKTEMP_FAIL names, and otherwise runs the real one. Where
+# FAKE_GREP=fail, a fake grep fails as the real one would on an unreadable file,
+# given exactly the search upgrade makes for FREEZE lines, and otherwise runs
+# the real one.
 #
 # upgrade runs from a copy beside a fake lint/dockerfile-locks, which names on
 # stderr the file it checks and passes it, unless FAKE_LINT=fail, where it
@@ -686,8 +686,8 @@ check arg-continued-over-comment $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\
 check arg-continued-at-end $'# TRACK ARG V github:o/p\nARG V=1 \\\n' 1 \
     "@F@:2: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1 \\'
 
-# A continued ARG naming only others is left alone, and an ARG V=1 continuing
-# a RUN is no instruction.
+# A continued ARG naming only others is left alone, and an ARG V=1 continuing a
+# RUN is no instruction.
 check arg-continued-elsewhere $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\\n    X=2\nRUN echo \\\nARG V=1\n' \
     0 "" $'# TRACK ARG V github:o/p\nARG V=1.2.3\nARG W=1 \\\n    X=2\nRUN echo \\\nARG V=1'
 
@@ -943,9 +943,9 @@ flow() {
 df=$'# TRACK ARG V github:o/p\nARG V=1'
 dfafter=$'# TRACK ARG V github:o/p\nARG V=1.2.3'
 
-# A TRACK USES is read wherever it falls. Each covered uses: moves, whatever
-# its REF and whatever PATH follows OWNER/REPO, with blanks at its end dropped;
-# the TRACK USES lines, an uncovered uses: and its comments stay.
+# A TRACK USES is read wherever it falls. Each covered uses: moves, whatever its
+# REF and whatever PATH follows OWNER/REPO, with blanks at its end dropped; the
+# TRACK USES lines, an uncovered uses: and its comments stay.
 wf=$(printf '%s\n' "# TRACK USES actions/checkout@v7" "steps:" \
     "  - uses: actions/checkout@$c1" "  - uses: o/r/sub/dir@$c1" "  - name: x" \
     "    uses: o/r@v1"$' \t' "  - uses: o/r@main" "  # v9.0.0" "  - uses: u/x@v9" \
@@ -986,8 +986,8 @@ for above in "    # v1" "# v1" "  # Checkout" "  # Step 2 of 3" "  # v1x"; do
         "$(printf '%s\n' "# TRACK USES o/r@v1" "$above" "  - uses: o/r@$c3")"
 done
 
-# Every pin in every file resolves before any is written: the second
-# workflow's tag is missing, so neither it, the first nor the Dockerfile moves.
+# Every pin in every file resolves before any is written: the second workflow's
+# tag is missing, so neither it, the first nor the Dockerfile moves.
 m=$work/multi/.github
 mkdir -p "$m/workflows"
 printf '%s' "$df" >"$work/multi.Dockerfile"
@@ -1187,8 +1187,8 @@ for line in "  - uses: \"o/r@$c1\"" "  - uses: \"O/R@$c1\"" "  - uses: o/r@" \
         "$df" "$wf" "fake curl:"
 done
 
-# Any other line holding uses:, and prose that only begins like a TRACK line,
-# is left alone, with or without a TRACK USES.
+# Any other line holding uses:, and prose that only begins like a TRACK line, is
+# left alone, with or without a TRACK USES.
 others=("  - uses: \"a/b@v4\"" "  - uses: checkout@$c1" "  - name: Check uses: lines"
     "      grep \"uses:\" x" "  - uses: o/rr" "  - uses: xo/r" "  - uses: o/r.x@"
     "  # Track arguments here" "  # tracks uses" "  # tracking uses" "  # track-uses_x")
@@ -1455,8 +1455,8 @@ elif [ "$(<"$v/rec")" != "$said" ] ||
     fail relative "the record or proposal is wrong: $(<"$v/rec")"
 fi
 
-# Progress goes to stderr, a line naming what each pin resolved to and each
-# file written, and docker pull's own output with it; stdout stays empty.
+# Progress goes to stderr, a line naming what each pin resolved to and each file
+# written, and docker pull's own output with it; stdout stays empty.
 p=$work/progress
 mkdir -p "$p/.github/workflows" "$work/files/progress"
 printf 'asset\n' >"$work/files/progress/t"
@@ -1595,10 +1595,10 @@ dockerfile=$'# TRACK FROM r/x:1\n# TRACK FROM r/y:1\n# TRACK LOCK x stage=a pypi
 check lock-two-froms-one-staged "$dockerfile" 1 "TRACK LOCK y has no stage=STAGE" \
     "${dockerfile%$'\n'}" "fake docker:"
 
-# A stage= is refused, before any pin is looked up, given twice, not in a
-# stage name's form, naming no stage, or without a package beside it; and
-# where its stage, or one it is FROM, is scratch, or its FROM holds a variable
-# no ARG before the first FROM sets literally, its quotes unmatched or around
+# A stage= is refused, before any pin is looked up, given twice, not in a stage
+# name's form, naming no stage, or without a package beside it; and where its
+# stage, or one it is FROM, is scratch, or its FROM holds a variable no
+# ARG before the first FROM sets literally, its quotes unmatched or around
 # anything else, or $ in another form.
 n=0
 for data in "x stage=a stage=b pypi:a|FROM r/x:1 AS a|TRACK LOCK x gives stage= twice" \
@@ -1784,8 +1784,8 @@ printf 'x\n' >"$d/Dockerfile.lock/new/f"
 lockgo --record "$work/lockrec"
 expect lock-dirty-untracked 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
 
-# A version that moves, a dependency added and one dropped are each recorded;
-# an existing lock keeps its mode.
+# A version that moves, a dependency added and one dropped are each recorded; an
+# existing lock keeps its mode.
 lockcase lock-moved "$pdf"
 mkdir -p "$d/Dockerfile.lock/m"
 printf 'm-d==1.0 --hash=sha256:%s\n' "$hd" >"$d/Dockerfile.lock/m/requirements.txt"
@@ -1930,8 +1930,8 @@ for data in "ubuntu|container|pypi|fake apt-get: update;fake apt-get: install -y
     fi
 done
 
-# Any other distribution, none named, or no /etc/os-release is refused where
-# the image lacks the tool, as is an image with neither bash nor apk.
+# Any other distribution, none named, or no /etc/os-release is refused where the
+# image lacks the tool, as is an image with neither bash nor apk.
 for os in arch none missing bare arch-npm; do
     if [ "$os" = arch-npm ]; then
         lockcase "lock-os-$os" "$ndf"
@@ -1996,8 +1996,8 @@ if expect lock-own-npm 0 "fake npm: package.json in js" "fake apt-get:"; then
     holds lock-own-npm "$d/Dockerfile.lock/js/package-lock.json" "$(<"$FAKE_NPM_LOCK")"
 fi
 
-# An npm on PATH that does not run is not the image's own, so the
-# distribution's is installed.
+# An npm on PATH that does not run is not the image's own, so the distribution's
+# is installed.
 lockcase lock-broken-npm "$ndf"
 FAKE_CONTAINER=$work/container-npm-broken lockgo
 if expect lock-broken-npm 0 $'fake apt-get: install -y --no-install-recommends npm\nfake npm: package.json in js'; then
@@ -2014,8 +2014,7 @@ if expect lock-no-dnf 1 "names rocky, like Fedora or RHEL, but the image has nei
 fi
 
 # Runs case $1 on a Dockerfile holding $2, with FAKE_HELD set to $5, and checks
-# stderr holds each line of $3 and none of $4, and the lock is the default
-# one.
+# stderr holds each line of $3 and none of $4, and the lock is the default one.
 staged() {
     lockcase "$1" "$2"
     FAKE_HELD=${5:-} lockgo
@@ -2024,8 +2023,8 @@ staged() {
     fi
 }
 
-# A lock naming a stage resolves in the image its FROM line names: at the
-# digest this run pins where a TRACK FROM covers the line, whatever other
+# A lock naming a stage resolves in the image its FROM line names: at the digest
+# this run pins where a TRACK FROM covers the line, whatever other
 # TRACK FROMs the file holds; through each FROM naming an earlier stage, each
 # name in any case; and otherwise as written, pulling a tag first, as a build
 # would.
@@ -2080,8 +2079,8 @@ for data in "21.3.1|0|fake pip: upgrade pip>=22.2|" "22.1|0|fake pip: upgrade pi
     fi
 done
 
-# npm's latest version is looked up for each package not held back, and the
-# lock npm writes for a package.json of them is kept as it is, beside the
+# npm's latest version is looked up for each package not held back, and the lock
+# npm writes for a package.json of them is kept as it is, beside the
 # package.json, key-sorted; a Dockerfile's lock directory takes its name.
 npm_lock "$work/npm-two.json" "n-d @s/n.d" node_modules/n-d@3.4.5 node_modules/@s/n.d@1.0.0 \
     node_modules/dep-b@1.0.0 node_modules/n-d/node_modules/dep-b@0.5.0
@@ -2143,8 +2142,8 @@ for data in '{"packages": {"": {}}}|LOCK js n-d none -> 3.4.5;LOCK js: 1 depende
     fi
 done
 
-# The other registry's lock in a lock's directory is the project's own, and
-# left alone.
+# The other registry's lock in a lock's directory is the project's own, and left
+# alone.
 for kind in npm pypi; do
     if [ "$kind" = npm ]; then
         lockcase lock-other-kind-npm "$ndf"

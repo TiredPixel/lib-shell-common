@@ -58,16 +58,16 @@
 # through sh, whatever USER or ENTRYPOINT the image sets, under bash, which apk
 # adds first on Alpine, where it is missing. lock-resolve uses the image's own
 # pip or npm where it runs, on any distribution, and otherwise installs it with
-# the distribution's own manager: apt-get on Debian, Ubuntu and those like
-# them; dnf, or microdnf where dnf is missing, on Fedora, RHEL and those like
-# them; and apk on Alpine. A pip too old to report a dry run is upgraded in the
+# the distribution's own manager: apt-get on Debian, Ubuntu and those like them;
+# dnf, or microdnf where dnf is missing, on Fedora, RHEL and those like them;
+# and apk on Alpine. A pip too old to report a dry run is upgraded in the
 # container. Any other distribution whose image lacks the tool, an image that
 # lacks it and has no /etc/os-release, a RHEL-like image with neither dnf nor
 # microdnf, or an image with neither bash nor apk, fails the run. A requirement
 # pip resolves whose marker names platform_machine, platform_release or
 # platform_version fails the run, since the lock would not hold on another
-# architecture or kernel, unless the marker also requires an extra, with and
-# and no or, that nothing resolved asks for. sys_platform, platform_system and
+# architecture or kernel, unless the marker also requires an extra, with and and
+# no or, that nothing resolved asks for. sys_platform, platform_system and
 # os_name are passed over, since every image is Linux, whatever its
 # architecture.
 #
@@ -96,10 +96,10 @@
 # rather than being passed over. Workflows are re-pinned only when named, as by
 # Makefile's upgrade-pre.
 #
-# A workflow is never written, since what may change one is not always what
-# runs this. Each must sit in a .github/workflows directory, and what it
-# becomes, where anything in it moves, is proposed as the file of its name in
-# the workflows.new directory beside that one, made where it is missing, to be
+# A workflow is never written, since what may change one is not always what runs
+# this. Each must sit in a .github/workflows directory, and what it becomes,
+# where anything in it moves, is proposed as the file of its name in the
+# workflows.new directory beside that one, made where it is missing, to be
 # reviewed and moved into place. A proposal already there for a named workflow
 # fails the run.
 #
@@ -112,8 +112,8 @@
 # Before any lookup, lint/dockerfile-locks checks the Dockerfile. Where it
 # refuses a RUN, its FILE:LINE: lines stand on stderr above a warning and the
 # upgrade carries on, since a project's own lint runs lint/dockerfile-locks,
-# which fails on them; where the lint itself fails, with any status but 1,
-# such as 3 where jq fails to read an exec-form RUN, so does the run.
+# which fails on them; where the lint itself fails, with any status but 1, such
+# as 3 where jq fails to read an exec-form RUN, so does the run.
 #
 # FROM and ARG are matched in any case, as Docker reads them, and on logical
 # lines, with continued lines joined at the escape character, which a leading
@@ -130,12 +130,11 @@
 # sha256 pin, a TRACK LOCK without stage= in a file without exactly one
 # TRACK FROM, or a file named twice. Every pin in every file is checked before
 # any is looked up, and no file is written until every pin has been resolved;
-# each that changes, a lock made, grown or shrunk included, is then written to
-# a temporary file beside where it goes, each directory missing above it made,
-# and only once all are written is each moved into place, through any symbolic
-# link and keeping its file's mode, or at 0644 where it is new. A run that
-# fails removes every temporary file and every directory it made that is left
-# empty.
+# each that changes, a lock made, grown or shrunk included, is then written to a
+# temporary file beside where it goes, each directory missing above it made, and
+# only once all are written is each moved into place, through any symbolic link
+# and keeping its file's mode, or at 0644 where it is new. A run that fails
+# removes every temporary file and every directory it made that is left empty.
 #
 # With --record, FILE is written last, for docker/upgrade-commit: the path of
 # each file written, one to a line, then a blank line, then a line for each
@@ -582,8 +581,8 @@ for data in "${args[@]}"; do
     done
 done
 
-# Sets key to $1 in PEP 503's normal form, lower case with each run of - _ .
-# as one -, as pip compares names.
+# Sets key to $1 in PEP 503's normal form, lower case with each run of - _ . as
+# one -, as pip compares names.
 normalise() {
     key=${1,,}
     key=${key//[_.]/-}
@@ -648,8 +647,8 @@ for data in "${locks[@]}"; do
             this=npm
             package=${spec#npm:}
             version=""
-            # An @ after the first character holds a version back; a leading
-            # one opens a scope.
+            # An @ after the first character holds a version back; a leading one
+            # opens a scope.
             if [[ "${package:1}" == *@* ]]; then
                 version=${package##*@}
                 package=${package%@*}
@@ -678,10 +677,10 @@ done
 
 # Each FROM instruction's image as written, keyed by the index of its line, and
 # the index of each stage's, keyed by its name lowercased, the first where two
-# share one. global holds the value of each ARG set before the first FROM,
-# keyed by NAME, and global_ok 1 for each whose value is a literal, as one
-# FROM may take: with no quote, $ or escape, whole or within one pair of
-# matching quotes, which Docker strips.
+# share one. global holds the value of each ARG set before the first FROM, keyed
+# by NAME, and global_ok 1 for each whose value is a literal, as one FROM may
+# take: with no quote, $ or escape, whole or within one pair of matching quotes,
+# which Docker strips.
 from_image=()
 declare -A stage_at=()
 declare -A global=()
@@ -728,9 +727,9 @@ for i in "${!logical[@]}"; do
 done
 
 # Sets expanded to $1 with each $VAR and ${VAR} in it given VAR's new value
-# where a TRACK ARG pins it, and otherwise the value of the ARG before the
-# first FROM that sets it; returns 1 where a variable has neither, or $ opens
-# any other form.
+# where a TRACK ARG pins it, and otherwise the value of the ARG before the first
+# FROM that sets it; returns 1 where a variable has neither, or $ opens any
+# other form.
 expand() {
     local rest=$1 var
     expanded=""
@@ -848,8 +847,8 @@ for name in "${lock_names[@]}"; do
         files=(package.json package-lock.json)
     fi
     lock_files[$name]=${files[*]}
-    # A link would carry the write out of the lock's directory, even out of
-    # the repository, so none is followed.
+    # A link would carry the write out of the lock's directory, even out of the
+    # repository, so none is followed.
     for path in "$lockdir" "$lockdir/$name" "${files[@]/#/$lockdir/$name/}"; do
         [ ! -L "$path" ] ||
             refuse "$path" "is a symbolic link, which a lock is never written" \
@@ -896,10 +895,10 @@ for name in "${lock_names[@]}"; do
 done
 
 # Each workflow's covered uses: lines, by the index of the workflow in w_of and
-# of the line in i_of, with what the line keeps before the reference in
-# head_of, the action named, without its REF, in action_of, the REF in ref_of
-# and the OWNER/REPO@TAG it follows in pin_of. pins lists each OWNER/REPO@TAG
-# once, in the order first named, and pin_file the workflow that first names it.
+# of the line in i_of, with what the line keeps before the reference in head_of,
+# the action named, without its REF, in action_of, the REF in ref_of and the
+# OWNER/REPO@TAG it follows in pin_of. pins lists each OWNER/REPO@TAG once, in
+# the order first named, and pin_file the workflow that first names it.
 w_of=()
 i_of=()
 head_of=()
@@ -909,9 +908,9 @@ pin_of=()
 pins=()
 declare -A pin_file=()
 
-# The current workflow's TRACK USES tags and OWNER/REPO as written, keyed by
-# the lowercased OWNER/REPO, since GitHub reads either in any case, and whether
-# each covers a uses: line; order lists each key in the order pinned.
+# The current workflow's TRACK USES tags and OWNER/REPO as written, keyed by the
+# lowercased OWNER/REPO, since GitHub reads either in any case, and whether each
+# covers a uses: line; order lists each key in the order pinned.
 declare -A follows=()
 declare -A named=()
 declare -A covers=()
@@ -1503,8 +1502,8 @@ for name in "${lock_names[@]}"; do
         continue
     fi
     # Each package named, now or, in an npm lock's root, before, as
-    # LOCK NAME PACKAGE OLD -> NEW, then how many others moved, each keyed as
-    # in now_v.
+    # LOCK NAME PACKAGE OLD -> NEW, then how many others moved, each keyed as in
+    # now_v.
     is_named=()
     lock_moves=()
     for package in "${named_here[@]}"; do

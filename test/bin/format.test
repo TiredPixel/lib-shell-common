@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # Tests bin/format in a scratch tree beside a stub bin/files, so the case
-# decides which files it lists, independent of the real list, with every tool
-# it runs faked on PATH. Each fake logs its name and arguments, each
-# shell-quoted, and exits 7 where FAKE_FAIL names it, or on the one call whose
-# log line FAKE_FAIL holds whole. A case checks the whole log, so a tool given
-# any argument other than those expected fails it.
+# decides which files it lists, independent of the real list, with every tool it
+# runs faked on PATH. Each fake logs its name and arguments, each shell-quoted,
+# and exits 7 where FAKE_FAIL names it, or on the one call whose log line
+# FAKE_FAIL holds whole. A case checks the whole log, so a tool given any
+# argument other than those expected fails it.
 #
 # Run: test/bin/format.test. Reports each case that failed on stderr, and exits
 # 1 if any did.

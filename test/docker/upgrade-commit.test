@@ -81,8 +81,8 @@ fixture() {
         "${moves[@]}" >"$w/record"
 }
 
-# Runs upgrade-commit in $w/app$1 with the arguments after it, setting rc,
-# out and err.
+# Runs upgrade-commit in $w/app$1 with the arguments after it, setting rc, out
+# and err.
 run() {
     local dir=$w/app$1
     rc=0

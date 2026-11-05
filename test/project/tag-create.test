@@ -181,8 +181,8 @@ expect zeros-exists-after "lib's origin's v1.1" \
 expect zeros-exists-after "app's origin's v1.1" \
     "$(tag_of "$w/app.git" v1.1)" none
 
-# column.ui=always lays out several tags on a line, which must not hide one
-# that exists.
+# column.ui=always lays out several tags on a line, which must not hide one that
+# exists.
 fixture
 git -C "$w/app/lib" tag 1.1
 git -C "$w/app/lib" tag 1.2
@@ -209,8 +209,8 @@ run 14.655
 expect literal status "$rc" 0
 expect_tagged literal 14.655
 
-# A tag only on an origin, pushed from another clone, is refused before
-# anything is signed. Annotated, so the origin also lists it peeled.
+# A tag only on an origin, pushed from another clone, is refused before anything
+# is signed. Annotated, so the origin also lists it peeled.
 fixture
 git -C "$w/lib.up" tag -a -m 1.2 1.2
 git -C "$w/lib.up" push -q "$w/lib.git" 1.2

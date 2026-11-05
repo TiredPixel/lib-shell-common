@@ -151,8 +151,8 @@ for r in app app/lib; do
         "$(commit_of "$w/${r##*/}.git" stable)" "$(commit_of "$w/$r" 1.2)"
 done
 
-# A failure on testing leaves stable alone: testing is not pushed, and stable
-# is neither checked out nor pushed.
+# A failure on testing leaves stable alone: testing is not pushed, and stable is
+# neither checked out nor pushed.
 fixture
 git -C "$w/app/lib" tag 1.2 "$one"
 run 1.2

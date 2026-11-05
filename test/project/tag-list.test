@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Tests project/tag-list in place against real repositories in a scratch dir: a
-# parent, app, whose .projects names its submodule lib, so the real
-# project/each sweeps lib, then app. Every case builds its fixture afresh and
-# runs project/tag-list in app.
+# parent, app, whose .projects names its submodule lib, so the real project/each
+# sweeps lib, then app. Every case builds its fixture afresh and runs
+# project/tag-list in app.
 #
 # Run: test/project/tag-list.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail

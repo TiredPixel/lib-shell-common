@@ -101,8 +101,8 @@ up() {
         "$1 compose up -d --pull always --wait --wait-timeout $2"
 }
 
-# Each project is brought up, waiting 300 seconds by default, and the
-# containers listed.
+# Each project is brought up, waiting 300 seconds by default, and the containers
+# listed.
 fixture
 check both 0 "$(up lib 300 && up app 300 && echo "app ps")"
 
@@ -130,8 +130,8 @@ fixture
 check no-services 0 "$(echo "lib compose config --services" &&
     up app 300 && echo "app ps")"
 
-# A project whose configuration compose cannot read fails the sweep, rather
-# than passing as one with nothing to bring up.
+# A project whose configuration compose cannot read fails the sweep, rather than
+# passing as one with nothing to bring up.
 fixture
 touch "$w/app/lib/fake-config-fails"
 check config-fails 1 "lib compose config --services"

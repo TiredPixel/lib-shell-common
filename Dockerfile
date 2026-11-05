@@ -175,12 +175,11 @@ RUN case $(dpkg --print-architecture) in \
 
 # mdformat, which bin/format and bin/lint run on Markdown, from pipx with its
 # gfm and frontmatter plugins injected: Debian 13's mdformat package carries
-# neither. Offline, pip can take only the wheels the wheels stage downloaded,
-# so every version is the lock's. pipx's shared venv is made here, from
-# Debian's bundled pip, since pipx would otherwise fetch pip unpinned to make
-# it, and in the same RUN as the inject, since pipx upgrades it from PyPI once
-# it is old enough. DL3013 asks for each version written here, which the lock
-# alone pins.
+# neither. Offline, pip can take only the wheels the wheels stage downloaded, so
+# every version is the lock's. pipx's shared venv is made here, from Debian's
+# bundled pip, since pipx would otherwise fetch pip unpinned to make it, and in
+# the same RUN as the inject, since pipx upgrades it from PyPI once it is old
+# enough. DL3013 asks for each version written here, which the lock alone pins.
 # hadolint ignore=DL3013
 RUN --network=none \
     --mount=type=bind,from=wheels,source=/wheels,target=/wheels \

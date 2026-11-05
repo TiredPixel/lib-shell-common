@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Tests project/release-commit-submodules against real repositories in a
-# scratch dir: a parent, app, with submodules lib and ext, each with a bare
-# remote. lib's remote holds two commits and app records the first, which a
-# case can move lib forwards from, back to, or away from. Every case builds its
-# fixture afresh and runs project/release-commit-submodules in app.
+# Tests project/release-commit-submodules against real repositories in a scratch
+# dir: a parent, app, with submodules lib and ext, each with a bare remote.
+# lib's remote holds two commits and app records the first, which a case can
+# move lib forwards from, back to, or away from. Every case builds its fixture
+# afresh and runs project/release-commit-submodules in app.
 #
 # Run: test/project/release-commit-submodules.test. Exits 1 naming each case
 # that failed.
@@ -100,8 +100,8 @@ expect() {
     fi
 }
 
-# Records a failure of case $1 unless stderr holds each line after it,
-# matched whole.
+# Records a failure of case $1 unless stderr holds each line after it, matched
+# whole.
 expect_out() {
     local name=$1 line
     shift
@@ -132,8 +132,8 @@ expect_committed() {
         "$2"
 }
 
-# The heading over each pointer committed, and the line reporting lib moved
-# from $1 to $2 in direction $3.
+# The heading over each pointer committed, and the line reporting lib moved from
+# $1 to $2 in direction $3.
 committing() {
     echo "$p: $w/app: committing submodule pointers:"
     echo "$p: $(move lib "$@")"
@@ -253,8 +253,8 @@ for args in no-tag empty-tag extra; do
 done
 
 # What is not a pointer move is refused, and nothing is committed: a submodule
-# whose directory is gone (D), one added but not committed (A), and one
-# replaced by a regular file (T).
+# whose directory is gone (D), one added but not committed (A), and one replaced
+# by a regular file (T).
 fixture
 git -C "$w/app/lib" checkout -q --detach "$second"
 rm -rf -- "$w/app/ext"

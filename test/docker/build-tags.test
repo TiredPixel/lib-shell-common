@@ -58,9 +58,9 @@ check() {
     fi
 }
 
-# Sets calls to the docker calls for a build stamped $1 and tagged with the
-# tags after it, in order, each pushed in turn, and want_out and want_err to
-# what a run that goes through prints.
+# Sets calls to the docker calls for a build stamped $1 and tagged with the tags
+# after it, in order, each pushed in turn, and want_out and want_err to what a
+# run that goes through prints.
 expect() {
     local version=$1 tag build="build --build-arg BUILDKIT_INLINE_CACHE=1"
     shift

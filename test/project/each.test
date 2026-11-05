@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Tests project/each against real repositories in a scratch dir: a project
-# named ap\tp, backslash and all, whose submodules lib1 and lib2 are listed in
-# its .projects, with a plain directory sub. The command swept is a recorder
-# that logs its directory and arguments, a line to a call, and exits 3 where the
+# Tests project/each against real repositories in a scratch dir: a project named
+# ap\tp, backslash and all, whose submodules lib1 and lib2 are listed in its
+# .projects, with a plain directory sub. The command swept is a recorder that
+# logs its directory and arguments, a line to a call, and exits 3 where the
 # directory holds a file named fail. Every case builds its fixture afresh.
 #
 # Run: test/project/each.test. Exits 1 naming each case that failed.
@@ -128,8 +128,8 @@ fixture
 run sub
 expect subdirectory 0 "$(swept)"
 
-# A refused entry stops the sweep before any command runs, in the project
-# itself too.
+# A refused entry stops the sweep before any command runs, in the project itself
+# too.
 fixture
 git -C "$app" submodule deinit -q -f lib2
 run .
