@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # Tests github/workflows-approve against real repositories in a scratch dir:
-# repo, a clone of the bare origin.git holding a live workflow, build.yml. Each
-# run answers through a terminal that script(1) gives it, fed the answers on
-# stdin, and keeps its stdout and stderr in files unless a case wants stdout on
-# that terminal. Every case builds its fixture afresh.
+# repo, pushed to the bare origin.git and holding a live workflow, build.yml.
+# Each run answers through a terminal that script(1) gives it, fed the answers
+# on stdin, and keeps its stdout and stderr in files unless a case wants stdout
+# on that terminal. Every case builds its fixture afresh.
 #
 # Run: github/workflows-approve.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -193,7 +193,7 @@ expect_committed() {
         "$(git -C "$r" log -1 --no-show-signature --format=%B)" "$2"
     expect "$1" "origin's main" "$(git -C "$w/origin.git" rev-parse main)" \
         "$(git -C "$r" rev-parse HEAD)"
-    expect "$1" status "$(git -C "$r" status --porcelain --untracked-files=all)" ""
+    expect "$1" "git status" "$(git -C "$r" status --porcelain --untracked-files=all)" ""
 }
 
 # Nothing pending: workflows.new/ absent.
@@ -467,7 +467,7 @@ expect commit-fails status "$rc" 1
 expect_in commit-fails err "workflows-approve: commit failed; the approval stays staged, so commit it by hand: git commit -m "
 expect commit-fails HEAD "$(git -C "$r" rev-parse HEAD)" "$head"
 expect commit-fails "origin's main" "$(git -C "$w/origin.git" rev-parse main)" "$head"
-expect commit-fails status \
+expect commit-fails "git status" \
     "$(git -C "$r" status --porcelain --untracked-files=all)" \
     "M  .github/workflows/build.yml"
 rm "$r/.git/hooks/pre-commit"

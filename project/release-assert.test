@@ -58,6 +58,8 @@ fixture() {
     git -C "$w/app" add .projects
     git -C "$w/app" commit -q -m init
     unlisted="$p: $w/app: not named in .projects, so this release will not tag:"
+    dirty="$p: $w/app: refusing to release, the tree carries work outside its \
+submodules:"
 }
 
 # Runs project/release-assert in app, or in its subdirectory $1, keeping its
@@ -142,15 +144,11 @@ fixture
 echo x >"$w/app/junk"
 git -C "$w/app" config status.showUntrackedFiles no
 run
-dirty="$p: $w/app: refusing to release, the tree carries work outside its \
-submodules:"
 expect_exact untracked 1 "$dirty" "?? junk" "$(outside)"
 
 fixture
 echo x >>"$w/app/.projects"
 run
-dirty="$p: $w/app: refusing to release, the tree carries work outside its \
-submodules:"
 expect_exact modified 1 "$dirty" " M .projects" "$(outside)"
 
 # A submodule's own work, or a pointer the sweep has moved, is not refused.
@@ -168,8 +166,6 @@ printf '%s\t%s\n' "0 0000000000000000000000000000000000000000" lib \
     "160000 $lib 1" lib "160000 $lib 2" lib "160000 $lib 3" lib |
     git -C "$w/app" update-index --index-info
 run
-dirty="$p: $w/app: refusing to release, the tree carries work outside its \
-submodules:"
 expect_exact unmerged 1 "$dirty" "UU lib" "$(outside)"
 
 # An operation in progress is refused.

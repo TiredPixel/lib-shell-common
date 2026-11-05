@@ -39,10 +39,8 @@ tag_args=()
 caches=()
 
 for tag in "${tags[@]}"; do
-    tag_args+=("-t")
-    tag_args+=("$REPO:$tag")
-    caches+=("--cache-from")
-    caches+=("$REPO:$tag")
+    tag_args+=(-t "$REPO:$tag")
+    caches+=(--cache-from "$REPO:$tag")
 done
 
 docker build \

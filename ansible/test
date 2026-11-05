@@ -6,4 +6,6 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 source "$dir/lint-args"
 
+# No separate ansible-playbook --syntax-check: ansible-lint's syntax-check rule
+# runs it on every playbook it lints.
 ansible-lint "${ansible_lint_args[@]}"

@@ -30,9 +30,8 @@ top=$(git rev-parse --show-toplevel)
 
 # .projects is read from the current directory and only the submodules under it
 # are checked, so below the top level the checks would cover only part of the
-# repository, every submodule would read as missing from .projects and the
-# sweep would reach no project, yet the release commit records pointers across
-# the whole repository.
+# repository and every submodule would read as missing from .projects, yet the
+# release commit records pointers across the whole repository.
 if [[ ! $PWD -ef $top ]]; then
     echo "$prog: $PWD: refusing to release from below the top level" >&2
     echo "$prog: run it from $top" >&2
@@ -119,9 +118,10 @@ for module in "${modules[@]}"; do
     # Repository discovery walks up, so this answers with the containing
     # repository for a directory that is not one of its own. -ef is an inode
     # test, so ./ and a symlink compare equal.
-    top=$(git -C "$module" rev-parse --show-toplevel 2>/dev/null) || top=
+    module_top=$(git -C "$module" rev-parse --show-toplevel 2>/dev/null) ||
+        module_top=
 
-    if [[ ! $top -ef $module ]]; then
+    if [[ ! $module_top -ef $module ]]; then
         echo "$prog: $PWD: $module: has content but is not a repository" \
             "of its own" >&2
         echo "$prog: git reads its pointer as unchanged, so a release would" \

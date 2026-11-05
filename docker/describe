@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 #
-# Sourced by the docker/ scripts that stamp an image with GIT_DESCRIBE, to set
-# describe to what git describe prints. Sets no shell options, since it runs
-# under its caller's.
+# Sourced by the docker/ scripts that stamp an image with GIT_DESCRIBE even
+# where no tag describes HEAD, to set describe to what git describe prints. Sets
+# no shell options, since it runs under its caller's.
 #
 # Empty is the right stamp for a working copy with no tag to describe HEAD by,
 # so git's three no-tag failures leave describe empty. Any other failure, such

@@ -92,8 +92,9 @@
 # since the TRACK USES line says what it follows and a tag beside it would go
 # stale. Lines are read as text, not parsed as YAML, so a uses: line inside a
 # block scalar, such as a run: body, is re-pinned too, and any other line
-# holding uses: that names a covered OWNER/REPO fails rather than being passed
-# over. Workflows are re-pinned only when named, as by Makefile's upgrade-pre.
+# holding uses:, a comment line aside, that names a covered OWNER/REPO fails
+# rather than being passed over. Workflows are re-pinned only when named, as by
+# Makefile's upgrade-pre.
 #
 # A workflow is never written, since what may change one is not always what
 # runs this. Each must sit in a .github/workflows directory, and what it
@@ -103,11 +104,10 @@
 # fails the run.
 #
 # A comment line that reads as a mistyped TRACK line fails, as does a TRACK line
-# of a kind its file does not hold. Before anything else is read, the FREEZE
-# lines that TRACK lines replaced, # FROMFREEZE, # ARGFREEZE and # USESFREEZE,
-# and the TRACK ARG NAME pypi: and npm: pins that TRACK LOCK replaced, each as
-# well as comment lines that read as mistyped ones, fail the run: grep lists
-# every one in every file named.
+# of a kind its file does not hold. Before anything else is read, # FROMFREEZE,
+# # ARGFREEZE and # USESFREEZE lines, and TRACK ARG NAME pypi: and npm: pins,
+# which take a TRACK LOCK line instead, each as well as comment lines that read
+# as mistyped ones, fail the run: grep lists every one in every file named.
 #
 # Before any lookup, lint/dockerfile-locks checks the Dockerfile. Where it
 # refuses a RUN, its FILE:LINE: lines stand on stderr above a warning and the
@@ -403,8 +403,8 @@ fi
 
 if [ ${#froms[@]} -eq 0 ] && [ ${#args[@]} -eq 0 ] &&
     [ ${#locks[@]} -eq 0 ]; then
-    echo "${0##*/}: $dockerfile: no # TRACK FROM, # TRACK ARG or" \
-        "# TRACK LOCK line, so there is nothing to re-pin" >&2
+    say "$dockerfile: no # TRACK FROM, # TRACK ARG or" \
+        "# TRACK LOCK line, so there is nothing to re-pin"
 fi
 
 # Each pin is checked and its lines found before any is looked up. targets holds
@@ -522,7 +522,7 @@ declare -A resolved=()
 
 forms="NAME github:OWNER/PROJECT or NAME sha256:ASSET_URL [CHECKSUMS_URL]"
 sources="github:OWNER/PROJECT or sha256:ASSET_URL [CHECKSUMS_URL]"
-url='https://[^[:space:]]*[^/[:space:]]'
+https_url='https://[^[:space:]]*[^/[:space:]]'
 for data in "${args[@]}"; do
     name=${data%% *}
     source=${data#* }
@@ -530,7 +530,7 @@ for data in "${args[@]}"; do
         die "TRACK ARG $data is not $forms"
     fi
     [[ "$source" =~ ^github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
-        [[ "$source" =~ ^sha256:$url(\ $url)?$ ]] ||
+        [[ "$source" =~ ^sha256:$https_url(\ $https_url)?$ ]] ||
         die "TRACK ARG $name: $source is not $sources"
     [ -z "${kinds[$name]+set}" ] || die "TRACK ARG $name is pinned twice"
     kinds[$name]=${source%%:*}
@@ -773,7 +773,8 @@ find_stages
 
 # Sets versions to each package's version in package-lock.json $1, keyed by its
 # path there, and roots to the packages its root depends on, one to a line;
-# returns 1 where $1 lists no packages, each with a version.
+# returns 1 where $1 has no packages object, or a package there without a
+# version.
 read_npm_lock() {
     local entries path version
     entries=$(jq -r '
@@ -801,6 +802,8 @@ read_npm_lock() {
 # depended on, one to a line, keyed by NAME. The old lock is read only as this
 # writes it, and was_unread holds 1, keyed by NAME, where it reads otherwise.
 declare -A lock_file=()
+# Each lock's file names, space-separated and in order, keyed by NAME.
+declare -A lock_files=()
 declare -A was_v=()
 declare -A was_keys=()
 declare -A was_roots=()
@@ -821,6 +824,7 @@ for name in "${lock_names[@]}"; do
     else
         files=(package.json package-lock.json)
     fi
+    lock_files[$name]=${files[*]}
     # A link would carry the write out of the lock's directory, even out of
     # the repository, so none is followed.
     for path in "$lockdir" "$lockdir/$name" "${files[@]/#/$lockdir/$name/}"; do
@@ -896,7 +900,7 @@ uses='^([[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+)([^[:space:]#][^[:space:]]
 uses+='([[:space:]]+#.*)?[[:space:]]*$'
 action='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(/[^@[:space:]]+)?@[^@[:space:]]+$'
 # A comment naming a version, such as v7 or 7.0.1, in any number of words.
-version='(^|[^[:alnum:]])(v[0-9]+|[0-9]+\.[0-9]+)([^[:alnum:]]|$)'
+version_comment='(^|[^[:alnum:]])(v[0-9]+|[0-9]+\.[0-9]+)([^[:alnum:]]|$)'
 for w in "${!workflows[@]}"; do
     workflow=${workflows[$w]}
     mapfile -t wlines <"$workflow"
@@ -927,8 +931,8 @@ for w in "${!workflows[@]}"; do
         order+=("${repo,,}")
     done
     [ ${#order[@]} -gt 0 ] ||
-        echo "${0##*/}: $workflow: no # TRACK USES line, so there is" \
-            "nothing to re-pin" >&2
+        say "$workflow: no # TRACK USES line, so there is" \
+            "nothing to re-pin"
     for i in "${!wlines[@]}"; do
         line=${wlines[$i]}
         [[ "$line" == *uses:* ]] || continue
@@ -954,7 +958,7 @@ for w in "${!workflows[@]}"; do
                     j=$((j - 1))
                 done
                 if [ "$j" -ge 0 ] && [[ "${wlines[j]}" == "$indent#"* ]] &&
-                    [[ "${wlines[j]}" =~ $version ]]; then
+                    [[ "${wlines[j]}" =~ $version_comment ]]; then
                     refuse_at "$workflow" $((i + 1)) "uses: $reference has a" \
                         "version comment above it; TRACK USES $pin says what" \
                         "it follows"
@@ -1420,12 +1424,12 @@ stage() {
     staged=""
     if [ -e "$source" ]; then
         mapfile -t now <"$source"
-        if [ ${#now[@]} = ${#new[@]} ]; then
+        if [ ${#now[@]} -eq ${#new[@]} ]; then
             for i in "${!new[@]}"; do
                 [ "${new[$i]}" = "${now[$i]}" ] || break
             done
             # The loop ran to its end, or new is empty.
-            [ ${#new[@]} = 0 ] || [ "${new[$i]}" != "${now[$i]}" ] || return 0
+            [ ${#new[@]} -eq 0 ] || [ "${new[$i]}" != "${now[$i]}" ] || return 0
         fi
     fi
     dir=${target%/*}
@@ -1459,11 +1463,7 @@ stage "$target" "$target"
 declare -A is_named=()
 for name in "${lock_names[@]}"; do
     read -r -a named_here <<<"${packages_of[$name]}"
-    if [ "${lock_kinds[$name]}" = pypi ]; then
-        files=(requirements.txt)
-    else
-        files=(package.json package-lock.json)
-    fi
+    read -r -a files <<<"${lock_files[$name]}"
     written=""
     for file in "${files[@]}"; do
         mapfile -t new <<<"${lock_new[$name$'\t'$file]}"

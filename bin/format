@@ -11,6 +11,8 @@ bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 source "$bin/files"
 
 echo "bin/format: formatting ${#shell_files[@]} shell file(s)" >&2
+# No ShellCheck pass: ShellCheck has no fix mode, only suggestions -f diff
+# prints, many of which change meaning, so they are left to review.
 shfmt "${shfmt_args[@]}" -w "${shell_files[@]}"
 
 echo "bin/format: formatting ${#yaml_files[@]} YAML file(s)" >&2

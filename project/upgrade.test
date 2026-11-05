@@ -9,8 +9,8 @@
 # logs that the pull reached it. Only app has a compose file, and docker is
 # faked on PATH: compose config --services prints web, compose up logs "start"
 # and the project and exits FAKE_UP_RC, compose stop logs "stop" and the
-# project, ps does nothing, and any other call fails. Every case builds its fixture afresh and runs
-# project/upgrade in app.
+# project, ps does nothing, and any other call fails. Every case builds its
+# fixture afresh and runs project/upgrade in app.
 #
 # Run: project/upgrade.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -28,6 +28,8 @@ export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
 export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+# The cases match git's messages, which git translates.
+export LC_ALL=C
 
 mkdir "$work/bin"
 cat >"$work/bin/docker" <<'EOF'

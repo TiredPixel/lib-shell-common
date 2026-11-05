@@ -793,7 +793,7 @@ check heredoc-not $'# TRACK ARG V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1\nCM
 check heredoc-unended $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1\n' 1 \
     "a heredoc's body has no end line EOF" $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1'
 
-hash() {
+sha256_of() {
     local sum
     sum=$(printf '%s' "$1" | sha256sum)
     printf '%s' "${sum%% *}"
@@ -802,8 +802,8 @@ mkdir "$work/files/v1.2.3" "$work/files/v0.9" "$work/files/va&b"
 printf 'tool' >"$work/files/v1.2.3/t_1.2.3_linux"
 printf 'old tool' >"$work/files/v0.9/t_0.9_linux"
 printf 'old tool' >"$work/files/va&b/t_a&b_linux"
-ht=$(hash tool)
-hu=$(hash 'old tool')
+ht=$(sha256_of tool)
+hu=$(sha256_of 'old tool')
 hx=$(printf 'c%.0s' {1..64})
 hy=$(printf 'd%.0s' {1..64})
 sums=$work/files/v1.2.3/sums
@@ -811,29 +811,29 @@ sums=$work/files/v1.2.3/sums
 # A sha256 pin before the version pin its URLs name, which resolves first.
 pins=$'# TRACK ARG H sha256:https://dl.test/v${V}/t_${V}_linux https://dl.test/v${V}/sums\n# TRACK ARG V github:o/p\n'
 before=$pins$'ARG V=1.0.0\nARG H='"$hy"
-pinned() {
+sum_pinned() {
     printf '%s' "$pins"$'ARG V=1.2.3\nARG H='"$1"
 }
 
 printf '%s  t_1.2.3_darwin\n%s  t_1.2.3_linux\n%s  t_1.2.3_linux.sig\n%s  xt_1.2.3_linux\n' \
     "$hy" "$hx" "$hy" "$hy" >"$sums"
-check sum-gnu "$before" 0 "fake curl: https://dl.test/v1.2.3/sums" "$(pinned "$hx")"
+check sum-gnu "$before" 0 "fake curl: https://dl.test/v1.2.3/sums" "$(sum_pinned "$hx")"
 
 printf '%s *t_1.2.3_linux\n' "$hx" >"$sums"
-check sum-gnu-binary "$before" 0 "" "$(pinned "$hx")"
+check sum-gnu-binary "$before" 0 "" "$(sum_pinned "$hx")"
 
 printf '%s  ./dist/t_1.2.3_linux\n' "$hx" >"$sums"
-check sum-gnu-path "$before" 0 "" "$(pinned "$hx")"
+check sum-gnu-path "$before" 0 "" "$(sum_pinned "$hx")"
 
 printf 'MD5 (t_1.2.3_linux) = %s\nSHA256 (t_1.2.3_darwin) = %s\nSHA256 (t_1.2.3_linux) = %s\nSHA512 (t_1.2.3_linux) = %s%s\n' \
     "${hy:0:32}" "$hy" "$hx" "$hy" "$hy" >"$sums"
-check sum-bsd "$before" 0 "" "$(pinned "$hx")"
+check sum-bsd "$before" 0 "" "$(sum_pinned "$hx")"
 
 printf '%s  t_1.2.3_linux\n' "${ht^^}" >"$sums"
-check sum-upper-case "$before" 0 "" "$(pinned "$ht")"
+check sum-upper-case "$before" 0 "" "$(sum_pinned "$ht")"
 
 printf '%s  t_1.2.3_linux\nSHA256 (dist/t_1.2.3_linux) = %s\n' "$hx" "$hx" >"$sums"
-check sum-listed-twice "$before" 0 "" "$(pinned "$hx")"
+check sum-listed-twice "$before" 0 "" "$(sum_pinned "$hx")"
 
 # A single space before the name is neither GNU's form nor BSD's.
 printf '%s t_1.2.3_linux\nSHA1 (t_1.2.3_linux) = %s\n%s  t_1.2.3_linux.sig\n' "$hx" "${hx:0:40}" "$hx" >"$sums"
@@ -1116,9 +1116,11 @@ done
 
 # A uses: on the first line, or with only blank lines above it, has no line
 # above it, whatever the last line holds.
+n=0
 for lead in "" $'\n \n'; do
+    n=$((n + 1))
     wf=$lead$'  - uses: o/r@v0\n  # v1\n# TRACK USES o/r@v1'
-    flow wf-first-line "$df" "$wf" 0 "" "$dfafter" \
+    flow "wf-first-line-$n" "$df" "$wf" 0 "" "$dfafter" \
         "$lead"$'  - uses: o/r@'"$c3"$'\n  # v1\n# TRACK USES o/r@v1'
 done
 
@@ -1865,7 +1867,7 @@ if expect lock-fedora 0 "fake dnf: install -y --setopt=install_weak_deps=False p
     "fake apt-get:"; then
     holds lock-fedora "$d/Dockerfile.lock/m/requirements.txt" "$req"
 fi
-lockcase lock-fedora-npm $'# TRACK FROM r/x:1\n# TRACK LOCK js npm:n-d\nFROM r/x@'"$new"
+lockcase lock-fedora-npm "$ndf"
 FAKE_OS_RELEASE=$work/os/fedora lockgo
 expect lock-fedora-npm 0 "fake dnf: install -y --setopt=install_weak_deps=False npm" \
     "fake apt-get:" || true
@@ -1902,7 +1904,7 @@ for data in "ubuntu|container|pypi|fake apt-get: update;fake apt-get: install -y
     if [ "$kind" = pypi ]; then
         lockcase "lock-family-$n" "$pdf"
     else
-        lockcase "lock-family-$n" $'# TRACK FROM r/x:1\n# TRACK LOCK js npm:n-d\nFROM r/x@'"$new"
+        lockcase "lock-family-$n" "$ndf"
     fi
     FAKE_CONTAINER=$container FAKE_OS_RELEASE=$work/os/$os lockgo
     if expect "lock-family-$n" 0 "${said//;/$'\n'}" "$unsaid"; then
@@ -1974,7 +1976,7 @@ FAKE_CONTAINER=$work/container-pip lockgo
 if expect lock-own-pip 0 "fake pip: install m-d" "fake apt-get:"; then
     holds lock-own-pip "$d/Dockerfile.lock/m/requirements.txt" "$req"
 fi
-lockcase lock-own-npm $'# TRACK FROM r/x:1\n# TRACK LOCK js npm:n-d\nFROM r/x@'"$new"
+lockcase lock-own-npm "$ndf"
 FAKE_CONTAINER=$work/container-node lockgo
 if expect lock-own-npm 0 "fake npm: package.json in js" "fake apt-get:"; then
     holds lock-own-npm "$d/Dockerfile.lock/js/package-lock.json" "$(<"$FAKE_NPM_LOCK")"
@@ -2029,7 +2031,7 @@ staged lock-stage-later $'# TRACK LOCK m stage=a pypi:m-d\nFROM later AS a\nFROM
 staged lock-stage-arg $'# TRACK LOCK m stage=s pypi:m-d\nARG BASE=r/h:3\nFROM --platform=$BUILDPLATFORM ${BASE} AS s\n' \
     "fake docker: run r/h:3 pypi m-d"
 # A stage named through a tracked ARG is found by the ARG's new value.
-staged lock-stage-arg-tracked $'# TRACK ARG V github:o/p\n# TRACK LOCK m stage=s pypi:m-d\nARG V=1.0.0\nFROM r/a:1 AS base1.0.0\nFROM r/b:1 AS base1.2.3\nFROM base${V} AS s\n' \
+staged lock-stage-arg-tracked-name $'# TRACK ARG V github:o/p\n# TRACK LOCK m stage=s pypi:m-d\nARG V=1.0.0\nFROM r/a:1 AS base1.0.0\nFROM r/b:1 AS base1.2.3\nFROM base${V} AS s\n' \
     "fake docker: run r/b:1 pypi m-d" "fake docker: run r/a"
 # A value in one pair of matching quotes is taken without them, as Docker takes
 # it.

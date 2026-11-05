@@ -28,7 +28,8 @@ exit 2
 EOF
 chmod +x "$work/fake/make"
 
-# A locale make would translate its diagnostics in, were it installed.
+# Anything but C, so only make-if-declared setting LC_ALL=C itself satisfies the
+# fake make.
 export LC_ALL=C.UTF-8
 
 # Reports a failure of case $1 at once, each line of $2 under the program and

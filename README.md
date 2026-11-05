@@ -11,7 +11,7 @@ The scripts also run these, which a repository needs wherever it runs them:
 - `docker/`: git, and the docker CLI with BuildKit and Compose v2; `docker/upgrade` also runs `curl`, `sha256sum` and `timeout`, and `lint/dockerfile-locks`; for a `# TRACK LOCK` line or an exec-form `RUN` it also runs `jq`, and for a `# TRACK LOCK` line a container of the image the lock resolves in, with network
 - `github/`: git
 - `lint/`: ShellCheck and `file` for `lint/shell`; mikefarah's `yq` and `diff` for `lint/yaml-keys`; `jq` for `lint/dockerfile-locks` where a `RUN` is in exec form
-- `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--wait` and `--wait-timeout` for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-create`
+- `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--wait` and `--wait-timeout` for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-list-origin`, which `project/tag-create` runs
 - `ansible/`: ansible-lint, and `jq` for `ansible/inventory-ssh-known-hosts`
 - `terraform/`: Terraform
 
@@ -19,6 +19,7 @@ Working on this repository needs:
 
 - Docker Engine or Docker Desktop with Compose v2
 - GNU make 3.82 or newer, whose recipes run under Bash 4.4 or newer
+- for `make upgrade` and `make workflows-approve`, which run on the host, the tools listed above for `docker/` and `github/`
 
 ## Installation
 
@@ -80,7 +81,9 @@ A named workflow names the tag each action follows on a comment line at its top,
 
 `docker/upgrade` never writes a live workflow: each one that moves is proposed as `.github/workflows.new/<name>`, to be approved with `make workflows-approve` once the upgrade is committed (*Approving workflows*), and the run is refused while a proposal for a named workflow is still pending.
 
-The `# TRACK FROM`, `# TRACK ARG`, `# TRACK LOCK` and `# TRACK USES` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and how to hold a version back, are described at the top of `docker/upgrade`. A line in a syntax `docker/upgrade` no longer reads fails the upgrade rather than being passed over: grep lists every `FROMFREEZE`, `ARGFREEZE` or `USESFREEZE` line left from before, and every `# TRACK ARG` line with a `pypi:` or `npm:` source, which `# TRACK LOCK` replaced (*Migrating from TRACK ARG pypi: and npm: pins*), as `FILE:LINE:TEXT`, to be rewritten, then the run fails. A mistyped or malformed `TRACK` line fails the run at the first one found, with a message naming it.
+The `# TRACK FROM`, `# TRACK ARG`, `# TRACK LOCK` and `# TRACK USES` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and how to hold a version back, are described at the top of `docker/upgrade`.
+
+A `FROMFREEZE`, `ARGFREEZE` or `USESFREEZE` line, or a `# TRACK ARG` line with a `pypi:` or `npm:` source, which takes a `# TRACK LOCK` line instead (*Migrating from TRACK ARG pypi: and npm: pins*), fails the upgrade rather than being passed over: grep lists every one as `FILE:LINE:TEXT`, to be rewritten, then the run fails. A mistyped or malformed `TRACK` line fails the run at the first one found, with a message naming it.
 
 Before any lookup, `docker/upgrade` runs `lint/dockerfile-locks` on the `Dockerfile` (*Checking Dockerfiles for unlocked installs*). A finding about the project's own installs does not stop the upgrade: the lint's `FILE:LINE:` lines appear on stderr, followed directly by a warning, and the upgrade carries on, writing and recording as usual. The repository's own `make lint`, where it runs `lint/dockerfile-locks` (*Adding the library to a repository*), and CI wherever it runs that, still fail on each line:
 
@@ -91,7 +94,11 @@ upgrade: Dockerfile: each line above is refused by lint/dockerfile-locks
 
 Where the lint itself fails, with any status but 1, such as 3 where `jq` fails to read an exec-form `RUN`, the upgrade fails with `upgrade: DOCKERFILE: lint/dockerfile-locks failed with status N`.
 
-With `--record`, `docker/upgrade` notes each file it wrote and each pin that moved. `docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with a line for each move as the body, a submodule's included, so a library bump is committed even where no pin moved. It refuses where anything else is staged, commits nothing where neither a pin nor a path given moved, and never pushes. With `--record`, `docker/upgrade` refuses to start while an earlier record is still there, or while the `Dockerfile`, followed through any symbolic link, or its `Dockerfile.lock/` directory differs from what git has committed, untracked files included, since the commit takes each recorded file whole. It also refuses a `Dockerfile` that is a symbolic link into another repository, such as a submodule, since the commit cannot add a file there; such a link is re-pinned without `--record`, or in the repository it links into.
+With `--record`, `docker/upgrade` notes each file it wrote and each pin that moved.
+
+`docker/upgrade-commit` then commits those files, and each path given after the record, such as the submodule, as `Upgrade pins`, with a line for each move as the body, a submodule's included, so a library bump is committed even where no pin moved. It refuses where anything else is staged, commits nothing where neither a pin nor a path given moved, and never pushes.
+
+With `--record`, `docker/upgrade` refuses to start while an earlier record that is not empty is still there, or while the `Dockerfile`, followed through any symbolic link, or its `Dockerfile.lock/` directory differs from what git has committed, untracked files included, since the commit takes each recorded file whole. It also refuses a `Dockerfile` that is a symbolic link into another repository, such as a submodule, since the commit cannot add a file there; such a link is re-pinned without `--record`, or in the repository it links into.
 
 Where the build or tests fail, fix them, then finish:
 
@@ -126,7 +133,7 @@ FROM docker.io/library/python@sha256:DIGEST AS wheels
 FROM docker.io/library/node@sha256:DIGEST AS js
 ```
 
-A requirement whose marker names `platform_machine`, `platform_release` or `platform_version` fails the run, since the lock would not hold on another architecture or kernel. Which images can resolve a lock, and how `stage=` is followed, are described at the top of `docker/upgrade`.
+A requirement whose marker names `platform_machine`, `platform_release` or `platform_version` fails the run, unless the marker also requires an extra, with `and` and no `or`, that nothing resolved asks for, since the lock would not hold on another architecture or kernel. Which images can resolve a lock, and how `stage=` is followed, are described at the top of `docker/upgrade`.
 
 `docker/upgrade` writes the first lock, as it moves every other pin, and the lock is committed with the `Dockerfile`:
 
@@ -259,13 +266,13 @@ A `FROM` is held back by removing its `# TRACK FROM` line, which frees every `FR
 A `# TRACK ARG` version is the release's version, its leading `v` dropped, and each `sha256:` pin beside it moves with it, since the build refuses an asset whose hash differs. The hash for each architecture is on the asset's line in the release's checksums file, where the `TRACK ARG` line names one:
 
 ```sh
-curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt | grep -F linux_arm64.tar.gz
+curl -fsSL https://github.com/rhysd/actionlint/releases/download/vVERSION/actionlint_VERSION_checksums.txt | grep -F linux_arm64.tar.gz
 ```
 
 Otherwise it is the hash of the asset itself:
 
 ```sh
-curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_arm64.tar.gz | sha256sum
+curl -fsSL https://github.com/rhysd/actionlint/releases/download/vVERSION/actionlint_VERSION_linux_arm64.tar.gz | sha256sum
 ```
 
 A version is held back by removing its `# TRACK ARG` line and writing a comment beside its `ARG` saying why; each `sha256:` pin naming it as `${VAR}` then keeps to it.
@@ -298,7 +305,11 @@ npm install --prefix Dockerfile.lock/js --package-lock-only --ignore-scripts --n
 Dockerfile:12: npm install resolves versions itself, where npm ci installs a lock as given
 ```
 
-A pip install passes with `--require-hashes`, a local `-r` lock and `--only-binary=:all:` or `--no-build-isolation`, as in the wheels stage above, and with `--no-index` and only local `--find-links`, or in a `RUN --network=none`, which fetch nothing. A pipx install passes in the offline form above, npm as `npm ci` or in a `RUN --network=none`, `npx` given `--no`, and yarn, pnpm, bun and uv in their frozen forms, such as `uv sync --locked`. A `Dockerfile` it cannot read, with a heredoc that has no end line, or with an exec-form `RUN` `jq` fails to read, fails the run with status 3. It catches the unlocked installs written by mistake, not those written to evade it, which a suppression comment would pass anyway; the full list of what it checks and what it cannot see, such as Bun installing with no lock where none is committed, is at the top of `lint/dockerfile-locks`.
+A pip install passes with `--require-hashes`, a local `-r` lock and `--only-binary=:all:` or `--no-build-isolation`, as in the wheels stage above, and with `--no-index` and only local `--find-links`, or in a `RUN --network=none`, which fetch nothing. A pipx install passes in the offline form above, npm as `npm ci` or in a `RUN --network=none`, `npx` given `--no`, and yarn, pnpm, bun and uv in their frozen forms, such as `uv sync --locked`.
+
+A `Dockerfile` it cannot read, with a heredoc that has no end line, or with an exec-form `RUN` `jq` fails to read, fails the run with status 3.
+
+It catches the unlocked installs written by mistake, not those written to evade it, which a suppression comment would pass anyway; the full list of what it checks and what it cannot see, such as Bun installing with no lock where none is committed, is at the top of `lint/dockerfile-locks`.
 
 A repository runs it on each of its Dockerfiles from its own `make lint` (*Adding the library to a repository*), which fails on each finding; `docker/upgrade` only warns of them (*Upgrading the library*).
 
@@ -326,7 +337,7 @@ GitHub refuses a push from an agent that touches `.github/workflows/`, so a chan
 
 `github/workflows-approve` shows each proposal as a diff against its live workflow, or as the whole file if it is new, and asks on the terminal whether to approve it. It moves each approved file into place, removes `.github/workflows.new/` once it is empty, commits only that move as `Approve workflow` or `Approve workflows`, with each path marked new or changed as the body, and pushes the current branch to origin. If the push fails, the commit stays, to be pushed by hand.
 
-It refuses before changing anything where nothing is pending, a proposal is not named `[A-Za-z0-9_][A-Za-z0-9._-]*.yml` or `.yaml`, anything is already staged, a proposal is the same as its live workflow, a live workflow has local changes or is untracked, HEAD is detached, or there is no origin or terminal.
+It refuses before changing anything where nothing is pending, a proposal is not named `[A-Za-z0-9_][A-Za-z0-9._-]*.yml` or `.yaml`, a proposal is not a regular file, anything is already staged, a proposal is the same as its live workflow, a live workflow has local changes or is untracked, HEAD is detached, or there is no origin or terminal.
 
 It needs only bash and git, so it runs from anywhere in a fresh clone of the pushed branch, on any machine, with the proposal committed or only in the working tree. A repository's `Makefile` runs it in a `workflows-approve` target, on the host rather than in an image, since it asks on the terminal and pushes:
 
@@ -394,7 +405,7 @@ lib/shell-common/project/upgrade
 lib/shell-common/project/release-create-latest v1.2
 ```
 
-A tag that already exists in any project, locally or on its origin, is refused before anything is signed, so every origin must be reachable; one that does not answer within the limit `project/tag-create` sets stops the release. `project/tag-list` lists the latest tags across every project.
+A tag that already exists in any project, locally or on its origin, is refused before anything is signed, so every origin must be reachable; one that does not answer within the limit `project/tag-list-origin` sets, which `project/tag-create` runs in every project, stops the release. `project/tag-list` lists the latest tags across every project.
 
 ```sh
 lib/shell-common/project/tag-list
@@ -452,7 +463,9 @@ make build
 
 ## Upgrading
 
-Base images are pinned by digest, tools downloaded from GitHub by `ARG` and checked against a SHA-256 pinned beside each, mdformat and its plugins by the hashed lock in `Dockerfile.lock/mdformat/`, and the workflow's actions by commit SHA. `make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` names on a `# TRACK USES` line, and to resolve anew the lock the `Dockerfile` names on its `# TRACK LOCK` line, proposing re-pinned workflows in `.github/workflows.new/`, then builds, tests and commits the result as `Upgrade pins`, with a line for each move as the body, so a bump that breaks the repository shows before it is committed. It never pushes.
+Base images are pinned by digest, tools downloaded from GitHub by `ARG` and checked against a SHA-256 pinned beside each, mdformat and its plugins by the hashed lock in `Dockerfile.lock/mdformat/`, and the workflow's actions by commit SHA.
+
+`make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` names on a `# TRACK USES` line, and to resolve anew the lock the `Dockerfile` names on its `# TRACK LOCK` line, proposing re-pinned workflows in `.github/workflows.new/`, then builds, tests and commits the result as `Upgrade pins`, with a line for each move as the body, so a bump that breaks the repository shows before it is committed. It never pushes.
 
 ```sh
 make upgrade

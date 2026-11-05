@@ -98,23 +98,20 @@ if [ -z "$present" ]; then
         esac
         break
     done
-fi
 
-case $present:$kind:$family in
-1:*) ;;
-:pypi:apt | :pypi:dnf) packages=(python3-pip) ;;
-:pypi:apk) packages=(py3-pip) ;;
-# Fedora's nodejs-npm provides npm, which RHEL 9 and its rebuilds name it.
-:npm:?*) packages=(npm) ;;
-*)
-    echo "lock-resolve: /etc/os-release names ${id:-no ID}, which is not" \
-        "Debian, Ubuntu, Fedora, a RHEL-like or Alpine, nor like one, and" \
-        "the image has no $tool of its own" >&2
-    exit 1
-    ;;
-esac
+    case $kind:$family in
+    pypi:apt | pypi:dnf) packages=(python3-pip) ;;
+    pypi:apk) packages=(py3-pip) ;;
+    # Fedora's nodejs-npm provides npm, which RHEL 9 and its rebuilds name it.
+    npm:?*) packages=(npm) ;;
+    *)
+        echo "lock-resolve: /etc/os-release names ${id:-no ID}, which is not" \
+            "Debian, Ubuntu, Fedora, a RHEL-like or Alpine, nor like one, and" \
+            "the image has no $tool of its own" >&2
+        exit 1
+        ;;
+    esac
 
-if [ -z "$present" ]; then
     case $family in
     apt)
         apt-get update </dev/null

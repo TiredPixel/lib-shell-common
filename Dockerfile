@@ -66,7 +66,6 @@ RUN apt-get update \
 RUN localedef -i en_US -f UTF-8 en_US.UTF-8
 
 ENV LANG=C.UTF-8 \
-    LANGUAGE=C.UTF-8 \
     LC_ALL=C.UTF-8
 
 ENV PATH=/home/x/r/bin:$PATH

@@ -19,7 +19,7 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-prog=$(basename "$0")
+prog=${0##*/}
 
 if [ $# -ne 0 ]; then
     echo "Usage: $prog <PATHS (NUL-separated)" >&2

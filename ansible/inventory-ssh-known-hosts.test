@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Tests ansible/inventory-ssh-known-hosts on a scratch known_hosts file: which
-# hosts it lists, its refusal of no match or of an unreadable file, and its usage
-# errors. It reads only that file, so nothing is faked.
+# hosts it lists, its refusal of no match or of an unreadable file, and its
+# usage errors. It reads only that file, so nothing is faked.
 #
 # Run: ansible/inventory-ssh-known-hosts.test. Exits 1 naming each case that
 # failed.
@@ -93,7 +93,7 @@ check directory-file 1 "" "$work" example.com --list
 said=$usage
 check no-arguments 2 ""
 check no-option 2 "" "$kh" example.com
-check empty-file 2 "" "" example.com --list
+check empty-path 2 "" "" example.com --list
 check empty-domain 2 "" "$kh" "" --list
 check unknown-option 2 "" "$kh" example.com --hosts
 check host-missing 2 "" "$kh" example.com --host

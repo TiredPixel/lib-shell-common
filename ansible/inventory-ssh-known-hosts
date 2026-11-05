@@ -52,7 +52,7 @@ cmd_list() {
 case "$1" in
 --host)
     [ $# -eq 2 ] || usage
-    cmd_host "$2"
+    cmd_host
     ;;
 --list)
     [ $# -eq 1 ] || usage

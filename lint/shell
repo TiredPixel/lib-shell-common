@@ -64,7 +64,7 @@ for f in "${found[@]}"; do
 done
 
 if [ ${#scripts[@]} -eq 0 ] && [ ${#named[@]} -eq 0 ]; then
-    echo "$(basename "$0"): no shell scripts found in . or bin/, so nothing was checked" >&2
+    echo "${0##*/}: no shell scripts found in . or bin/, so nothing was checked" >&2
     exit 0
 fi
 

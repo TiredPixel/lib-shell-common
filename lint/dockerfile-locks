@@ -185,6 +185,16 @@ check_pipx() {
         "shared venv, a directory ending in /shared, earlier in this RUN"
 }
 
+# Whether option $1 is among the rest.
+has() {
+    local o=$1 a
+    shift
+    for a in "$@"; do
+        [ "$a" != "$o" ] || return 0
+    done
+    return 1
+}
+
 # Checks build frontend $1, given the rest: an isolated build fetches its build
 # dependencies, such as setuptools, with no hash check.
 check_build() {
@@ -201,16 +211,6 @@ check_build() {
     esac
     why "$what outside a RUN --network=none, since it fetches build" \
         "dependencies with no hash check"
-}
-
-# Whether option $1 is among the rest.
-has() {
-    local o=$1 a
-    shift
-    for a in "$@"; do
-        [ "$a" != "$o" ] || return 0
-    done
-    return 1
 }
 
 # Checks command $1, given the rest.
@@ -360,9 +360,9 @@ check_command() {
 
 # Ends check_script's word, if one has begun.
 flush() {
-    [ -n "$has" ] || return 0
+    [ -n "$begun" ] || return 0
     words+=("$word")
-    word="" has=""
+    word="" begun=""
 }
 
 # Ends check_script's simple command, checking it.
@@ -375,7 +375,7 @@ end() {
 # Checks shell text $1, command by command. Quotes are removed and nothing is
 # expanded; a quote with no end runs to the end of the text.
 check_script() {
-    local s=$1 i=0 c q word="" has=""
+    local s=$1 i=0 c q word="" begun=""
     local -a words=()
     while [ "$i" -lt ${#s} ]; do
         c=${s:i:1}
@@ -383,7 +383,7 @@ check_script() {
         ' ' | $'\t') flush ;;
         $'\n' | ';' | '&' | '|' | '(' | ')' | \`) end ;;
         \#)
-            if [ -n "$has" ]; then
+            if [ -n "$begun" ]; then
                 word+=$c
             else
                 q=${s:i}
@@ -395,11 +395,11 @@ check_script() {
             q=${s:i+1}
             q=${q%%\'*}
             word+=$q
-            has=1
+            begun=1
             i=$((i + 1 + ${#q}))
             ;;
         \")
-            has=1
+            begun=1
             i=$((i + 1))
             while [ "$i" -lt ${#s} ] && [ "${s:i:1}" != \" ]; do
                 c=${s:i:1}
@@ -423,12 +423,12 @@ check_script() {
             i=$((i + 1))
             if [ "${s:i:1}" != $'\n' ]; then
                 word+=${s:i:1}
-                has=1
+                begun=1
             fi
             ;;
         *)
             word+=$c
-            has=1
+            begun=1
             ;;
         esac
         i=$((i + 1))

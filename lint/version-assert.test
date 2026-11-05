@@ -61,7 +61,7 @@ check release 14.655 0 ""
 check zero-major 0.1 0 ""
 check minor-largest 1.9999 0 ""
 check minor-too-large 1.10000 1 "version-assert: VERSION minor is 10000"
-# The test builtin reads a leading zero as decimal, so 0654 is 654.
+# A leading zero is dropped, so 0654 is 654.
 check minor-leading-zero 1.0654 0 ""
 check major-largest 209999.0 0 ""
 check major-too-large 210000.0 1 "version-assert: VERSION major is 210000"
