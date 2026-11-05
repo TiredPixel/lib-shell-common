@@ -25,7 +25,7 @@
 # tree; test adds the tree for the gate. README.md, Building, describes the
 # stages.
 #===============================================================================
-FROM docker.io/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS wheels
+FROM docker.io/library/debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 AS wheels
 
 SHELL ["/bin/bash", "-Eeuo", "pipefail", "-O", "inherit_errexit", "-O", "failglob", "-c"]
 
@@ -37,7 +37,7 @@ RUN --mount=type=bind,source=Dockerfile.lock/mdformat,target=/lock \
     python3 -m pip download --disable-pip-version-check --require-hashes \
     --no-deps --only-binary=:all: -d /wheels -r /lock/requirements.txt
 #===============================================================================
-FROM docker.io/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS dev
+FROM docker.io/library/debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 AS dev
 
 LABEL org.opencontainers.image.source=https://github.com/TiredPixel/lib-shell-common
 
