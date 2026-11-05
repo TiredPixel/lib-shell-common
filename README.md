@@ -360,7 +360,9 @@ make workflows-approve
 
 The `docker/` scripts that build or push tagged images, or log in, such as `docker/build-dev-latest` and `docker/login`, read the image repository, such as `ghcr.io/OWNER/NAME`, from a `.dockerrepo` file at the calling repository's root.
 
-They run from that root, building the `Dockerfile` there, and tag each image from the branch checked out, any `/` in its name written as `-`. On a detached HEAD, as in a pull request or a tag push, the tag is the first of CircleCI's `CIRCLE_BRANCH` and `CIRCLE_TAG`, then GitHub Actions' `GITHUB_HEAD_REF` and `GITHUB_REF_NAME`, that is set and not empty; with none, the script fails before building.
+They run from that root, building the `Dockerfile` there, and tag each image from the branch checked out. On a detached HEAD, as in a pull request or a tag push, the tag is the first of CircleCI's `CIRCLE_BRANCH` and `CIRCLE_TAG`, then GitHub Actions' `GITHUB_HEAD_REF` and `GITHUB_REF_NAME`, that is set and not empty; with none, the script fails before building.
+
+The name is fitted to Docker's tag grammar: each character other than an ASCII letter, a digit, `_`, `.` or `-` is written as `-`, so `feature/a+b` tags as `feature-a-b`; any leading `.` or `-` is dropped; and the tag is cut to 124 characters, leaving room for a `.dev` or `.prd` suffix. A name with nothing left, such as `---`, fails before building.
 
 Each build passes the `GIT_DESCRIBE` build argument, which a `Dockerfile` reads with `ARG GIT_DESCRIBE` to stamp the image with the commit it was built from. Every script but `docker/build-tags` takes it from `docker/describe`: what `git describe` prints, or empty where no tag describes HEAD, any other git failure stopping the build. A `Dockerfile` that needs a version refuses an empty `GIT_DESCRIBE` where it stamps the image.
 
@@ -376,13 +378,13 @@ lib/shell-common/docker/build-compose --profile test
 lib/shell-common/docker/build-prd-latest
 ```
 
-`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release and each shorter prefix of it, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`, then pushes each tag, naming it on stderr. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building.
+`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release and each shorter prefix of it, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`, then pushes each tag, naming it on stderr. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building. A release on HEAD that is not a valid Docker tag, such as `v1+build`, also fails before building.
 
 ```sh
 lib/shell-common/docker/build-tags
 ```
 
-`docker/login` logs in to the registry `.dockerrepo` names, or to Docker Hub where it names none, as `DOCKER_USERNAME`, passing `DOCKER_PASSWORD` on standard input; both must be set.
+`docker/login` logs in to the registry `.dockerrepo` names, or to Docker Hub where it names none, as `DOCKER_USERNAME`, passing `DOCKER_PASSWORD` on standard input; it fails before calling Docker where either is unset or empty. It reads only `.dockerrepo` and needs no tag, so it runs on a detached HEAD with no CI variable set.
 
 ```sh
 lib/shell-common/docker/login
