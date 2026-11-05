@@ -109,13 +109,18 @@ while read -r loc <&3; do
     *.[uU][tT][fF]8 | *.[uU][tT][fF]-8) ;;
     *) continue ;;
     esac
-    utf8=$((utf8 + 1))
+    # C.UTF-8 is run but not counted: its bracket does not match other
+    # scripts' digits, so it alone would test nothing.
+    case $loc in
+    C.*) ;;
+    *) utf8=$((utf8 + 1)) ;;
+    esac
     LC_ALL=$loc check "fullwidth-$loc" $'\xef\xbc\x91\xef\xbc\x94.\xef\xbc\x96\xef\xbc\x95\xef\xbc\x95' 1 "a release is major.minor and nothing else"
     LC_ALL=$loc check "arabic-indic-$loc" $'1.\xd9\xa2' 1 "a release is major.minor and nothing else"
     LC_ALL=$loc check "three-arabic-indic-$loc" $'1.2.\xd9\xa3' 1 "a release is major.minor.patch and nothing else" --parts 3
 done 3< <(locale -a)
 if [ "$utf8" = 0 ]; then
-    fail utf8-locales "locale -a lists none to run the digit cases under"
+    fail utf8-locales "locale -a lists no UTF-8 locale but C's to run the digit cases under"
 fi
 
 # Arguments are checked before VERSION.

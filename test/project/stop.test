@@ -81,14 +81,19 @@ fixture() {
 }
 
 # Runs project/stop in app and records a failure of case $1 unless its status is
-# $2 and docker was called as $3 has it.
+# $2, docker was called as $3 has it, its stdout is empty and its stderr is $4
+# exactly.
 check() {
     local rc=0
-    (cd "$w/app" && "$stop") >/dev/null 2>"$w/err" || rc=$?
+    (cd "$w/app" && "$stop") >"$w/out" 2>"$w/err" || rc=$?
     if [ "$rc" != "$2" ]; then
         fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
         fail "$1" "docker was called as: $(<"$FAKE_LOG")"
+    elif [ -s "$w/out" ]; then
+        fail "$1" "stdout is: $(<"$w/out")"
+    elif [ "$(<"$w/err")" != "$4" ]; then
+        fail "$1" "stderr is: $(<"$w/err")"
     fi
 }
 
@@ -97,38 +102,44 @@ down() {
     printf '%s\n' "$1 compose config --services" "$1 compose stop"
 }
 
+# What the sweep writes to stderr as it enters lib, and then app.
+lib="each-without-project: lib"
+both="$lib"$'\n'"each: app"
+
 # Each project is stopped.
 fixture
-check both 0 "$(down lib && down app)"
+check both 0 "$(down lib && down app)" "$both"
 
 # Every name compose looks for is taken.
 for f in compose.yml docker-compose.yaml docker-compose.yml; do
     fixture
     mv -- "$w/app/compose.yaml" "$w/app/$f"
     rm -- "$w/app/lib/compose.yaml"
-    check "$f" 0 "$(down app)"
+    check "$f" 0 "$(down app)" "$both"
 done
 
 # A project with no compose file is passed over without asking compose.
 fixture
 rm -- "$w/app/compose.yaml" "$w/app/lib/compose.yaml"
-check no-compose 0 ""
+check no-compose 0 "" "$both"
 
 # A project with no service to stop, such as one whose services all sit behind a
 # profile, is passed over.
 fixture
 : >"$w/app/lib/fake-services"
-check no-services 0 "$(echo "lib compose config --services" && down app)"
+check no-services 0 "$(echo "lib compose config --services" && down app)" \
+    "$both"
 
 # A project whose configuration compose cannot read fails the sweep, rather than
 # passing as one with nothing to stop.
 fixture
 touch "$w/app/lib/fake-config-fails"
-check config-fails 1 "lib compose config --services"
+check config-fails 1 "lib compose config --services" \
+    "$lib"$'\n'"fake docker: invalid compose project"
 
 # A project that fails to stop fails the sweep.
 fixture
-FAKE_STOP_RC=1 check stop-fails 1 "$(down lib)"
+FAKE_STOP_RC=1 check stop-fails 1 "$(down lib)" "$lib"
 
 if [ "$failures" -gt 0 ]; then
     exit 1

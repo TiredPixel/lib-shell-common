@@ -84,14 +84,19 @@ fixture() {
 }
 
 # Runs project/start in app and records a failure of case $1 unless its status
-# is $2 and docker was called as $3 has it.
+# is $2, docker was called as $3 has it, its stdout is empty and its stderr is
+# $4 exactly.
 check() {
     local rc=0
-    (cd "$w/app" && "$start") >/dev/null 2>"$w/err" || rc=$?
+    (cd "$w/app" && "$start") >"$w/out" 2>"$w/err" || rc=$?
     if [ "$rc" != "$2" ]; then
         fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
         fail "$1" "docker was called as: $(<"$FAKE_LOG")"
+    elif [ -s "$w/out" ]; then
+        fail "$1" "stdout is: $(<"$w/out")"
+    elif [ "$(<"$w/err")" != "$4" ]; then
+        fail "$1" "stderr is: $(<"$w/err")"
     fi
 }
 
@@ -101,44 +106,50 @@ up() {
         "$1 compose up -d --pull always --wait --wait-timeout $2"
 }
 
+# What the sweep writes to stderr as it enters lib, and then app.
+lib="each-without-project: lib"
+both="$lib"$'\n'"each: app"
+
 # Each project is brought up, waiting 300 seconds by default, and the containers
 # listed.
 fixture
-check both 0 "$(up lib 300 && up app 300 && echo "app ps")"
+check both 0 "$(up lib 300 && up app 300 && echo "app ps")" "$both"
 
 # DC_WAIT_TIMEOUT overrides the wait.
 fixture
-DC_WAIT_TIMEOUT=7 check timeout 0 "$(up lib 7 && up app 7 && echo "app ps")"
+DC_WAIT_TIMEOUT=7 check timeout 0 "$(up lib 7 && up app 7 && echo "app ps")" \
+    "$both"
 
 # Every name compose looks for is taken.
 for f in compose.yml docker-compose.yaml docker-compose.yml; do
     fixture
     mv -- "$w/app/compose.yaml" "$w/app/$f"
     rm -- "$w/app/lib/compose.yaml"
-    check "$f" 0 "$(up app 300 && echo "app ps")"
+    check "$f" 0 "$(up app 300 && echo "app ps")" "$both"
 done
 
 # A project with no compose file is passed over without asking compose.
 fixture
 rm -- "$w/app/compose.yaml" "$w/app/lib/compose.yaml"
-check no-compose 0 "app ps"
+check no-compose 0 "app ps" "$both"
 
 # A project with no service to bring up, such as one whose services all sit
 # behind a profile, is passed over.
 fixture
 : >"$w/app/lib/fake-services"
 check no-services 0 "$(echo "lib compose config --services" &&
-    up app 300 && echo "app ps")"
+    up app 300 && echo "app ps")" "$both"
 
 # A project whose configuration compose cannot read fails the sweep, rather than
 # passing as one with nothing to bring up.
 fixture
 touch "$w/app/lib/fake-config-fails"
-check config-fails 1 "lib compose config --services"
+check config-fails 1 "lib compose config --services" \
+    "$lib"$'\n'"fake docker: invalid compose project"
 
 # A project that fails to come up fails the sweep.
 fixture
-FAKE_UP_RC=1 check up-fails 1 "$(up lib 300)"
+FAKE_UP_RC=1 check up-fails 1 "$(up lib 300)" "$lib"
 
 if [ "$failures" -gt 0 ]; then
     exit 1

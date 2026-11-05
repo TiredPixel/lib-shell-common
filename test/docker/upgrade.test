@@ -123,7 +123,9 @@ elif [ $# -ge 12 ] &&
     # A container of its own, so what one run installs no other sees.
     box=$(mktemp -d "$FAKE_BOXES/box.XXXXXX")
     cp -RP -- "$FAKE_CONTAINER/." "$box"
-    exec env PATH="$box:$FAKE_TOOLS" sh -c "${10}" "${@:11}" \
+    # No BASH_ENV, as a container takes none of the host's environment; kcov's
+    # would trace lock-resolve with a PS4 that its set -u refuses.
+    exec env -u BASH_ENV PATH="$box:$FAKE_TOOLS" sh -c "${10}" "${@:11}" \
         <<<"${script//\/etc\/os-release/$FAKE_OS_RELEASE}"
 else
     echo "fake docker: unexpected arguments: $*" >&2
@@ -1122,13 +1124,15 @@ for above in "  # v1" "  #v1"$' \t' "  # o/r v1.2.3" "  # 1.2"$'\n' $'  # v1\n\n
 done
 
 # A uses: on the first line, or with only blank lines above it, has no line
-# above it, whatever the last line holds.
+# above it, whatever the last line holds, an indented version comment included.
 n=0
 for lead in "" $'\n \n'; do
-    n=$((n + 1))
-    wf=$lead$'  - uses: o/r@v0\n  # v1\n# TRACK USES o/r@v1'
-    flow "wf-first-line-$n" "$df" "$wf" 0 "" "$dfafter" \
-        "$lead"$'  - uses: o/r@'"$c3"$'\n  # v1\n# TRACK USES o/r@v1'
+    for rest in $'\n  # v1\n# TRACK USES o/r@v1' $'\n# TRACK USES o/r@v1\n  # v1'; do
+        n=$((n + 1))
+        wf=$lead$'  - uses: o/r@v0'$rest
+        flow "wf-first-line-$n" "$df" "$wf" 0 "" "$dfafter" \
+            "$lead"$'  - uses: o/r@'"$c3$rest"
+    done
 done
 
 # OWNER/REPO is matched in any case, each uses: keeping its own.
@@ -1753,36 +1757,42 @@ fi
 d=$work/lock-created
 file=$d/Dockerfile
 
-# A lock that would not change is not written, and nothing is recorded.
-inode=$(ls -i "$d/Dockerfile.lock/m/requirements.txt")
-commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
-if expect lock-unchanged 0 ""; then
-    [ "$(ls -i "$d/Dockerfile.lock/m/requirements.txt")" = "$inode" ] ||
-        fail lock-unchanged "the lock was written"
-    if ! [ -f "$work/lockrec" ] || [ -s "$work/lockrec" ]; then
-        fail lock-unchanged "the record is not empty: $(cat -- "$work/lockrec" 2>&1)"
+# A lock that would not change is not written, and nothing is recorded. This
+# and the cases after it take lock-created's lock, so where it made none, that
+# is recorded rather than left to abort the test.
+if ! [ -f "$d/Dockerfile.lock/m/requirements.txt" ]; then
+    fail lock-unchanged "lock-created made no lock, which this and the lock-dirty cases need"
+else
+    inode=$(ls -i "$d/Dockerfile.lock/m/requirements.txt")
+    commit_all "$d"
+    rm -f -- "$work/lockrec"
+    lockgo --record "$work/lockrec"
+    if expect lock-unchanged 0 ""; then
+        [ "$(ls -i "$d/Dockerfile.lock/m/requirements.txt")" = "$inode" ] ||
+            fail lock-unchanged "the lock was written"
+        if ! [ -f "$work/lockrec" ] || [ -s "$work/lockrec" ]; then
+            fail lock-unchanged "the record is not empty: $(cat -- "$work/lockrec" 2>&1)"
+        fi
     fi
-fi
 
-# A lock with changes not committed is refused, as the Dockerfile is, before
-# anything is looked up.
-printf '# edit\n' >>"$d/Dockerfile.lock/m/requirements.txt"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
-if expect lock-dirty 1 "upgrade: $d/Dockerfile.lock: has changes not committed; commit or stash them first" \
-    "fake "; then
-    [ ! -e "$work/lockrec" ] || fail lock-dirty "a record was written"
+    # A lock with changes not committed is refused, as the Dockerfile is, before
+    # anything is looked up.
+    printf '# edit\n' >>"$d/Dockerfile.lock/m/requirements.txt"
+    rm -f -- "$work/lockrec"
+    lockgo --record "$work/lockrec"
+    if expect lock-dirty 1 "upgrade: $d/Dockerfile.lock: has changes not committed; commit or stash them first" \
+        "fake "; then
+        [ ! -e "$work/lockrec" ] || fail lock-dirty "a record was written"
+    fi
+    rm -- "$d/Dockerfile.lock/m/requirements.txt"
+    lockgo --record "$work/lockrec"
+    expect lock-dirty-removed 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
+    mkdir "$d/Dockerfile.lock/new"
+    printf 'x\n' >"$d/Dockerfile.lock/new/f"
+    "$REAL_GIT" -C "$d" checkout -q -- Dockerfile.lock
+    lockgo --record "$work/lockrec"
+    expect lock-dirty-untracked 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
 fi
-rm -- "$d/Dockerfile.lock/m/requirements.txt"
-lockgo --record "$work/lockrec"
-expect lock-dirty-removed 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
-mkdir "$d/Dockerfile.lock/new"
-printf 'x\n' >"$d/Dockerfile.lock/new/f"
-"$REAL_GIT" -C "$d" checkout -q -- Dockerfile.lock
-lockgo --record "$work/lockrec"
-expect lock-dirty-untracked 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
 
 # A version that moves, a dependency added and one dropped are each recorded; an
 # existing lock keeps its mode.
