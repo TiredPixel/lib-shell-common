@@ -99,9 +99,9 @@ git diff-index --raw -z --ignore-submodules=dirty HEAD |
 if [ "${#refused[@]}" -gt 0 ]; then
     echo "$prog: $PWD: refusing to commit, these are not pointer moves:" >&2
     printf '%s\n' "${refused[@]/#/$prog: }" >&2
-    echo "$prog: in a release run the sweep has already checked out and" \
-        "pulled every project by this point; nothing is tagged or pushed" \
-        "either way" >&2
+    echo "$prog: in a release run the sweep has already checked out the" \
+        "release branch in every project by this point; nothing is tagged" \
+        "or pushed either way" >&2
 
     exit 1
 fi

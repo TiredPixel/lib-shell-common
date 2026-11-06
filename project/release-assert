@@ -4,10 +4,11 @@
 # and reports the submodules the release will not tag.
 #
 # It runs before the sweep rather than beside the commit, so a refusal costs
-# nothing: no branch has been switched, nothing pulled, no tag signed. That
+# nothing: no branch has been switched, nothing fetched, no tag signed. That
 # placement is also what makes project/release-commit-submodules sound -- the
-# sweep only ever moves submodule pointers here, so a tree carrying nothing else
-# now is still carrying nothing else when the commit comes.
+# sweep only ever leaves submodule pointers differing from HEAD here, so a tree
+# carrying nothing else now is still carrying nothing else when the commit
+# comes.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -83,8 +84,8 @@ done
 # project/each-without-project -- so an omission is usually deliberate, and this
 # reports rather than refuses. It is the only place the other kind of omission
 # shows: a submodule that does belong, added without a line, is otherwise never
-# checked out, never pulled and never tagged, and the release reports success
-# without it.
+# checked out, never moved to a release branch and never tagged, and the
+# release reports success without it.
 modules=()
 
 git ls-files -z --stage |

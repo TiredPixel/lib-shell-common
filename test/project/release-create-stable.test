@@ -5,10 +5,11 @@
 # a bare origin, $w/app.git and $w/lib.git, holding branches testing, the
 # default, and stable, and an upstream clone, $w/app.up and $w/lib.up. app is a
 # clone of app.git recording lib at its first commit, one, where both branches
-# start, and lib.up has since pushed a second, two, to testing, so a release has
-# a pointer to pull and commit. Signing goes through a fake gpg.program in a
-# scratch GNUPGHOME, so no real key or pinentry is reached. Every case builds
-# its fixture afresh and runs project/release-create-stable in app.
+# start, and lib.up has since pushed a second, two, to testing, which a case
+# takes as an upgrade would, by checking lib out at it, so a release has a
+# pointer to commit. Signing goes through a fake gpg.program in a scratch
+# GNUPGHOME, so no real key or pinentry is reached. Every case builds its
+# fixture afresh and runs project/release-create-stable in app.
 #
 # Run: test/project/release-create-stable.test. Exits 1 naming each case that
 # failed.
@@ -96,6 +97,12 @@ fixture() {
     init=$(git -C "$w/app" rev-parse HEAD)
 }
 
+# Checks lib out at two, detached, as the commit built.
+upgraded() {
+    git -C "$w/app/lib" fetch -q
+    git -C "$w/app/lib" checkout -q --detach "$two"
+}
+
 # Runs project/release-create-stable in app with the arguments given, keeping
 # its status in rc and its stderr in $w/err.
 run() {
@@ -116,7 +123,7 @@ commit_of() {
 }
 
 # Records a failure of case $1 unless the release of tag 1.2 onto testing went
-# through: lib's testing pulled to two, its pointer committed in app as "Release
+# through: lib's testing moved to two, its pointer committed in app as "Release
 # 1.2", both tagged and signed there, and tag and testing pushed to each origin.
 expect_testing() {
     local r
@@ -143,6 +150,7 @@ expect_testing() {
 # A whole release: onto testing, then stable fast-forwarded to the tag and
 # pushed to each origin.
 fixture
+upgraded
 run 1.2
 expect release status "$rc" 0
 expect_testing release
@@ -154,6 +162,7 @@ done
 # A failure on testing leaves stable alone: testing is not pushed, and stable is
 # neither checked out nor pushed.
 fixture
+upgraded
 git -C "$w/app/lib" tag 1.2 "$one"
 run 1.2
 expect tag-fails status "$rc" 1
@@ -170,6 +179,7 @@ expect tag-fails "lib's stable" "$(commit_of "$w/app/lib" refs/heads/stable)" \
 # Stable carrying commits of its own cannot fast-forward to the tag, so it is
 # pushed nowhere, though testing and the tag already were.
 fixture
+upgraded
 git -C "$w/app.up" checkout -q stable
 git -C "$w/app.up" commit -q --allow-empty -m own
 git -C "$w/app.up" push -q origin stable
@@ -181,6 +191,44 @@ expect merge-fails "app's origin's stable" "$(commit_of "$w/app.git" stable)" \
     "$own"
 expect merge-fails "lib's origin's stable" "$(commit_of "$w/lib.git" stable)" \
     "$one"
+
+# Nothing is pulled in: lib's origin's testing holds a commit beyond one, which
+# lib, left there, lacks, so the release stops before any project moves.
+fixture
+run 1.2
+expect testing-ahead status "$rc" 1
+expect testing-ahead stderr \
+    "$(grep -F -- "$w/app/lib: refs/remotes/origin/testing" "$w/err")" \
+    "release-branch-ready: $w/app/lib: refs/remotes/origin/testing has commits HEAD lacks, and a release pulls nothing in; upgrade to take them"
+expect testing-ahead "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$init"
+expect testing-ahead "lib's HEAD" "$(git -C "$w/app/lib" rev-parse HEAD)" \
+    "$one"
+for r in app app/lib; do
+    expect testing-ahead "$r's 1.2" "$(commit_of "$w/$r" 1.2)" none
+done
+
+# Stable is readied as testing is: lib's origin's stable holding a commit the
+# tag lacks stops the release after testing and before stable moves anywhere.
+fixture
+upgraded
+git -C "$w/lib.up" checkout -q stable
+git -C "$w/lib.up" commit -q --allow-empty -m own
+git -C "$w/lib.up" push -q origin stable
+own=$(git -C "$w/lib.up" rev-parse HEAD)
+run 1.2
+expect stable-ahead status "$rc" 1
+expect_testing stable-ahead
+expect stable-ahead stderr \
+    "$(grep -F -- "$w/app/lib: refs/remotes/origin/stable" "$w/err")" \
+    "release-branch-ready: $w/app/lib: refs/remotes/origin/stable has commits HEAD lacks, and a release pulls nothing in; upgrade to take them"
+expect stable-ahead "app's branch" \
+    "$(git -C "$w/app" symbolic-ref --short HEAD)" testing
+expect stable-ahead "lib's stable" "$(commit_of "$w/app/lib" refs/heads/stable)" \
+    none
+expect stable-ahead "app's origin's stable" "$(commit_of "$w/app.git" stable)" \
+    "$init"
+expect stable-ahead "lib's origin's stable" "$(commit_of "$w/lib.git" stable)" \
+    "$own"
 
 # A missing, empty or extra argument is refused with the usage before anything
 # runs: lib is not checked out on testing and app commits nothing.

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# Tests project/release-branch-ready's arguments. What it does with a branch is
+# tested through the release scripts that run it, in
+# test/project/release-create-latest.test and
+# test/project/release-create-stable.test.
+#
+# Run: test/project/release-branch-ready.test. Exits 1 naming each case that
+# failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+ready=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/release-branch-ready
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+failures=0
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# A missing, empty or extra argument is refused with the usage, before git is
+# asked anything: the scratch dir is no repository.
+for args in no-branch empty-branch extra; do
+    rc=0
+    case $args in
+    no-branch) (cd "$work" && "$ready") >"$work/out" 2>"$work/err" || rc=$? ;;
+    empty-branch)
+        (cd "$work" && "$ready" "") >"$work/out" 2>"$work/err" || rc=$?
+        ;;
+    extra)
+        (cd "$work" && "$ready" a b) >"$work/out" 2>"$work/err" || rc=$?
+        ;;
+    esac
+    if [ "$rc" != 2 ]; then
+        fail "$args" "exit $rc, not 2: $(<"$work/err")"
+    elif [ "$(<"$work/err")" != "Usage: release-branch-ready BRANCH" ]; then
+        fail "$args" "stderr is: $(<"$work/err")"
+    elif [ -s "$work/out" ]; then
+        fail "$args" "stdout is: $(<"$work/out")"
+    fi
+done
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

@@ -9,14 +9,12 @@
 # a function called under if, while, ! or before && or ||, even in a caller that
 # sets it.
 
-# Checks out branch $2 in every project, through project/each in directory $1,
-# and fast-forwards it to its upstream.
+# Readies branch $2 in every project, through project/release-branch-ready in
+# directory $1.
 release_checkout() {
     local dir=$1 branch=$2
 
-    "$dir/each" git checkout "$branch" --no-recurse-submodules || return
-
-    "$dir/each" git pull --ff-only --no-recurse-submodules || return
+    "$dir/release-branch-ready" "$branch" || return
 }
 
 # Pushes branch $2 in every project, through project/each in directory $1.
@@ -30,8 +28,8 @@ release_push() {
 }
 
 # Releases tag $3 from branch $2 in every project, through the project/ scripts
-# in directory $1: refuses a tree in no state to release, brings each project's
-# $2 current, commits the submodule pointers, tags, and pushes $2.
+# in directory $1: refuses a tree in no state to release, readies each project's
+# $2, commits the submodule pointers, tags, and pushes $2.
 release_onto() {
     local dir=$1 branch=$2 tag=$3
 

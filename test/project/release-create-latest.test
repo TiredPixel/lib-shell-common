@@ -5,10 +5,10 @@
 # a bare origin, $w/app.git and $w/lib.git, whose default branch is latest, and
 # an upstream clone, $w/app.up and $w/lib.up. app is a clone of app.git
 # recording lib at its first commit, one, and lib.up has since pushed a second,
-# two, so a release has a pointer to pull and commit. Signing goes through a
-# fake gpg.program in a scratch GNUPGHOME, so no real key or pinentry is
-# reached. Every case builds its fixture afresh and runs
-# project/release-create-latest in app.
+# two, which a case takes as an upgrade would, by checking lib out at it, so a
+# release has a pointer to commit. Signing goes through a fake gpg.program in a
+# scratch GNUPGHOME, so no real key or pinentry is reached. Every case builds
+# its fixture afresh and runs project/release-create-latest in app.
 #
 # Run: test/project/release-create-latest.test. Exits 1 naming each case that
 # failed.
@@ -96,6 +96,12 @@ fixture() {
     init=$(git -C "$w/app" rev-parse HEAD)
 }
 
+# Checks lib out at two, detached, as the commit built.
+upgraded() {
+    git -C "$w/app/lib" fetch -q
+    git -C "$w/app/lib" checkout -q --detach "$two"
+}
+
 # Runs project/release-create-latest in app with the arguments given, keeping
 # its status in rc and its stderr in $w/err.
 run() {
@@ -115,10 +121,11 @@ commit_of() {
     git -C "$1" rev-parse -q --verify "$2^{commit}" || echo none
 }
 
-# A whole release: lib's latest pulled to two, its pointer committed in app as
+# A whole release: lib's latest moved to two, its pointer committed in app as
 # "Release 1.2", both tagged and signed there, and tag and latest pushed to each
 # origin.
 fixture
+upgraded
 run 1.2
 expect release status "$rc" 0
 expect release "lib's 1.2" "$(commit_of "$w/app/lib" 1.2)" "$two"
@@ -143,6 +150,7 @@ done
 # push.followTags sends no other tag with latest or 1.2: an annotated tag on
 # each project's latest that was never pushed stays local.
 fixture
+upgraded
 git -C "$w/app" tag -a -m local local
 git -C "$w/app/lib" tag -a -m local local
 GIT_CONFIG_COUNT=7 GIT_CONFIG_KEY_6=push.followTags GIT_CONFIG_VALUE_6=true \
@@ -157,6 +165,7 @@ done
 # A tag that cannot be created stops the release after the commit and before
 # latest is pushed.
 fixture
+upgraded
 git -C "$w/app/lib" tag 1.2 "$one"
 run 1.2
 expect tag-fails status "$rc" 1
@@ -165,6 +174,53 @@ expect tag-fails "app's message" \
 expect tag-fails "app's 1.2" "$(commit_of "$w/app" 1.2)" none
 expect tag-fails "app's origin's latest" "$(commit_of "$w/app.git" latest)" \
     "$init"
+
+# Nothing is pulled in: a commit on origin's latest that the tree lacks stops
+# the release before any project moves, so it is neither committed nor tagged.
+# Case origin-ahead leaves lib at one behind its origin, local-ahead has lib's
+# own latest hold a commit beyond two, and parent-behind has app's origin ahead
+# of app.
+for ahead in origin-ahead local-ahead parent-behind; do
+    fixture
+    case $ahead in
+    origin-ahead)
+        ref=refs/remotes/origin/latest
+        rev=HEAD
+        ;;
+    local-ahead)
+        upgraded
+        git -C "$w/app/lib" checkout -q -B latest "$two"
+        git -C "$w/app/lib" commit -q --allow-empty -m three
+        git -C "$w/app/lib" checkout -q --detach "$two"
+        ref=refs/heads/latest
+        rev=HEAD
+        ;;
+    parent-behind)
+        upgraded
+        git -C "$w/app.up" commit -q --allow-empty -m app2
+        git -C "$w/app.up" push -q origin latest
+        ref=refs/remotes/origin/latest
+        rev=refs/heads/latest
+        ;;
+    esac
+    lib=$(git -C "$w/app/lib" rev-parse HEAD)
+    run 1.2
+    expect "$ahead" status "$rc" 1
+    case $ahead in
+    parent-behind) where=$w/app ;;
+    *) where=$w/app/lib ;;
+    esac
+    expect "$ahead" stderr "$(grep -F -- "$where: $ref" "$w/err")" \
+        "release-branch-ready: $where: $ref has commits $rev lacks, and a release pulls nothing in; upgrade to take them"
+    expect "$ahead" "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$init"
+    expect "$ahead" "lib's HEAD" "$(git -C "$w/app/lib" rev-parse HEAD)" "$lib"
+    if git -C "$w/app/lib" symbolic-ref -q HEAD >/dev/null; then
+        fail "$ahead" "lib was checked out on a branch"
+    fi
+    for r in app app/lib; do
+        expect "$ahead" "$r's 1.2" "$(commit_of "$w/$r" 1.2)" none
+    done
+done
 
 # A missing, empty or extra argument is refused with the usage before anything
 # runs: lib is not checked out on latest and app commits nothing.
