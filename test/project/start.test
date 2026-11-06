@@ -4,9 +4,10 @@
 # submodule lib, listed in its .projects, with docker faked on PATH. The fake
 # logs the project it runs in and its arguments, a line to a call. compose
 # config --services prints the project's file fake-services, if any, or fails
-# where it holds fake-config-fails; compose up exits FAKE_UP_RC; ps does
-# nothing. Any other call fails. Every case builds its fixture afresh and runs
-# project/start in app.
+# where it holds fake-config-fails; compose pull --ignore-buildable exits
+# FAKE_PULL_RC; compose up exits FAKE_UP_RC; ps does nothing. Any other call
+# fails, so a pull of any other kind does too. Every case builds its fixture
+# afresh and runs project/start in app.
 #
 # Run: test/project/start.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -39,7 +40,8 @@ case $* in
     fi
     [ ! -f fake-services ] || cat fake-services
     ;;
-"compose up -d --pull always --wait --wait-timeout "*)
+"compose pull --ignore-buildable") exit "${FAKE_PULL_RC:-0}" ;;
+"compose up -d --wait --wait-timeout "*)
     exit "${FAKE_UP_RC:-0}"
     ;;
 ps) ;;
@@ -83,12 +85,12 @@ fixture() {
     : >"$FAKE_LOG"
 }
 
-# Runs project/start in app and records a failure of case $1 unless its status
-# is $2, docker was called as $3 has it, its stdout is empty and its stderr is
-# $4 exactly.
+# Runs project/start in app, with any arguments after $4, and records a failure
+# of case $1 unless its status is $2, docker was called as $3 has it, its stdout
+# is empty and its stderr is $4 exactly.
 check() {
     local rc=0
-    (cd "$w/app" && "$start") >"$w/out" 2>"$w/err" || rc=$?
+    (cd "$w/app" && "$start" "${@:5}") >"$w/out" 2>"$w/err" || rc=$?
     if [ "$rc" != "$2" ]; then
         fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
@@ -103,7 +105,14 @@ check() {
 # Project $1 asked for its services and, with timeout $2, brought up.
 up() {
     printf '%s\n' "$1 compose config --services" \
-        "$1 compose up -d --pull always --wait --wait-timeout $2"
+        "$1 compose up -d --wait --wait-timeout $2"
+}
+
+# As up, with the images compose does not build pulled first.
+pulled_up() {
+    printf '%s\n' "$1 compose config --services" \
+        "$1 compose pull --ignore-buildable" \
+        "$1 compose up -d --wait --wait-timeout $2"
 }
 
 # What the sweep writes to stderr as it enters lib, and then app.
@@ -150,6 +159,31 @@ check config-fails 1 "lib compose config --services" \
 # A project that fails to come up fails the sweep.
 fixture
 FAKE_UP_RC=1 check up-fails 1 "$(up lib 300)" "$lib"
+
+# --pull pulls each project's images that compose does not build before
+# bringing it up; a project with nothing to bring up pulls nothing.
+fixture
+check pull 0 "$(pulled_up lib 300 && pulled_up app 300 && echo "app ps")" \
+    "$both" --pull
+fixture
+: >"$w/app/lib/fake-services"
+check pull-no-services 0 "$(echo "lib compose config --services" &&
+    pulled_up app 300 && echo "app ps")" "$both" --pull
+
+# A failed pull fails the sweep before that project comes up.
+fixture
+FAKE_PULL_RC=1 check pull-fails 1 "$(printf '%s\n' \
+    "lib compose config --services" "lib compose pull --ignore-buildable")" \
+    "$lib" --pull
+
+# Any other argument is refused with the usage before docker is asked anything.
+for args in other extra; do
+    fixture
+    case $args in
+    other) check "$args" 2 "" "Usage: start [--pull]" --pul ;;
+    extra) check "$args" 2 "" "Usage: start [--pull]" --pull --pull ;;
+    esac
+done
 
 if [ "$failures" -gt 0 ]; then
     exit 1

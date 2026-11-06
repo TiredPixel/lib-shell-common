@@ -7,10 +7,11 @@
 # alone; a recipe logs the target, the project and whether its stdout is a tty,
 # and fails where the project holds a file named fail. A post-merge hook in app
 # logs that the pull reached it. Only app has a compose file, and docker is
-# faked on PATH: compose config --services prints web, compose up logs "start"
-# and the project and exits FAKE_UP_RC, compose stop logs "stop" and the
-# project, ps does nothing, and any other call fails. Every case builds its
-# fixture afresh and runs project/upgrade in app.
+# faked on PATH: compose config --services prints web, compose pull
+# --ignore-buildable logs "images" and the project, compose up logs "start" and
+# the project and exits FAKE_UP_RC, compose stop logs "stop" and the project, ps
+# does nothing, and any other call fails. Every case builds its fixture afresh
+# and runs project/upgrade in app.
 #
 # Run: test/project/upgrade.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -38,7 +39,8 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 case $* in
 "compose config --services") echo web ;;
-"compose up -d --pull always --wait --wait-timeout "*)
+"compose pull --ignore-buildable") echo "images ${PWD##*/}" >>"$FAKE_LOG" ;;
+"compose up -d --wait --wait-timeout "*)
     echo "start ${PWD##*/}" >>"$FAKE_LOG"
     exit "${FAKE_UP_RC:-0}"
     ;;
@@ -167,7 +169,7 @@ stages() {
 # on stderr and leaving stdout to the stages' own output.
 fixture
 check whole 0 "$(printf '%s\n' "pull app" "upgrade lib1 tty" \
-    "build lib1 notty" "build lib2 notty" "start app" "stop app")"
+    "build lib1 notty" "build lib2 notty" "images app" "start app" "stop app")"
 want=$(printf '%s\n' pull upgrade rebuild start stop completed)
 if [ "$(stages)" != "$want" ]; then
     fail whole "the stages are: $(stages)"
@@ -183,7 +185,7 @@ fi
 fixture
 PATH=$work/bsd:$PATH check bsd-script 0 "$(printf '%s\n' "pull app" \
     "script -e /dev/null make upgrade" "upgrade lib1 notty" \
-    "build lib1 notty" "build lib2 notty" "start app" "stop app")"
+    "build lib1 notty" "build lib2 notty" "images app" "start app" "stop app")"
 
 # With no list, nothing is swept, rather than the run completing having upgraded
 # nothing.
@@ -216,7 +218,8 @@ check rebuild-fails 2 "$(printf '%s\n' "pull app" "upgrade lib1 tty")"
 # A failed start stops the run before the stop.
 fixture
 FAKE_UP_RC=1 check start-fails 1 "$(printf '%s\n' "pull app" \
-    "upgrade lib1 tty" "build lib1 notty" "build lib2 notty" "start app")"
+    "upgrade lib1 tty" "build lib1 notty" "build lib2 notty" "images app" \
+    "start app")"
 
 if [ "$failures" -gt 0 ]; then
     exit 1

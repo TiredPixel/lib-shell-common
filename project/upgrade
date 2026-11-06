@@ -35,7 +35,9 @@ echo "$prog: rebuild" >&2
 "$dir/each-without-project" "$dir/make-if-declared" build
 
 echo "$prog: start" >&2
-"$dir/start"
+# --pull moves the images Compose does not build to what their tags name now;
+# the ones it builds are the rebuild's.
+"$dir/start" --pull
 
 echo "$prog: stop" >&2
 "$dir/stop"
