@@ -40,7 +40,7 @@ shopt -s inherit_errexit failglob
 case $* in
 "compose config --services") echo web ;;
 "compose pull --ignore-buildable") echo "images ${PWD##*/}" >>"$FAKE_LOG" ;;
-"compose up -d --wait --wait-timeout "*)
+"compose up -d --pull missing --wait --wait-timeout "*)
     echo "start ${PWD##*/}" >>"$FAKE_LOG"
     exit "${FAKE_UP_RC:-0}"
     ;;

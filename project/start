@@ -31,11 +31,13 @@ pull=${1:+1}
 # with Compose 5.6.1, checked 2026-11; Compose's up reference does not say).
 # Override the bound with DC_WAIT_TIMEOUT.
 #
-# up pulls nothing it already has, so a start runs what make build has just
-# built: with --pull always, Compose pulls even an image it builds, replacing
-# the build with whatever a registry holds under its tag (observed with Compose
-# 5.7.0, checked 2026-11). --pull, which only project/upgrade passes, first
-# pulls each image Compose cannot build, --ignore-buildable leaving the rest.
+# up pulls only images missing here, so a start runs what make build has just
+# built: Compose pulls even an image it builds under --pull always, or under a
+# service's own pull_policy: always unless --pull overrides it, replacing the
+# build with whatever a registry holds under its tag; --pull never would fail on
+# an image nothing has pulled yet (observed with Compose 5.7.0, checked
+# 2026-11). --pull, which only project/upgrade passes, first pulls each image
+# Compose cannot build, --ignore-buildable leaving the rest.
 #
 # The string is for sh, which expands it in each project, $1 set where --pull
 # was given.
@@ -50,7 +52,8 @@ pull=${1:+1}
     services=$(docker compose config --services)
     test -n "$services" || exit 0
     test -z "$1" || docker compose pull --ignore-buildable
-    docker compose up -d --wait --wait-timeout "${DC_WAIT_TIMEOUT:-300}"' \
+    docker compose up -d --pull missing --wait \
+        --wait-timeout "${DC_WAIT_TIMEOUT:-300}"' \
     sh "$pull"
 
 docker ps

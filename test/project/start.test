@@ -41,7 +41,7 @@ case $* in
     [ ! -f fake-services ] || cat fake-services
     ;;
 "compose pull --ignore-buildable") exit "${FAKE_PULL_RC:-0}" ;;
-"compose up -d --wait --wait-timeout "*)
+"compose up -d --pull missing --wait --wait-timeout "*)
     exit "${FAKE_UP_RC:-0}"
     ;;
 ps) ;;
@@ -105,14 +105,14 @@ check() {
 # Project $1 asked for its services and, with timeout $2, brought up.
 up() {
     printf '%s\n' "$1 compose config --services" \
-        "$1 compose up -d --wait --wait-timeout $2"
+        "$1 compose up -d --pull missing --wait --wait-timeout $2"
 }
 
 # As up, with the images compose does not build pulled first.
 pulled_up() {
     printf '%s\n' "$1 compose config --services" \
         "$1 compose pull --ignore-buildable" \
-        "$1 compose up -d --wait --wait-timeout $2"
+        "$1 compose up -d --pull missing --wait --wait-timeout $2"
 }
 
 # What the sweep writes to stderr as it enters lib, and then app.

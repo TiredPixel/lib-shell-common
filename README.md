@@ -11,7 +11,7 @@ The scripts also run these, which a repository needs wherever it runs them:
 - `docker/`: git, and the docker CLI with BuildKit and Compose v2; `docker/upgrade` also runs `curl`, `sha256sum` and `timeout`, and `lint/dockerfile-locks`; for a `# TRACK LOCK` line or an exec-form `RUN` it also runs `jq`, and for a `# TRACK LOCK` line a container of the image the lock resolves in, with network
 - `github/`: git
 - `lint/`: ShellCheck and `file` for `lint/shell`; mikefarah's `yq` and `diff` for `lint/yaml-keys`; `jq` for `lint/dockerfile-locks` where a `RUN` is in exec form
-- `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--wait` and `--wait-timeout`, and whose `pull` takes `--ignore-buildable`, for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-list-origin`, which `project/tag-create` runs
+- `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--pull`, `--wait` and `--wait-timeout`, and whose `pull` takes `--ignore-buildable`, for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-list-origin`, which `project/tag-create` runs
 - `ansible/`: ansible-lint, and `jq` for `ansible/inventory-ssh-known-hosts`
 - `terraform/`: Terraform
 
