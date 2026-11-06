@@ -57,6 +57,12 @@ The repository's `.gitignore` names `/tmp/`, where `upgrade-pre` writes the reco
 
 `docker/upgrade` takes the `Dockerfile` to re-pin, `Dockerfile` by default, then the GitHub Actions workflows to re-pin with it; only workflows named are touched, so a repository with none names only the `Dockerfile`.
 
+A repository whose `Dockerfile` is not its own to re-pin, such as one linking `Dockerfile` and `Dockerfile.lock` to a submodule's, names its workflows after `--workflows` instead, and no `Dockerfile` is read, linted or checked against git:
+
+```make
+	lib/shell-common/docker/upgrade --record tmp/upgrade.record --workflows .github/workflows/*.yml
+```
+
 A named workflow names the tag each action follows on a comment line at its top, as in `# TRACK USES actions/checkout@v7`, and every `uses:` of that action in the file, whatever it is pinned to, moves to the commit the tag names now. A `uses:` that no `TRACK USES` line covers is left alone, as is any other line that names no covered action. A covered `uses:` with a comment at its end, or a version comment such as `# v7.0.1` above it, fails the run, since the `TRACK USES` line already says what it follows.
 
 `docker/upgrade` never writes a live workflow: each one that moves is proposed as `.github/workflows.new/<name>`, to be approved with `make workflows-approve` once the upgrade is committed (*Approving workflows*), and the run is refused while a proposal for a named workflow is still pending.
