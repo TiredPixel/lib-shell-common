@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+#
+# Fast-forwards the repository, then moves every submodule, recursively, to the
+# head of its origin's default branch: an upgrade's first step, which
+# project/upgrade runs. project/pull brings the tree in line with origin without
+# moving any submodule past the commit recorded for it.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 

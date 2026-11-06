@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+#
+# Tests project/pull against real repositories in a scratch dir: a parent, app,
+# whose submodule lib has a submodule of its own, deep, each with a bare remote
+# and an upstream clone that commits to it. Every case builds its fixture afresh
+# and runs project/pull in app.
+#
+# Run: test/project/pull.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+pull=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/pull
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+# Nothing from the caller's configuration reaches the fixtures. File URLs are
+# refused to submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+failures=0
+n=0
+
+# Creates bare remote $w/$1.git and $w/$1.up, a clone holding one commit.
+mkrepo() {
+    git init -q --bare "$w/$1.git"
+    git init -q "$w/$1.up"
+    git -C "$w/$1.up" commit -q --allow-empty -m init
+    git -C "$w/$1.up" remote add origin "$w/$1.git"
+    git -C "$w/$1.up" push -q -u origin main
+}
+
+# Makes an empty commit, message $2, in $w/$1.up and pushes it.
+upcommit() {
+    git -C "$w/$1.up" commit -q --allow-empty -m "$2"
+    git -C "$w/$1.up" push -q
+}
+
+# Adds bare remote $w/$2.git to $w/$1.up as submodule $2 and pushes it.
+upadd() {
+    git -C "$w/$1.up" submodule add -q "$w/$2.git" "$2"
+    git -C "$w/$1.up" commit -q -m "add $2"
+    git -C "$w/$1.up" push -q
+}
+
+# Records in $w/$1.up its submodule $2 at the head of $2's remote, and pushes.
+uprecord() {
+    git -C "$w/$1.up/$2" pull -q --ff-only
+    git -C "$w/$1.up" commit -q -am "record $2"
+    git -C "$w/$1.up" push -q
+}
+
+# Moves bare remote $w/$2.git to $w/$2-moved.git, points $w/$2.up at it, and
+# records the new URL in $w/$1.up's .gitmodules.
+upmove() {
+    mv -- "$w/$2.git" "$w/$2-moved.git"
+    git -C "$w/$2.up" remote set-url origin "$w/$2-moved.git"
+    git -C "$w/$1.up/$2" remote set-url origin "$w/$2-moved.git"
+    git -C "$w/$1.up" config -f .gitmodules "submodule.$2.url" \
+        "$w/$2-moved.git"
+    git -C "$w/$1.up" commit -q -am "move $2"
+    git -C "$w/$1.up" push -q
+}
+
+# A fresh fixture in $w, with app cloned to $w/app and every submodule
+# initialised.
+fixture() {
+    n=$((n + 1))
+    w=$work/$n
+    mkdir "$w"
+    mkrepo deep
+    mkrepo lib
+    upadd lib deep
+    mkrepo app
+    upadd app lib
+    git clone -q --recurse-submodules "$w/app.git" "$w/app"
+}
+
+# Whether $1 is the top of a repository: git would otherwise answer the
+# questions below from the repository above it.
+is_repo() {
+    local top
+    top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || top=
+    [[ -n $top && $top -ef $1 ]]
+}
+
+# The commit $1 has checked out, or "no repository".
+head_of() {
+    if is_repo "$1"; then
+        git -C "$1" rev-parse HEAD
+    else
+        echo "no repository"
+    fi
+}
+
+# The commit repository $1 records for its submodule $2.
+recorded() {
+    git -C "$1" rev-parse "HEAD:$2"
+}
+
+# project/pull's stdout and stderr, $w shown as W so a report reads the same
+# from run to run.
+output() {
+    local out err
+    out=$(<"$w/out")
+    err=$(<"$w/err")
+    echo "stdout: ${out//"$w"/W}"
+    echo "stderr: ${err//"$w"/W}"
+}
+
+# Runs project/pull in app for case $1, keeping its status in rc, its stdout in
+# $w/out and its stderr in $w/err.
+run() {
+    rc=0
+    (cd "$w/app" && "$pull") >"$w/out" 2>"$w/err" || rc=$?
+}
+
+# Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
+expect() {
+    if [ "$3" != "$4" ]; then
+        fail "$1" "$2 is $3, not $4: $(output)"
+    fi
+}
+
+# Records a failure of case $1 unless project/pull failed.
+expect_failure() {
+    if [ "$rc" -eq 0 ]; then
+        fail "$1" "exit 0, not a failure: $(output)"
+    fi
+}
+
+# Records a failure of case $1 unless lib and deep are each on the commit its
+# parent records.
+expect_recorded() {
+    expect "$1" "lib's commit" "$(head_of "$w/app/lib")" \
+        "$(recorded "$w/app" lib)"
+    expect "$1" "deep's commit" "$(head_of "$w/app/lib/deep")" \
+        "$(recorded "$w/app/lib" deep)"
+}
+
+# app follows its upstream, and each submodule the commit recorded for it
+# rather than its remote's head: lib's commit of its own is recorded by app,
+# deep's by nobody.
+fixture
+upcommit lib lib2
+uprecord app lib
+upcommit deep deep2
+run recorded
+expect recorded status "$rc" 0
+expect recorded "app's commit" "$(head_of "$w/app")" \
+    "$(git -C "$w/app.git" rev-parse main)"
+expect recorded "lib's commit" "$(head_of "$w/app/lib")" \
+    "$(git -C "$w/lib.git" rev-parse main)"
+expect recorded "deep's commit" "$(head_of "$w/app/lib/deep")" \
+    "$(git -C "$w/deep.git" rev-parse main~)"
+expect_recorded recorded
+
+# A submodule ahead of the commit recorded for it returns to that commit, its
+# own commits kept on its branch.
+fixture
+git -C "$w/app/lib" checkout -q main
+git -C "$w/app/lib" commit -q --allow-empty -m local
+own=$(head_of "$w/app/lib")
+run ahead
+expect ahead status "$rc" 0
+expect_recorded ahead
+expect ahead "lib's main" "$(git -C "$w/app/lib" rev-parse main)" "$own"
+
+# A submodule added upstream, to the parent or inside a submodule, is
+# initialised at the commit recorded for it.
+fixture
+mkrepo extra
+upadd app extra
+mkrepo more
+upadd lib more
+uprecord app lib
+run added
+expect added status "$rc" 0
+expect_recorded added
+expect added "extra's commit" "$(head_of "$w/app/extra")" \
+    "$(recorded "$w/app" extra)"
+expect added "more's commit" "$(head_of "$w/app/lib/more")" \
+    "$(recorded "$w/app/lib" more)"
+
+# A URL moved in the parent's .gitmodules, or in a submodule's, reaches its
+# configuration, and the commit recorded is fetched from it: the old one is
+# gone.
+fixture
+upmove app lib
+upcommit lib lib2
+uprecord app lib
+upmove lib deep
+upcommit deep deep2
+uprecord lib deep
+uprecord app lib
+run moved
+expect moved status "$rc" 0
+expect_recorded moved
+expect moved "app's lib URL" "$(git -C "$w/app" config submodule.lib.url)" \
+    "$w/lib-moved.git"
+expect moved "lib's remote" "$(git -C "$w/app/lib" remote get-url origin)" \
+    "$w/lib-moved.git"
+expect moved "deep's remote" \
+    "$(git -C "$w/app/lib/deep" remote get-url origin)" "$w/deep-moved.git"
+expect moved "deep's commit" "$(head_of "$w/app/lib/deep")" \
+    "$(git -C "$w/deep-moved.git" rev-parse main)"
+
+# An update of none, set in .gitmodules, is overridden: honoured, it would leave
+# a submodule added upstream empty.
+fixture
+mkrepo extra
+git -C "$w/app.up" submodule add -q "$w/extra.git" extra
+git -C "$w/app.up" config -f .gitmodules submodule.extra.update none
+git -C "$w/app.up" add .gitmodules
+git -C "$w/app.up" commit -q -m "add extra"
+git -C "$w/app.up" push -q
+run update-none
+expect update-none status "$rc" 0
+expect update-none "extra's commit" "$(head_of "$w/app/extra")" \
+    "$(recorded "$w/app" extra)"
+
+# Uncommitted work in a submodule that the checkout would overwrite stops it,
+# and the work stays.
+fixture
+echo upstream >"$w/lib.up/file"
+git -C "$w/lib.up" add file
+git -C "$w/lib.up" commit -q -m file
+git -C "$w/lib.up" push -q
+uprecord app lib
+echo local >"$w/app/lib/file"
+run dirty
+expect_failure dirty
+expect dirty "lib's file" "$(<"$w/app/lib/file")" local
+
+# A parent branch with no upstream, or one diverged from it, fails before any
+# submodule moves.
+for parent in no-upstream diverged; do
+    fixture
+    case $parent in
+    no-upstream) git -C "$w/app" checkout -q -b local ;;
+    diverged)
+        git -C "$w/app" commit -q --allow-empty -m local
+        upcommit app app2
+        ;;
+    esac
+    upcommit lib lib2
+    uprecord app lib
+    before=$(head_of "$w/app/lib")
+    run "$parent"
+    expect_failure "$parent"
+    expect "$parent" "lib's commit" "$(head_of "$w/app/lib")" "$before"
+done
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

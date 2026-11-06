@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# Brings the repository in line with its origin and moves no lock: fast-forwards
+# it to its upstream, then checks out every submodule, recursively, at the
+# commit its parent records, initialising any added upstream. Taking newer
+# commits into a submodule is an upgrade's work -- project/upgrade-pull's.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+# --ff-only whatever the caller's pull.rebase or pull.ff: a diverged branch
+# stops here, where a merge or a rebase would succeed, unseen.
+git pull --ff-only --no-recurse-submodules
+
+# A level at a time, each syncing its URLs before it updates, since a submodule
+# whose URL moved in the .gitmodules just checked out would otherwise fetch from
+# the old one; foreach runs the command in a submodule before it lists that
+# submodule's own. --checkout overrides a submodule.<name>.update of rebase,
+# merge or none, which would otherwise rebase or merge onto the recorded commit,
+# or leave the submodule empty. A submodule whose uncommitted work the checkout
+# would overwrite stops it.
+git submodule sync
+git submodule update --init --checkout
+git submodule foreach --recursive \
+    'git submodule sync && git submodule update --init --checkout'
