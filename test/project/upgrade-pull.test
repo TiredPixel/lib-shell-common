@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
-# Tests project/pull against real repositories in a scratch dir: a parent, app,
-# whose submodule lib has a submodule of its own, deep, each with a bare remote
-# and an upstream clone that commits to it. lib's default branch holds a slash
-# and deep's is not the parent's, so the sweep is seen following each one's own.
-# Every case builds its fixture afresh and runs project/pull in app.
+# Tests project/upgrade-pull against real repositories in a scratch dir: a
+# parent, app, whose submodule lib has a submodule of its own, deep, each with a
+# bare remote and an upstream clone that commits to it. lib's default branch
+# holds a slash and deep's is not the parent's, so the sweep is seen following
+# each one's own. Every case builds its fixture afresh and runs
+# project/upgrade-pull in app.
 #
-# Run: test/project/pull.test. Exits 1 naming each case that failed.
+# Run: test/project/upgrade-pull.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-pull=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/pull
+pull=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/upgrade-pull
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
@@ -111,8 +112,8 @@ branch_of() {
     fi
 }
 
-# project/pull's stdout and stderr, $w shown as W so a report reads the same
-# from run to run.
+# project/upgrade-pull's stdout and stderr, $w shown as W so a report reads the
+# same from run to run.
 output() {
     local out err
     out=$(<"$w/out")
@@ -121,11 +122,11 @@ output() {
     echo "stderr: ${err//"$w"/W}"
 }
 
-# Runs project/pull in app for case $1, keeping its status in rc, its stdout in
-# $w/out and its stderr in $w/err, and records a failure for each line of either
-# that is the scripts' own rather than git's. git's text varies with its
-# version, so it is not compared; a line of their own is told by its shape: a
-# program's prefix, a shell trace, or a leading path, as a FILE: message has.
+# Runs project/upgrade-pull in app for case $1, keeping its status in rc, its
+# stdout in $w/out and its stderr in $w/err, and records a failure for each line
+# of either that is the scripts' own rather than git's. git's text varies with
+# its version, so it is not compared; a line of their own is told by its shape:
+# a program's prefix, a shell trace, or a leading path, as a FILE: message has.
 run() {
     local stream line
     rc=0
@@ -134,7 +135,7 @@ run() {
         while IFS= read -r line <&3; do
             line=${line//"$w"/W}
             case $line in
-            pull:* | submodule-init:* | +* | /* | W/*)
+            upgrade-pull:* | submodule-init:* | +* | /* | W/*)
                 fail "$1" "std$stream has a line of its own: $line"
                 ;;
             esac
@@ -149,7 +150,7 @@ expect() {
     fi
 }
 
-# Records a failure of case $1 unless project/pull failed.
+# Records a failure of case $1 unless project/upgrade-pull failed.
 expect_failure() {
     if [ "$rc" -eq 0 ]; then
         fail "$1" "exit 0, not a failure: $(output)"

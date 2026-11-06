@@ -413,10 +413,10 @@ lib/shell-common/project/each git status --short
 lib/shell-common/project/submodule-init
 ```
 
-`project/pull` fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged stops it.
+`project/upgrade-pull` fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged stops it.
 
 ```sh
-lib/shell-common/project/pull
+lib/shell-common/project/upgrade-pull
 ```
 
 `project/start` brings up the Compose services of the repository and of each listed project that has a Compose file and a service to start, waiting for each to run or turn healthy, and `project/stop` stops them. A Compose file Compose cannot read stops the sweep. `DC_WAIT_TIMEOUT` sets, in seconds, how long `project/start` waits on each project; its default is set in `project/start`.
@@ -425,7 +425,7 @@ lib/shell-common/project/pull
 DC_WAIT_TIMEOUT=600 lib/shell-common/project/start
 ```
 
-`project/build` builds the commits the repository records, moving no submodule: it runs `make build` in each listed project that declares a `build` target, then starts and stops the services. A listed project not checked out stops it. `project/upgrade` pulls first, as `project/pull` does, then runs `make upgrade` before `make build`, running make under `script` so the tools it drives see a terminal, and starts and stops the services; only it pulls. A project whose `Makefile` lacks the target is passed over; any other make failure, or a project with no `Makefile`, stops the sweep. Both must be called from the top level, where they read `.projects`, and refuse to run without it.
+`project/build` builds the commits the repository records, moving no submodule: it runs `make build` in each listed project that declares a `build` target, then starts and stops the services. A listed project not checked out stops it. `project/upgrade` pulls first, as `project/upgrade-pull` does, then runs `make upgrade` before `make build`, running make under `script` so the tools it drives see a terminal, and starts and stops the services; only it pulls. A project whose `Makefile` lacks the target is passed over; any other make failure, or a project with no `Makefile`, stops the sweep. Both must be called from the top level, where they read `.projects`, and refuse to run without it.
 
 ```sh
 lib/shell-common/project/upgrade

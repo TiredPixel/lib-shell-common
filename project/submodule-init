@@ -3,8 +3,8 @@
 # Brings this repository's own submodules, not theirs, in line with its
 # .gitmodules: syncs the URL of each initialised submodule into .git/config and
 # each checked-out submodule's remote, and initialises and checks out, at the
-# commit recorded here, each submodule not yet checked out. project/pull runs it
-# at every level of its sweep.
+# commit recorded here, each submodule not yet checked out. project/upgrade-pull
+# runs it at every level of its sweep.
 #
 # A submodule already checked out is left where it is. Updating it too would
 # check out the recorded commit over whatever it holds, and one ahead of that

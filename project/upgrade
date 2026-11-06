@@ -16,7 +16,7 @@ if [ ! -f "$f_projects" ]; then
 fi
 
 echo "$prog: pull" >&2
-"$dir/pull"
+"$dir/upgrade-pull"
 
 echo "$prog: upgrade" >&2
 # make runs under `script` so the tools it drives still see a tty; -e so the
