@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
 # Usage: docker/upgrade [--record FILE] [DOCKERFILE [WORKFLOW...]]
+#        docker/upgrade [--record FILE] --workflows WORKFLOW...
 #
 # Re-pin a Dockerfile (default ./Dockerfile), and each GitHub Actions workflow
 # named after it, to what its pins name today, so an upgrade moves everything
-# forward and the tests that follow it catch what broke. In the Dockerfile,
+# forward and the tests that follow it catch what broke. With --workflows, only
+# the workflows named are re-pinned and no Dockerfile is read, linted or
+# written, for a repository whose Dockerfile is not its own to re-pin, such as
+# a link to a submodule's. In the Dockerfile,
 # three kinds of comment line, read wherever they fall in the file, though kept
 # at the top by convention:
 #
@@ -161,21 +165,30 @@
 # record that is not empty, or where the Dockerfile, followed through any
 # symbolic link, or its BASENAME.lock directory differs from what git has
 # committed, or where the Dockerfile is a symbolic link into another repository,
-# such as a submodule, where the commit cannot add it.
+# such as a submodule, where the commit cannot add it; with --workflows, only
+# the earlier record is checked.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+usage() {
+    echo "Usage: ${0##*/} [--record FILE] [DOCKERFILE [WORKFLOW...]]" >&2
+    echo "       ${0##*/} [--record FILE] --workflows WORKFLOW..." >&2
+    exit 2
+}
+
 record=""
 if [ "${1:-}" = --record ]; then
-    if [ -z "${2:-}" ]; then
-        echo "Usage: ${0##*/} [--record FILE] [DOCKERFILE [WORKFLOW...]]" >&2
-        exit 2
-    fi
+    [ -n "${2:-}" ] || usage
     record=$2
     shift 2
 fi
 
 dockerfile=${1:-Dockerfile}
+# Empty with --workflows, where no Dockerfile is read.
+if [ "$dockerfile" = --workflows ]; then
+    [ $# -ge 2 ] || usage
+    dockerfile=""
+fi
 workflows=("${@:2}")
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 locklint=${DOCKERFILE_LOCKS_LINT:-$here/../lint/dockerfile-locks}
@@ -208,13 +221,21 @@ refuse_at() {
 if ! [ -f "$locklint" ] || ! [ -x "$locklint" ]; then
     refuse "$locklint" "not an executable regular file"
 fi
-[ -e "$dockerfile" ] || die "no such file"
-[ -f "$dockerfile" ] || die "not a regular file"
+# Every file named, so none is left out where no Dockerfile is.
+inputs=()
+if [ -n "$dockerfile" ]; then
+    [ -e "$dockerfile" ] || die "no such file"
+    [ -f "$dockerfile" ] || die "not a regular file"
+    inputs+=("$dockerfile")
+fi
+inputs+=("${workflows[@]}")
 for w in "${!workflows[@]}"; do
     workflow=${workflows[$w]}
     [ -e "$workflow" ] || refuse "$workflow" "no such file"
     [ -f "$workflow" ] || refuse "$workflow" "not a regular file"
-    [ ! "$workflow" -ef "$dockerfile" ] || refuse "$workflow" "is named twice"
+    if [ -n "$dockerfile" ] && [ "$workflow" -ef "$dockerfile" ]; then
+        refuse "$workflow" "is named twice"
+    fi
     for other in "${workflows[@]:0:w}"; do
         [ ! "$workflow" -ef "$other" ] || refuse "$workflow" "is named twice"
     done
@@ -226,7 +247,7 @@ done
 retired=""
 retire() {
     local status=0
-    grep -Hn -i -E -e "$1" -- "$dockerfile" "${workflows[@]}" >&2 || status=$?
+    grep -Hn -i -E -e "$1" -- "${inputs[@]}" >&2 || status=$?
     case $status in
     0)
         say "$2"
@@ -258,11 +279,13 @@ for w in "${!workflows[@]}"; do
     fi
 done
 
-# A symbolic link is followed, so the link stays.
-target=$(readlink -f -- "$dockerfile")
-# Beside the Dockerfile as named, so a link into a library keeps its locks in
-# the build context of the repository holding the link.
-lockdir=$(dirname -- "$dockerfile")/$(basename -- "$dockerfile").lock
+if [ -n "$dockerfile" ]; then
+    # A symbolic link is followed, so the link stays.
+    target=$(readlink -f -- "$dockerfile")
+    # Beside the Dockerfile as named, so a link into a library keeps its locks
+    # in the build context of the repository holding the link.
+    lockdir=$(dirname -- "$dockerfile")/$(basename -- "$dockerfile").lock
+fi
 
 # The commit takes the record's paths whole, so a record still there would be
 # lost, and an edit already in the Dockerfile or its locks would be committed
@@ -272,6 +295,8 @@ if [ -n "$record" ]; then
         refuse "$record" "is an earlier upgrade's record still pending;" \
             "commit it with docker/upgrade-commit or remove it first"
     fi
+fi
+if [ -n "$record" ] && [ -n "$dockerfile" ]; then
     # The commit is made in the repository holding the Dockerfile as named,
     # where git adds no file of a submodule or another repository.
     top=$(git -C "$(dirname -- "$dockerfile")" rev-parse --show-toplevel)
@@ -298,8 +323,14 @@ source "$here/dockerfile-parse"
 # Each set by dockerfile_parse, bodies though nothing here reads it.
 # shellcheck disable=SC2034
 declare error escape lines logical ends comments bodies
-dockerfile_parse "$dockerfile" error escape lines logical ends comments \
-    bodies || die "$error"
+if [ -n "$dockerfile" ]; then
+    dockerfile_parse "$dockerfile" error escape lines logical ends comments \
+        bodies || die "$error"
+else
+    lines=()
+    logical=()
+    comments=()
+fi
 
 # Bounded, so a stalled server fails the run rather than hanging it.
 fetch() {
@@ -365,8 +396,8 @@ for i in "${!comments[@]}"; do
     esac
 done
 
-if [ ${#froms[@]} -eq 0 ] && [ ${#args[@]} -eq 0 ] &&
-    [ ${#locks[@]} -eq 0 ]; then
+if [ -n "$dockerfile" ] && [ ${#froms[@]} -eq 0 ] &&
+    [ ${#args[@]} -eq 0 ] && [ ${#locks[@]} -eq 0 ]; then
     say "$dockerfile: no # TRACK FROM, # TRACK ARG or" \
         "# TRACK LOCK line, so there is nothing to re-pin"
 fi
@@ -965,6 +996,7 @@ done
 # lint would fail. A leading - would read as an option.
 status=0
 case $dockerfile in
+"") ;;
 -*) "$locklint" "./$dockerfile" || status=$? ;;
 *) "$locklint" "$dockerfile" || status=$? ;;
 esac
@@ -1436,11 +1468,13 @@ stage() {
     staged=1
 }
 
-new=("${lines[@]}")
-for i in "${!rewrite[@]}"; do
-    new[i]=${rewrite[$i]}
-done
-stage "$target" "$target"
+if [ -n "$dockerfile" ]; then
+    new=("${lines[@]}")
+    for i in "${!rewrite[@]}"; do
+        new[i]=${rewrite[$i]}
+    done
+    stage "$target" "$target"
+fi
 
 declare -A is_named=()
 for name in "${lock_names[@]}"; do

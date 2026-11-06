@@ -1450,7 +1450,8 @@ elif [ "$(cat -- "$work/recfail/tmp/sub/record" 2>&1)" != "$said" ]; then
     fail record-dirs-relative "the record is: $(cat -- "$work/recfail/tmp/sub/record" 2>&1)"
 fi
 
-usage="Usage: upgrade [--record FILE] [DOCKERFILE [WORKFLOW...]]"
+usage=$(printf '%s\n' "Usage: upgrade [--record FILE] [DOCKERFILE [WORKFLOW...]]" \
+    "       upgrade [--record FILE] --workflows WORKFLOW...")
 for empty in "" x; do
     rc=0
     if [ -n "$empty" ]; then
@@ -1462,6 +1463,68 @@ for empty in "" x; do
         fail "record-no-file${empty:+-at-end}" "exit $rc: $(<"$work/err")"
     fi
 done
+
+# --workflows names at least one workflow, with or without --record.
+for given in "--workflows" "--record $work/recdir/none --workflows"; do
+    read -r -a words <<<"$given"
+    rc=0
+    "$upgrade" "${words[@]}" >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != 2 ] || [ -s "$work/out" ] || [ "$(<"$work/err")" != "$usage" ] ||
+        [ -e "$work/recdir/none" ]; then
+        fail workflows-no-workflow "'$given': exit $rc: $(<"$work/err")"
+    fi
+done
+
+# With --workflows, only the workflows named move, and the record lists only
+# their proposals and moves. No Dockerfile is read, linted or checked against
+# git, so one beside them with changes not committed, and one that is a link
+# to nothing, as an uninitialised submodule leaves it, stay as they are.
+o=$work/only
+mkdir -p "$o/.github/workflows"
+printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" >"$o/.github/workflows/1.yml"
+printf '%s\n' "# TRACK USES o/a@v2" "  - uses: o/a@$c2" >"$o/.github/workflows/2.yml"
+printf '%s\n' "# TRACK USES o/a@v2" "  - uses: o/a@v1" >"$o/.github/workflows/3.yml"
+printf '%s\n' "$df" >"$o/Dockerfile"
+commit_all "$o"
+printf '# edit\n' >>"$o/Dockerfile"
+ln -s lib/absent/Dockerfile "$o/linked.Dockerfile"
+said=$(printf '%s\n' "$real/only/.github/workflows.new/1.yml" \
+    "$real/only/.github/workflows.new/3.yml" "" "o/r@v1 v0 -> 3333333" "o/a@v2 v1 -> 2222222")
+rc=0
+(cd "$o" && "$upgrade" --record tmp/record --workflows .github/workflows/1.yml \
+    .github/workflows/2.yml .github/workflows/3.yml) >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 0 ]; then
+    fail workflows-only "exit $rc, not 0: $(<"$work/err")"
+elif [ -s "$work/out" ]; then
+    fail workflows-only "stdout is: $(<"$work/out")"
+elif [ "$(cat -- "$o/tmp/record" 2>&1)" != "$said" ]; then
+    fail workflows-only "the record is: $(cat -- "$o/tmp/record" 2>&1)"
+elif grep -qE 'fake (lint|docker|curl):|Dockerfile' "$work/err"; then
+    fail workflows-only "a Dockerfile was read or a pin of one looked up: $(<"$work/err")"
+elif [ "$(<"$o/Dockerfile")" != "$df"$'\n# edit' ] || [ -e "$o/Dockerfile.lock" ]; then
+    fail workflows-only "the Dockerfile or its locks were written"
+elif [ -e "$o/.github/workflows.new/2.yml" ]; then
+    fail workflows-only "2.yml, which nothing moved, has a proposal"
+fi
+
+# A FREEZE line is still listed, from the workflows alone.
+printf '%s\n' "# USESFREEZE" "  - uses: o/r@v0" >"$o/.github/workflows/4.yml"
+rc=0
+"$upgrade" --workflows "$o/.github/workflows/4.yml" >"$work/out" 2>"$work/err" || rc=$?
+said=$(printf '%s\n' "$o/.github/workflows/4.yml:1:# USESFREEZE" \
+    "upgrade: FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES")
+if [ "$rc" != 1 ] || [ "$(<"$work/err")" != "$said" ] || [ -s "$work/out" ]; then
+    fail workflows-only-freeze "exit $rc: $(<"$work/err")"
+fi
+
+# A workflow named twice is refused all the same.
+rc=0
+"$upgrade" --workflows "$o/.github/workflows/4.yml" "$o/.github/workflows/../workflows/4.yml" \
+    >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 1 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "upgrade: $o/.github/workflows/../workflows/4.yml: is named twice" ]; then
+    fail workflows-only-twice "exit $rc: $(<"$work/err")"
+fi
 
 # Paths given relative to the workflow's own directory place its proposal beside
 # that workflow's .github/workflows all the same.
