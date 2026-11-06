@@ -11,7 +11,7 @@ The scripts also run these, which a repository needs wherever it runs them:
 - `docker/`: git, and the docker CLI with BuildKit and Compose v2; `docker/upgrade` also runs `curl`, `sha256sum` and `timeout`, and `lint/dockerfile-locks`; for a `# TRACK LOCK` line or an exec-form `RUN` it also runs `jq`, and for a `# TRACK LOCK` line a container of the image the lock resolves in, with network
 - `github/`: git
 - `lint/`: ShellCheck and `file` for `lint/shell`; mikefarah's `yq` and `diff` for `lint/yaml-keys`; `jq` for `lint/dockerfile-locks` where a `RUN` is in exec form
-- `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--wait` and `--wait-timeout` for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-list-origin`, which `project/tag-create` runs
+- `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--pull`, `--wait` and `--wait-timeout`, and whose `pull` takes `--ignore-buildable`, for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-list-origin`, which `project/tag-create` runs
 - `ansible/`: ansible-lint, and `jq` for `ansible/inventory-ssh-known-hosts`
 - `terraform/`: Terraform
 
@@ -413,19 +413,21 @@ lib/shell-common/project/each git status --short
 lib/shell-common/project/submodule-init
 ```
 
-`project/pull` fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged stops it.
+`project/pull` brings the repository in line with its origin and moves no submodule to a commit the repository does not record: it fast-forwards the repository, then checks out every submodule, recursively, at the commit its parent records, initialising any added upstream. A branch that has diverged, or uncommitted work in a submodule that the checkout would overwrite, stops it.
 
 ```sh
 lib/shell-common/project/pull
 ```
 
-`project/start` brings up the Compose services of the repository and of each listed project that has a Compose file and a service to start, waiting for each to run or turn healthy, and `project/stop` stops them. A Compose file Compose cannot read stops the sweep. `DC_WAIT_TIMEOUT` sets, in seconds, how long `project/start` waits on each project; its default is set in `project/start`.
+`project/upgrade-pull`, which `project/upgrade` runs, does the upgrade's moving instead: it fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged stops it.
+
+`project/start` brings up the Compose services of the repository and of each listed project that has a Compose file and a service to start, waiting for each to run or turn healthy, and `project/stop` stops them. It starts the images already present, so it runs what `make build` has just built rather than a registry's image under the same tag; with `--pull`, it first pulls each image Compose does not build. A Compose file Compose cannot read stops the sweep. `DC_WAIT_TIMEOUT` sets, in seconds, how long `project/start` waits on each project; its default is set in `project/start`.
 
 ```sh
 DC_WAIT_TIMEOUT=600 lib/shell-common/project/start
 ```
 
-`project/build` pulls, runs `make build` in each listed project that declares a `build` target, then starts and stops the services. `project/upgrade` does the same with `make upgrade` before `make build`, running make under `script` so the tools it drives see a terminal. A project whose `Makefile` lacks the target is passed over; any other make failure, or a project with no `Makefile`, stops the sweep. Both must be called from the top level, where they read `.projects`, and refuse to run without it.
+`project/build` builds the commits the repository records, moving no submodule: it runs `make build` in each listed project that declares a `build` target, then starts and stops the services. A listed project not checked out stops it. `project/upgrade` first runs `project/upgrade-pull`, then `make upgrade` before `make build`, running make under `script` so the tools it drives see a terminal, and starts the services with `project/start --pull` and stops them; only it moves submodules and pulled images to new versions. A project whose `Makefile` lacks the target is passed over; any other make failure, or a project with no `Makefile`, stops the sweep. Both must be called from the top level, where they read `.projects`, and refuse to run without it.
 
 ```sh
 lib/shell-common/project/upgrade
@@ -433,7 +435,7 @@ lib/shell-common/project/upgrade
 
 ## Releasing
 
-`project/release-create-latest TAG` releases onto `latest`, and `project/release-create-stable TAG` releases onto `testing` before fast-forwarding `stable` to the tag. Both must be called from the repository's top level, and refuse a tree carrying anything but submodule pointers; each commits the pointers the sweep moved as `Release TAG`, with a line for each pointer move as the body, as `PATH OLD..NEW (direction)`, then signs the tag with `git tag -s` in every project, so a signing key must be available before either runs.
+`project/release-create-latest TAG` releases onto `latest`, and `project/release-create-stable TAG` releases onto `testing` before fast-forwarding `stable` to the tag. Both must be called from the repository's top level, and refuse a tree carrying anything but submodule pointers. Neither pulls: each moves the release branch in every listed project to the commit checked out there, and checks it out in the repository itself, and a branch there or on origin holding a commit the release lacks stops it before anything moves, since only `project/upgrade` brings new commits in. Each commits the pointers the tree has moved as `Release TAG`, with a line for each pointer move as the body, as `PATH OLD..NEW (direction)`, then signs the tag with `git tag -s` in every project, so a signing key must be available before either runs.
 
 ```sh
 lib/shell-common/project/release-create-latest v1.2

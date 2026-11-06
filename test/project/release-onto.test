@@ -15,7 +15,8 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
 mkdir "$work/project"
-for f in release-assert each release-commit-submodules tag-create; do
+for f in release-assert release-branch-ready each release-commit-submodules \
+    tag-create; do
     cat >"$work/project/$f" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -71,8 +72,7 @@ fail() {
 calls() {
     printf '%s\n' \
         release-assert \
-        "each git checkout $1 --no-recurse-submodules" \
-        "each git pull --ff-only --no-recurse-submodules" \
+        "release-branch-ready $1" \
         "release-commit-submodules $2" \
         "tag-create $2" \
         "each git push --no-follow-tags --recurse-submodules=check origin $1:$1"
@@ -101,7 +101,7 @@ for mode in plain strict strict-if strict-or; do
     check "$mode-release" "$mode" testing 1.2 0 "$(calls testing 1.2)"
 
     # A failing step ends the release there, with its status, in every mode.
-    for n in 1 2 3 4 5 6; do
+    for n in 1 2 3 4 5; do
         FAKE_FAIL=$(calls latest 3.4 | sed -n "${n}p") \
             check "$mode-step-$n-fails" "$mode" latest 3.4 3 \
             "$(calls latest 3.4 | head -n "$n")"

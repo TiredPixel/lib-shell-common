@@ -2,14 +2,15 @@
 #
 # Tests project/build in place against real repositories in a scratch dir and
 # real GNU make: app, whose submodules lib1 and lib2 are listed in its
-# .projects, each cloned from a bare remote, with app's remote one commit ahead
-# of the clone. lib1 and app declare build, lib2 does not; a recipe logs the
-# target and the project, and fails where the project holds a file named fail. A
-# post-merge hook in app logs that the pull reached it. Only app has a compose
-# file, and docker is faked on PATH: compose config --services prints web,
-# compose up logs "start" and the project and exits FAKE_UP_RC, compose stop
-# logs "stop" and the project, ps does nothing, and any other call fails. Every
-# case builds its fixture afresh and runs project/build in app.
+# .projects, each cloned from a bare remote, with app's and lib1's remotes one
+# commit ahead of the clone, so that a pull would move both. lib1 and app
+# declare build, lib2 does not; a recipe logs the target and the project, and
+# fails where the project holds a file named fail. A post-merge hook in app logs
+# any pull that reaches it. Only app has a compose file, and docker is faked on
+# PATH: compose config --services prints web, compose up logs "start" and the
+# project and exits FAKE_UP_RC, compose stop logs "stop" and the project, ps
+# does nothing, and any other call fails. Every case builds its fixture afresh
+# and runs project/build in app.
 #
 # Run: test/project/build.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -37,7 +38,7 @@ set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 case $* in
 "compose config --services") echo web ;;
-"compose up -d --pull always --wait --wait-timeout "*)
+"compose up -d --pull missing --wait --wait-timeout "*)
     echo "start ${PWD##*/}" >>"$FAKE_LOG"
     exit "${FAKE_UP_RC:-0}"
     ;;
@@ -98,8 +99,10 @@ fixture() {
     git -C "$w/app.up" commit -q -m projects
     git -C "$w/app.up" push -q
     git clone -q --recurse-submodules "$w/app.git" "$w/app"
-    git -C "$w/app.up" commit -q --allow-empty -m ahead
-    git -C "$w/app.up" push -q
+    for sub in app lib1; do
+        git -C "$w/$sub.up" commit -q --allow-empty -m ahead
+        git -C "$w/$sub.up" push -q
+    done
     cat >"$w/app/.git/hooks/post-merge" <<'EOF'
 #!/bin/sh
 echo "pull ${PWD##*/}" >>"$FAKE_LOG"
@@ -134,13 +137,22 @@ stages() {
     sed -n 's/^build: \([a-z]*\)$/\1/p' "$w/err"
 }
 
-# Pulls, builds each listed project declaring build and not app itself, starts
-# and stops, announcing each stage on stderr and leaving stdout to the stages'
-# own output.
+# Builds each listed project declaring build and not app itself, starts and
+# stops, announcing each stage on stderr and leaving stdout to the stages' own
+# output. It builds the commits app records and moves nothing: app stays on its
+# commit and every submodule on the one app records for it.
 fixture
-check whole 0 "$(printf '%s\n' "pull app" "build lib1" "start app" "stop app")"
-if [ "$(stages)" != "$(printf '%s\n' pull build start stop completed)" ]; then
+head=$(git -C "$w/app" rev-parse HEAD)
+check whole 0 "$(printf '%s\n' "build lib1" "start app" "stop app")"
+if [ "$(stages)" != "$(printf '%s\n' build start stop completed)" ]; then
     fail whole "the stages are: $(stages)"
+fi
+if [ "$(git -C "$w/app" rev-parse HEAD)" != "$head" ]; then
+    fail whole "app moved from $head"
+fi
+moved=$(git -C "$w/app" status --porcelain --ignore-submodules=none)
+if [ -n "$moved" ]; then
+    fail whole "app's tree changed: $moved"
 fi
 if grep -q '^build: ' "$w/out"; then
     fail whole "stdout carries a stage: $(<"$w/out")"
@@ -156,29 +168,33 @@ rm -- "$w/app/.projects"
 check no-list 1 ""
 expect_err no-list "build: $w/app: no .projects, so there is nothing to sweep"
 
-# A failed pull stops the run: app has diverged from its remote.
-fixture
-git -C "$w/app" commit -q --allow-empty -m diverged
-check pull-fails 128 ""
-expect_err pull-fails "Not possible to fast-forward"
-
 # A failed build stops the run before anything starts.
 fixture
 touch "$w/app/lib1/fail"
-check build-fails 2 "pull app"
+check build-fails 2 ""
 
 # A listed project that cannot be swept stops the run before any build.
 fixture
 mkdir "$w/app/sub"
 printf 'lib1\nsub\n' >"$w/app/.projects"
-check refused 1 "pull app"
+check refused 1 ""
 expect_err refused \
     "each-without-project: sub: not a submodule of $w/app, so it cannot be swept"
 
+# A listed submodule not checked out stops the run before any build, rather
+# than being checked out.
+fixture
+git -C "$w/app" submodule deinit -q lib1
+check uninitialised 1 ""
+expect_err uninitialised \
+    "each-without-project: lib1: submodule of $w/app not checked out"
+if [ -e "$w/app/lib1/Makefile" ]; then
+    fail uninitialised "lib1 was checked out"
+fi
+
 # A failed start stops the run.
 fixture
-FAKE_UP_RC=1 check start-fails 1 \
-    "$(printf '%s\n' "pull app" "build lib1" "start app")"
+FAKE_UP_RC=1 check start-fails 1 "$(printf '%s\n' "build lib1" "start app")"
 
 if [ "$failures" -gt 0 ]; then
     exit 1

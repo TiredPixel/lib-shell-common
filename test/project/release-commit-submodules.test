@@ -261,8 +261,9 @@ rm -rf -- "$w/app/ext"
 run
 expect gone status "$rc" 1
 expect_out gone "$p: $w/app: refusing to commit, these are not pointer moves:" \
-    "$p: D ext" "$p: in a release run the sweep has already checked out and pulled \
-every project by this point; nothing is tagged or pushed either way"
+    "$p: D ext" "$p: in a release run the sweep has already checked out the \
+release branch in every project by this point; nothing is tagged or pushed \
+either way"
 expect gone "lines of output" "$(wc -l <"$w/err")" 3
 expect gone "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
 

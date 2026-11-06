@@ -1,44 +1,24 @@
 #!/usr/bin/env bash
+#
+# Brings the repository in line with its origin and moves no lock: fast-forwards
+# it to its upstream, then checks out every submodule, recursively, at the
+# commit its parent records, initialising any added upstream. Taking newer
+# commits into a submodule is an upgrade's work -- project/upgrade-pull's.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-
-# --ff-only here and below, whatever the caller's pull.rebase or pull.ff: a
-# diverged branch stops the sweep, where a merge or a rebase would succeed,
-# unseen, and a release would go on to push it.
+# --ff-only whatever the caller's pull.rebase or pull.ff: a diverged branch
+# stops here, where a merge or a rebase would succeed, unseen.
 git pull --ff-only --no-recurse-submodules
 
-# foreach visits only submodules that are checked out, so one added upstream
-# would be skipped without a word, and a URL changed in .gitmodules would never
-# reach .git/config, leaving every later fetch on the old remote. Each level
-# therefore brings its own submodules in line with the .gitmodules it has just
-# pulled -- this one here, each submodule inside the sweep below, before foreach
-# lists and descends into its children. It is not recursive, since the recursion
-# is foreach's; exported, so the sweep's sh can reach it.
-export PROJECT_SUBMODULE_INIT=$dir/submodule-init
-"$PROJECT_SUBMODULE_INIT"
-
-# One sweep, from here, over every submodule of this repository, whether
-# .projects names it or not -- and --recursive reaches theirs in turn. Run from
-# inside each project instead, the recursion would start one level too low: it
-# would bring each project's own submodules current but never the project, so a
-# stage that reports having pulled everything would leave every project on
-# whatever commit its working tree happened to sit on.
-#
-# checkout before pull, because a submodule is checked out at a recorded commit
-# and a detached HEAD has nothing to pull into. The branch comes from
-# origin/HEAD rather than a literal, so a project whose default branch is not
-# the usual one still follows its own. git submodule update --remote is not
-# used: it also defaults to the remote HEAD, but under --rebase or --merge acts
-# on whatever branch the submodule already has checked out. Only the remote's
-# name is stripped, since a branch name may itself hold a slash. The string is
-# for the sh foreach runs in each submodule, which expands it.
-# shellcheck disable=SC2016
-git submodule foreach --recursive '
-    set -eu
-    ref=$(git symbolic-ref --short refs/remotes/origin/HEAD)
-    branch=${ref#origin/}
-    git checkout --no-recurse-submodules "$branch"
-    git pull --ff-only --no-recurse-submodules
-    "$PROJECT_SUBMODULE_INIT"'
+# A level at a time, each syncing its URLs before it updates, since a submodule
+# whose URL moved in the .gitmodules just checked out would otherwise fetch from
+# the old one; foreach runs the command in a submodule before it lists that
+# submodule's own. --checkout overrides a submodule.<name>.update of rebase,
+# merge or none, which would otherwise rebase or merge onto the recorded commit,
+# or leave the submodule empty. A submodule whose uncommitted work the checkout
+# would overwrite stops it.
+git submodule sync
+git submodule update --init --checkout
+git submodule foreach --recursive \
+    'git submodule sync && git submodule update --init --checkout'

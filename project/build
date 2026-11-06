@@ -15,9 +15,6 @@ if [ ! -f "$f_projects" ]; then
     exit 1
 fi
 
-echo "$prog: pull" >&2
-"$dir/pull"
-
 echo "$prog: build" >&2
 "$dir/each-without-project" "$dir/make-if-declared" build
 
