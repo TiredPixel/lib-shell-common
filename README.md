@@ -425,7 +425,7 @@ lib/shell-common/project/pull
 DC_WAIT_TIMEOUT=600 lib/shell-common/project/start
 ```
 
-`project/build` pulls, runs `make build` in each listed project that declares a `build` target, then starts and stops the services. `project/upgrade` does the same with `make upgrade` before `make build`, running make under `script` so the tools it drives see a terminal. A project whose `Makefile` lacks the target is passed over; any other make failure, or a project with no `Makefile`, stops the sweep. Both must be called from the top level, where they read `.projects`, and refuse to run without it.
+`project/build` builds the commits the repository records, moving no submodule: it runs `make build` in each listed project that declares a `build` target, then starts and stops the services. A listed project not checked out stops it. `project/upgrade` pulls first, as `project/pull` does, then runs `make upgrade` before `make build`, running make under `script` so the tools it drives see a terminal, and starts and stops the services; only it pulls. A project whose `Makefile` lacks the target is passed over; any other make failure, or a project with no `Makefile`, stops the sweep. Both must be called from the top level, where they read `.projects`, and refuse to run without it.
 
 ```sh
 lib/shell-common/project/upgrade
