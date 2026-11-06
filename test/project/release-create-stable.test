@@ -207,6 +207,24 @@ for r in app app/lib; do
     expect testing-ahead "$r's 1.2" "$(commit_of "$w/$r" 1.2)" none
 done
 
+# A local stable behind its origin's, which the tag already holds, is
+# fast-forwarded to the tag: an earlier release reached testing and stable
+# upstream, and app took testing but not stable.
+fixture
+upgraded
+git -C "$w/app" branch -q stable "$init"
+git -C "$w/app.up" commit -q --allow-empty -m earlier
+git -C "$w/app.up" push -q origin testing testing:stable
+git -C "$w/app" pull -q --ff-only
+earlier=$(git -C "$w/app" rev-parse HEAD)
+run 1.2
+expect stale-stable status "$rc" 0
+expect stale-stable "app's 1.2 parent" "$(commit_of "$w/app" 1.2~)" "$earlier"
+for r in app app/lib; do
+    expect stale-stable "$r's origin's stable" \
+        "$(commit_of "$w/${r##*/}.git" stable)" "$(commit_of "$w/$r" 1.2)"
+done
+
 # Stable is readied as testing is: lib's origin's stable holding a commit the
 # tag lacks stops the release after testing and before stable moves anywhere.
 fixture

@@ -4,21 +4,25 @@
 # nothing in: a commit origin holds that the tree lacks was never built or
 # tested here, and bringing one in is an upgrade's work. Each listed project
 # moves $1 to its HEAD, the commit built, which the release tags; this project
-# checks out $1, which the release commits onto, leaving its submodules where
-# they are. Every project is checked before any moves, so a refusal leaves each
-# where it was.
+# checks out $1, leaving its submodules where they are, for its caller to take
+# to commit $2: by default $1 itself, which the release commits onto, and for a
+# promotion the tag it moves to, so a local $1 merely behind its origin's is
+# taken there too. Every project is checked before any moves, so a refusal
+# leaves each where it was.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 prog=${0##*/}
 
-# An empty argument is refused too, since it would name no branch.
-if [ $# -ne 1 ] || [ -z "$1" ]; then
-    echo "Usage: $prog BRANCH" >&2
+# An empty argument is refused too, since it would name no branch or commit;
+# ${2-x} is empty only where $2 is given empty.
+if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ] || [ -z "${2-x}" ]; then
+    echo "Usage: $prog BRANCH [COMMIT]" >&2
     exit 2
 fi
 branch=$1
+target=${2:-refs/heads/$branch}
 
 # Assigned on its own, so that errexit sees git fail outside a repository.
 toplevel=$(git rev-parse --show-toplevel)
@@ -53,7 +57,7 @@ check='
     done'
 
 "$dir/each-without-project" sh -c "$check" "$prog" "$branch" HEAD
-sh -c "$check" "$prog" "$branch" "refs/heads/$branch"
+sh -c "$check" "$prog" "$branch" "$target"
 
 # -B with no start point moves the branch to HEAD and keeps the working tree;
 # the check above has made that a fast-forward.

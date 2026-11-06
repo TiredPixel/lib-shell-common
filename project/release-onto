@@ -10,11 +10,11 @@
 # sets it.
 
 # Readies branch $2 in every project, through project/release-branch-ready in
-# directory $1.
+# directory $1, for this project's to reach commit $3 where one is given.
 release_checkout() {
-    local dir=$1 branch=$2
+    local dir=$1
 
-    "$dir/release-branch-ready" "$branch" || return
+    "$dir/release-branch-ready" "${@:2}" || return
 }
 
 # Pushes branch $2 in every project, through project/each in directory $1.

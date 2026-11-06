@@ -28,20 +28,23 @@ fail() {
 
 # A missing, empty or extra argument is refused with the usage, before git is
 # asked anything: the scratch dir is no repository.
-for args in no-branch empty-branch extra; do
+for args in no-branch empty-branch empty-commit extra; do
     rc=0
     case $args in
     no-branch) (cd "$work" && "$ready") >"$work/out" 2>"$work/err" || rc=$? ;;
     empty-branch)
         (cd "$work" && "$ready" "") >"$work/out" 2>"$work/err" || rc=$?
         ;;
+    empty-commit)
+        (cd "$work" && "$ready" a "") >"$work/out" 2>"$work/err" || rc=$?
+        ;;
     extra)
-        (cd "$work" && "$ready" a b) >"$work/out" 2>"$work/err" || rc=$?
+        (cd "$work" && "$ready" a b c) >"$work/out" 2>"$work/err" || rc=$?
         ;;
     esac
     if [ "$rc" != 2 ]; then
         fail "$args" "exit $rc, not 2: $(<"$work/err")"
-    elif [ "$(<"$work/err")" != "Usage: release-branch-ready BRANCH" ]; then
+    elif [ "$(<"$work/err")" != "Usage: release-branch-ready BRANCH [COMMIT]" ]; then
         fail "$args" "stderr is: $(<"$work/err")"
     elif [ -s "$work/out" ]; then
         fail "$args" "stdout is: $(<"$work/out")"
