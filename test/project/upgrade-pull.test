@@ -204,6 +204,15 @@ expect branch-new "lib's upstream" \
     "$(git -C "$w/app/lib" config branch.topic.remote || echo none)" none
 expect branch-new "deep's branch" "$(branch_of "$w/app/lib/deep")" trunk
 
+# A project .projects spells otherwise than git records it, as ./lib, is still
+# known as listed and branched.
+fixture
+topic
+printf './lib\n' >"$w/app/.projects"
+run branch-spelling
+expect branch-spelling status "$rc" 0
+expect branch-spelling "lib's branch" "$(branch_of "$w/app/lib")" topic
+
 # A listed project's branch of that name that already exists is taken as it
 # stands, holding a commit the default branch lacks.
 fixture

@@ -61,17 +61,18 @@ fi
 unset PROJECT_BRANCH
 if [ "$branch" != "$default" ] && [ -f "$f_projects" ]; then
     export PROJECT_BRANCH=$branch PROJECT_PROG=$prog
-    PROJECT_TOP=$(git rev-parse --show-toplevel)
-    export PROJECT_TOP PROJECT_LIST=$PROJECT_TOP/$f_projects
 
     # A branch of that name that exists only on origin is refused, before any
     # submodule moves: the upgrade would run its Makefile, and anyone able to
     # push a branch could have put it there. One held locally is the caller's
     # own, so it is taken as it stands, and a resumed sweep goes on where it
-    # left off. The string is for the sh each-without-project runs, which
+    # left off. Each project's directory is printed resolved, so the sweep
+    # below knows a listed project however .projects spells its path, as
+    # each-without-project does. Assigned on its own, so that errexit sees the
+    # pass fail. The string is for the sh each-without-project runs, which
     # expands it.
     # shellcheck disable=SC2016
-    "$dir/each-without-project" sh -c '
+    PROJECT_LISTED=$("$dir/each-without-project" sh -c '
         set -eu
         git fetch -q origin
         if ! git show-ref --verify -q "refs/heads/$PROJECT_BRANCH" &&
@@ -80,7 +81,9 @@ if [ "$branch" != "$default" ] && [ -f "$f_projects" ]; then
             echo "$PROJECT_PROG: $PWD: origin/$PROJECT_BRANCH exists with no" \
                 "local $PROJECT_BRANCH; check it out once reviewed" >&2
             exit 1
-        fi'
+        fi
+        pwd -P')
+    export PROJECT_LISTED
 fi
 
 # One sweep, from here, over every submodule of this repository, whether
@@ -108,8 +111,8 @@ git submodule foreach --recursive '
     set -eu
     ref=$(git symbolic-ref --short refs/remotes/origin/HEAD)
     branch=${ref#origin/}
-    if [ -n "${PROJECT_BRANCH:-}" ] && [ "$toplevel" -ef "$PROJECT_TOP" ] &&
-        grep -qxF -- "$sm_path" "$PROJECT_LIST"; then
+    if [ -n "${PROJECT_BRANCH:-}" ] &&
+        printf "%s\n" "$PROJECT_LISTED" | grep -qxF -- "$(pwd -P)"; then
         if git show-ref --verify -q "refs/heads/$PROJECT_BRANCH"; then
             git checkout --no-recurse-submodules "$PROJECT_BRANCH"
         else
