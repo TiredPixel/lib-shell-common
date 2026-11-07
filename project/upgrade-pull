@@ -2,8 +2,10 @@
 #
 # Fast-forwards the repository, then moves every submodule, recursively, to the
 # head of its origin's default branch: an upgrade's first step, which
-# project/upgrade runs. project/pull brings the tree in line with origin without
-# moving any submodule past the commit recorded for it.
+# project/upgrade runs. From a branch other than the default, each listed
+# project then checks out a branch of the same name. project/pull brings the
+# tree in line with origin without moving any submodule past the commit
+# recorded for it.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -47,3 +49,31 @@ git submodule foreach --recursive '
     git checkout --no-recurse-submodules "$branch"
     git pull --ff-only --no-recurse-submodules
     "$PROJECT_SUBMODULE_INIT"'
+
+# Run from a branch other than the repository's default, as a sweep for a pull
+# request is, each listed project takes the upgrade on a branch of the same
+# name, since its default branch may take changes only through a pull request.
+# A branch that already exists, here or on origin, is taken as it stands, so a
+# resumed sweep goes on where it left off; a new one starts from the default
+# branch just pulled, with no upstream, so a push names its own. Only listed
+# projects commit an upgrade, so no other submodule is branched. HEAD is a
+# branch here, since the pull above refuses a detached one.
+branch=$(git symbolic-ref --short HEAD)
+ref=$(git symbolic-ref --short refs/remotes/origin/HEAD)
+if [ "$branch" != "${ref#origin/}" ]; then
+    export PROJECT_BRANCH=$branch
+    # The string is for the sh each-without-project runs, which expands it.
+    # shellcheck disable=SC2016
+    "$dir/each-without-project" sh -c '
+        set -eu
+        if git show-ref --verify -q "refs/heads/$PROJECT_BRANCH"; then
+            git checkout --no-recurse-submodules "$PROJECT_BRANCH"
+        elif git show-ref --verify -q "refs/remotes/origin/$PROJECT_BRANCH"
+        then
+            git checkout --no-recurse-submodules -b "$PROJECT_BRANCH" \
+                --track "origin/$PROJECT_BRANCH"
+        else
+            git checkout --no-recurse-submodules -b "$PROJECT_BRANCH" \
+                --no-track
+        fi'
+fi

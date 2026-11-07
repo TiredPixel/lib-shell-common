@@ -179,6 +179,71 @@ expect feature "deep's branch" "$(branch_of "$w/app/lib/deep")" trunk
 expect feature "deep's commit" "$(head_of "$w/app/lib/deep")" \
     "$(git -C "$w/deep.git" rev-parse trunk)"
 
+# Puts app on branch topic, pushed with its upstream, and lists lib in its
+# .projects.
+topic() {
+    git -C "$w/app.up" checkout -q -b topic
+    git -C "$w/app.up" push -q -u origin topic
+    git -C "$w/app" fetch -q
+    git -C "$w/app" checkout -q topic
+    printf 'lib\n' >"$w/app/.projects"
+}
+
+# On a feature branch, a listed project takes a new branch of the parent's
+# name, from its default branch just pulled and with no upstream, while a
+# submodule not listed, deep, stays on its own default branch.
+fixture
+topic
+upcommit lib lib2
+run branch-new
+expect branch-new status "$rc" 0
+expect branch-new "lib's branch" "$(branch_of "$w/app/lib")" topic
+expect branch-new "lib's commit" "$(head_of "$w/app/lib")" \
+    "$(git -C "$w/lib.git" rev-parse release/x)"
+expect branch-new "lib's release/x" "$(git -C "$w/app/lib" rev-parse release/x)" \
+    "$(git -C "$w/lib.git" rev-parse release/x)"
+expect branch-new "lib's upstream" \
+    "$(git -C "$w/app/lib" config branch.topic.remote || echo none)" none
+expect branch-new "deep's branch" "$(branch_of "$w/app/lib/deep")" trunk
+
+# A listed project's branch of that name that already exists is taken as it
+# stands, holding a commit the default branch lacks.
+fixture
+topic
+git -C "$w/app/lib" checkout -q -b topic
+git -C "$w/app/lib" commit -q --allow-empty -m upgrade
+before=$(head_of "$w/app/lib")
+upcommit lib lib2
+run branch-local
+expect branch-local status "$rc" 0
+expect branch-local "lib's branch" "$(branch_of "$w/app/lib")" topic
+expect branch-local "lib's commit" "$(head_of "$w/app/lib")" "$before"
+
+# As above, for a branch of that name only on the project's origin, which is
+# checked out tracking it.
+fixture
+topic
+git -C "$w/lib.up" checkout -q -b topic
+git -C "$w/lib.up" commit -q --allow-empty -m upgrade
+git -C "$w/lib.up" push -q -u origin topic
+run branch-remote
+expect branch-remote status "$rc" 0
+expect branch-remote "lib's branch" "$(branch_of "$w/app/lib")" topic
+expect branch-remote "lib's commit" "$(head_of "$w/app/lib")" \
+    "$(git -C "$w/lib.git" rev-parse topic)"
+expect branch-remote "lib's upstream" \
+    "$(git -C "$w/app/lib" rev-parse --abbrev-ref 'topic@{u}')" origin/topic
+
+# On the default branch, a listed project stays on its own default branch.
+fixture
+printf 'lib\n' >"$w/app/.projects"
+upcommit lib lib2
+run listed-default
+expect listed-default status "$rc" 0
+expect listed-default "lib's branch" "$(branch_of "$w/app/lib")" release/x
+expect listed-default "lib's commit" "$(head_of "$w/app/lib")" \
+    "$(git -C "$w/lib.git" rev-parse release/x)"
+
 # A submodule added to the parent upstream is initialised and followed.
 fixture
 mkrepo extra trunk

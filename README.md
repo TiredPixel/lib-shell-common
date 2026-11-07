@@ -426,7 +426,7 @@ lib/shell-common/project/submodule-init
 lib/shell-common/project/pull
 ```
 
-`project/upgrade-pull`, which `project/upgrade` runs, does the upgrade's moving instead: it fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged stops it.
+`project/upgrade-pull`, which `project/upgrade` runs, does the upgrade's moving instead: it fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged, or one with no upstream, stops it. Run from a branch other than the repository's default, it then checks out a branch of the same name in each listed project, so that every project's upgrade lands on a branch ready for a pull request, as a default branch protected for pull requests needs: one that exists already, locally or on origin, is taken as it stands, and a new one starts from the default branch just pulled, with no upstream. Nothing is pushed.
 
 `project/start` brings up the Compose services of the repository and of each listed project that has a Compose file and a service to start, waiting for each to run or turn healthy, and `project/stop` stops them. It starts the images already present, so it runs what `make build` has just built rather than a registry's image under the same tag; with `--pull`, it first pulls each image Compose does not build. A Compose file Compose cannot read stops the sweep. `DC_WAIT_TIMEOUT` sets, in seconds, how long `project/start` waits on each project; its default is set in `project/start`.
 
