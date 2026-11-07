@@ -190,8 +190,8 @@ topic() {
 }
 
 # On a feature branch, a listed project takes a new branch of the parent's
-# name, from its default branch just pulled and with no upstream, while a
-# submodule not listed, deep, stays on its own default branch.
+# name, from origin's default branch and with no upstream, while a submodule not
+# listed, deep, stays on its own default branch.
 fixture
 topic
 upcommit lib lib2
@@ -199,8 +199,6 @@ run branch-new
 expect branch-new status "$rc" 0
 expect branch-new "lib's branch" "$(branch_of "$w/app/lib")" topic
 expect branch-new "lib's commit" "$(head_of "$w/app/lib")" \
-    "$(git -C "$w/lib.git" rev-parse release/x)"
-expect branch-new "lib's release/x" "$(git -C "$w/app/lib" rev-parse release/x)" \
     "$(git -C "$w/lib.git" rev-parse release/x)"
 expect branch-new "lib's upstream" \
     "$(git -C "$w/app/lib" config branch.topic.remote || echo none)" none
@@ -219,20 +217,72 @@ expect branch-local status "$rc" 0
 expect branch-local "lib's branch" "$(branch_of "$w/app/lib")" topic
 expect branch-local "lib's commit" "$(head_of "$w/app/lib")" "$before"
 
-# As above, for a branch of that name only on the project's origin, which is
-# checked out tracking it.
+# A branch of that name only on a listed project's origin is refused before any
+# submodule moves, since the upgrade would run its Makefile unreviewed. The
+# refusal is the script's own line, so the case runs it apart from run.
 fixture
 topic
 git -C "$w/lib.up" checkout -q -b topic
 git -C "$w/lib.up" commit -q --allow-empty -m upgrade
 git -C "$w/lib.up" push -q -u origin topic
-run branch-remote
-expect branch-remote status "$rc" 0
-expect branch-remote "lib's branch" "$(branch_of "$w/app/lib")" topic
-expect branch-remote "lib's commit" "$(head_of "$w/app/lib")" \
-    "$(git -C "$w/lib.git" rev-parse topic)"
-expect branch-remote "lib's upstream" \
-    "$(git -C "$w/app/lib" rev-parse --abbrev-ref 'topic@{u}')" origin/topic
+git -C "$w/lib.up" checkout -q release/x
+upcommit lib lib2
+upcommit deep deep2
+before_lib=$(head_of "$w/app/lib")
+before_deep=$(head_of "$w/app/lib/deep")
+rc=0
+(cd "$w/app" && "$pull") >"$w/out" 2>"$w/err" || rc=$?
+expect_failure branch-remote
+expect branch-remote "lib's commit" "$(head_of "$w/app/lib")" "$before_lib"
+expect branch-remote "deep's commit" "$(head_of "$w/app/lib/deep")" \
+    "$before_deep"
+if ! grep -qxF "upgrade-pull: $w/app/lib: origin/topic exists with no local \
+topic; check it out once reviewed" "$w/err"; then
+    fail branch-remote "stderr lacks the refusal: $(output)"
+fi
+
+# A listed project's existing branch whose .gitmodules adds a submodule its
+# default branch lacks has that submodule initialised and followed.
+fixture
+topic
+mkrepo more trunk
+git -C "$w/lib.up" checkout -q -b topic
+git -C "$w/lib.up" submodule add -q "$w/more.git" more
+git -C "$w/lib.up" commit -q -m "add more"
+git -C "$w/lib.up" push -q -u origin topic
+git -C "$w/app/lib" fetch -q
+git -C "$w/app/lib" branch -q --no-track topic origin/topic
+run branch-nested
+expect branch-nested status "$rc" 0
+expect branch-nested "lib's branch" "$(branch_of "$w/app/lib")" topic
+expect branch-nested "more's branch" "$(branch_of "$w/app/lib/more")" trunk
+expect branch-nested "more's commit" "$(head_of "$w/app/lib/more")" \
+    "$(git -C "$w/more.git" rev-parse trunk)"
+
+# With no origin/HEAD in the parent, as after git init and a push, the default
+# branch is asked of origin: on it, a listed project stays on its own default
+# branch, and on a feature branch takes one of that name. followRemoteHEAD is
+# never, since a fetch from git 2.48 on would otherwise recreate the ref; older
+# git ignores it.
+no_origin_head() {
+    git -C "$w/app" symbolic-ref --delete refs/remotes/origin/HEAD
+    git -C "$w/app" config remote.origin.followRemoteHEAD never
+}
+fixture
+printf 'lib\n' >"$w/app/.projects"
+no_origin_head
+upcommit lib lib2
+run no-origin-head
+expect no-origin-head status "$rc" 0
+expect no-origin-head "lib's branch" "$(branch_of "$w/app/lib")" release/x
+expect no-origin-head "lib's commit" "$(head_of "$w/app/lib")" \
+    "$(git -C "$w/lib.git" rev-parse release/x)"
+fixture
+topic
+no_origin_head
+run no-origin-head-branch
+expect no-origin-head-branch status "$rc" 0
+expect no-origin-head-branch "lib's branch" "$(branch_of "$w/app/lib")" topic
 
 # On the default branch, a listed project stays on its own default branch.
 fixture
