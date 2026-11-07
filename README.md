@@ -440,6 +440,12 @@ DC_WAIT_TIMEOUT=600 lib/shell-common/project/start
 lib/shell-common/project/upgrade
 ```
 
+Where one project's upgrade stops the sweep, that project is finished with its own `make upgrade-post` once fixed, and the sweep resumed from the next listed project, named as `.projects` lists it. The pull runs again, the upgrade stage passes over the projects listed before the one named, and the rebuild, start and stop cover every project. A name not listed stops it before anything moves.
+
+```sh
+lib/shell-common/project/upgrade --from app-c
+```
+
 ## Releasing
 
 `project/release-create-latest TAG` releases onto `latest`, and `project/release-create-stable TAG` releases onto `testing` before fast-forwarding `stable` to the tag. Both must be called from the repository's top level, and refuse a tree carrying anything but submodule pointers. Neither pulls: each moves the release branch in every listed project to the commit checked out there, and checks it out in the repository itself, and a branch there or on origin holding a commit the release lacks stops it before anything moves, since only `project/upgrade` brings new commits in. Each commits the pointers the tree has moved as `Release TAG`, with a line for each pointer move as the body, as `PATH OLD..NEW (direction)`, then signs the tag with `git tag -s` in every project, so a signing key must be available before either runs.
