@@ -36,12 +36,13 @@ lint:
 
 ## Upgrading the library
 
-A repository's `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile` and workflows, and commits the result in an `upgrade-post` target once its build and tests pass. The first two lines of `upgrade-pre` make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
+A repository's `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile` and workflows, and commits the result in an `upgrade-post` target once its build and tests pass. The first two lines of `upgrade-pre` make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead. The third refuses a workflow proposal still pending (*Approving workflows*) before the submodule moves: `docker/upgrade` refuses one too, but only once the submodule has moved, which would leave the move uncommitted beside the proposal.
 
 ```make
 upgrade-pre:
 	git submodule sync lib/shell-common
 	git submodule update --init --checkout lib/shell-common
+	lib/shell-common/github/workflows-pending
 	cd lib/shell-common && git checkout latest && git pull --ff-only
 	lib/shell-common/docker/upgrade --record tmp/upgrade.record Dockerfile .github/workflows/*.yml
 upgrade:
@@ -468,7 +469,7 @@ lib/shell-common/project/submodule-init
 lib/shell-common/project/pull
 ```
 
-`project/upgrade-pull`, which `project/upgrade` runs, does the upgrade's moving instead: it fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged stops it.
+`project/upgrade-pull`, which `project/upgrade` runs, does the upgrade's moving instead: it fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch that has diverged, or one with no upstream, stops it. Run from a branch other than the repository's default, it checks out a branch of the same name in each listed project instead, so that every project's upgrade lands on a branch ready for a pull request, as a default branch protected for pull requests needs: a local one is taken as it stands, and a new one starts from origin's default branch, with no upstream. A branch of that name only on a project's origin stops it before any submodule moves, since the upgrade would run that branch's `Makefile`; it is checked out by hand once reviewed. Nothing is pushed.
 
 `project/start` brings up the Compose services of the repository and of each listed project that has a Compose file and a service to start, waiting for each to run or turn healthy, and `project/stop` stops them. It starts the images already present, so it runs what `make build` has just built rather than a registry's image under the same tag; with `--pull`, it first pulls each image Compose does not build. A Compose file Compose cannot read stops the sweep. `DC_WAIT_TIMEOUT` sets, in seconds, how long `project/start` waits on each project; its default is set in `project/start`.
 
@@ -480,6 +481,12 @@ DC_WAIT_TIMEOUT=600 lib/shell-common/project/start
 
 ```sh
 lib/shell-common/project/upgrade
+```
+
+Where one project's upgrade stops the sweep, that project is finished with its own `make upgrade-post` once fixed, and the sweep resumed from the next listed project, named as `.projects` lists it. The pull runs again, the upgrade stage passes over the projects listed before the one named, and the rebuild, start and stop cover every project. A name not listed stops it before anything moves.
+
+```sh
+lib/shell-common/project/upgrade --from app-c
 ```
 
 ## Releasing

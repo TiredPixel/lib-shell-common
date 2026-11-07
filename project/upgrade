@@ -7,11 +7,39 @@ prog=${0##*/}
 
 f_projects=.projects
 
+usage() {
+    echo "Usage: $prog [--from PROJECT]" >&2
+    exit 2
+}
+
+# --from resumes the upgrade stage at PROJECT, once the project that stopped the
+# sweep before it has been finished by hand. Every other stage covers every
+# project, since a stopped sweep never reached them.
+from=()
+case $# in
+0) ;;
+2)
+    if [ "$1" != --from ] || [ -z "$2" ]; then
+        usage
+    fi
+    from=(--from "$2")
+    ;;
+*) usage ;;
+esac
+
 # The sweep is defined by this list, so its absence is a broken checkout rather
 # than an empty one: the per-project make stages below would find no project to
 # run in, and the run would still complete having run them nowhere.
 if [ ! -f "$f_projects" ]; then
     echo "$prog: $PWD: no $f_projects, so there is nothing to sweep" >&2
+    exit 1
+fi
+
+# Checked here as well as by each-without-project, so a mistyped name stops the
+# sweep before the pull moves anything.
+if [ ${#from[@]} -gt 0 ] && ! grep -qxF -- "${from[1]}" "$f_projects"; then
+    echo "$prog: ${from[1]}: not listed in $PWD/$f_projects," \
+        "so the sweep cannot resume from it" >&2
     exit 1
 fi
 
@@ -23,7 +51,7 @@ echo "$prog: upgrade" >&2
 # status carried back out is make's own rather than script's, which is what
 # tells the sweep an upgrade failed. Which project declares the target is
 # make-if-declared's question, not this one's.
-"$dir/each-without-project" "$dir/make-if-declared" upgrade sh -c '
+"$dir/each-without-project" "${from[@]}" "$dir/make-if-declared" upgrade sh -c '
     set -eu
     if script --version >/dev/null 2>&1; then
         script -q -e -c "make upgrade" /dev/null

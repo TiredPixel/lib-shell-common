@@ -15,9 +15,23 @@ prog=${0##*/}
 
 f_projects=.projects
 
-if [ $# -eq 0 ]; then
-    echo "Usage: $prog COMMAND [ARG...]" >&2
+usage() {
+    echo "Usage: $prog [--from PROJECT] COMMAND [ARG...]" >&2
     exit 2
+}
+
+# --from resumes a sweep that stopped partway, starting at PROJECT, written as
+# .projects lists it.
+from=
+if [ "${1:-}" = --from ]; then
+    if [ $# -lt 2 ] || [ -z "$2" ]; then
+        usage
+    fi
+    from=$2
+    shift 2
+fi
+if [ $# -eq 0 ]; then
+    usage
 fi
 
 # .projects and the paths in it are relative to the top level, so the sweep is
@@ -74,6 +88,23 @@ if [ -f "$f_projects" ]; then
 
         projects+=("$project")
     done 3<"$f_projects"
+fi
+
+# Refused before any command runs, since a name missing from the list would
+# otherwise sweep nothing and report success.
+if [ -n "$from" ]; then
+    for i in "${!projects[@]}"; do
+        if [ "${projects[$i]}" = "$from" ]; then
+            projects=("${projects[@]:$i}")
+            from=
+            break
+        fi
+    done
+    if [ -n "$from" ]; then
+        echo "$prog: $from: not listed in $PWD/$f_projects," \
+            "so the sweep cannot resume from it" >&2
+        exit 1
+    fi
 fi
 
 for project in "${projects[@]}"; do

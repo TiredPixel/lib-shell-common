@@ -118,9 +118,54 @@ fixture
 rc=0
 (cd "$w/app" && "$each") >"$w/out" 2>"$w/err" || rc=$?
 expect usage 2 ""
-if [ "$(<"$w/err")" != "Usage: $p COMMAND [ARG...]" ]; then
+if [ "$(<"$w/err")" != "Usage: $p [--from PROJECT] COMMAND [ARG...]" ]; then
     fail usage "stderr is: $(<"$w/err")"
 fi
+
+# --from with no project, an empty one, or no command after it prints the usage
+# and runs nothing.
+from_usage() {
+    fixture
+    rc=0
+    (cd "$w/app" && "$each" "$@") >"$w/out" 2>"$w/err" || rc=$?
+    expect "from-usage $*" 2 ""
+}
+from_usage --from
+from_usage --from "" "$work/record"
+from_usage --from lib2
+
+# --from starts the sweep at the project named, skipping those listed before it.
+fixture
+rc=0
+(cd "$w/app" && "$each" --from lib2 "$work/record" a b) >"$w/out" \
+    2>"$w/err" || rc=$?
+expect from 0 "$w/app/lib2 a b"
+if [ "$(<"$w/err")" != "$p: lib2" ]; then
+    fail from "stderr is: $(<"$w/err")"
+fi
+
+# --from the first project sweeps them all.
+fixture
+rc=0
+(cd "$w/app" && "$each" --from lib1 "$work/record" a b) >"$w/out" \
+    2>"$w/err" || rc=$?
+expect from-first 0 "${swept//WORK/$w}"
+
+# --from a project not listed, or with no list, is refused before any command
+# runs.
+fixture
+rc=0
+(cd "$w/app" && "$each" --from lib3 "$work/record" a b) >"$w/out" \
+    2>"$w/err" || rc=$?
+expect from-unlisted 1 ""
+expect_err from-unlisted "$p: lib3: not listed in $w/app/.projects, so the \
+sweep cannot resume from it"
+fixture
+rm -- "$w/app/.projects"
+rc=0
+(cd "$w/app" && "$each" --from lib1 "$work/record" a b) >"$w/out" \
+    2>"$w/err" || rc=$?
+expect from-no-list 1 ""
 
 # From a subdirectory, the list and its paths are read from the top level.
 fixture
