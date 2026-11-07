@@ -1,0 +1,2159 @@
+#!/usr/bin/env bash
+#
+# Tests github/review-gate with gh faked on PATH, so nothing reaches GitHub. The
+# fake answers each read from a file the case writes, and logs each check run
+# written. Each case starts from pull request 7 of o/p, an open pull request on
+# main with head $head, the only open one, whose rules require review/codex/code
+# and review/codex/security beside a check of another name, with a head commit
+# committed before any comment, with no change of base, no comments, reviews or
+# check runs, and checks the gate's status, that its stdout is empty, the check
+# runs it wrote and its stderr, exactly. Comments and reviews are built from the
+# fixtures, which keep the form of Codex's summary, receipts, reviews and
+# failure comment with synthetic SHAs.
+#
+# Run: test/github/review-gate.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+gate=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../github")/review-gate
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/github/review-gate")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/api"
+cp -p -- "$fixtures/gh" "$work/bin/"
+export PATH=$work/bin:$PATH
+export FAKE_DIR=$work/api FAKE_LOG=$work/log FAKE_WRITES=$work/writes
+codex='chatgpt-codex-connector[bot]'
+# An app of Codex's login but another id, as no app can be.
+impostor='chatgpt-codex-connector[bot]#5'
+head=abcdef0123456789abcdef0123456789abcdef01
+old=fedcba9876543210fedcba9876543210fedcba98
+short=${head:0:10}
+# The timeline: the old commit, the head commit, an earlier change of base,
+# the default time of comments and of a review's start, a later start, a time
+# between, a change of base, two times after it and a review's end.
+before=1999-12-31T00:00:00Z
+pushed=2000-01-01T00:00:00Z
+earlier=2000-01-01T12:00:00Z
+posted=2000-01-02T00:00:00Z
+started=2000-01-02T12:00:00Z
+retried=2000-01-02T18:00:00Z
+changed=2000-01-03T00:00:00Z
+after=2000-01-03T06:00:00Z
+later=2000-01-03T12:00:00Z
+ended=2000-01-04T00:00:00Z
+ask_code="Comment @codex review to start one."
+ask_security="Comment @codex security review to start one."
+retry_code="Comment @codex review to try again."
+retry_security="Comment @codex security review to try again."
+# Some of the endings Codex has written after its clean code receipt's sentence.
+endings=("Already looking forward to the next diff." "Keep it up!" "Bravo."
+    ":+1:")
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Writes $2 to the answer the fake gives for $1.
+api() {
+    printf '%s\n' "$2" >"$FAKE_DIR/$1"
+}
+
+# Applies jq filter $2 to the answer the fake gives for $1.
+amend() {
+    jq -c "$2" "$FAKE_DIR/$1" >"$work/amended"
+    mv -- "$work/amended" "$FAKE_DIR/$1"
+}
+
+# A pull request on main with head $head in state $1, open by default.
+pull() {
+    jq -cn --arg head "$head" --arg state "${1:-open}" \
+        '{state: $state, head: {sha: $head}, base: {ref: "main"}}'
+}
+
+# A page of open pull requests, each argument NUMBER[:SHA[:BASE[:STATE]]], a
+# pull request into BASE, o/p by default, with head SHA, $head by default, in
+# STATE, open by default.
+open_pulls() {
+    jq -cn --arg head "$head" '
+        def given($d): if . == null or . == "" then $d else . end;
+        $ARGS.positional | map(split(":") as [$n, $sha, $base, $state]
+            | {number: ($n | tonumber), state: ($state | given("open")),
+               head: {sha: ($sha | given($head))},
+               base: {repo: {full_name: ($base | given("o/p"))}}})' --args "$@"
+}
+
+# Rules on main requiring each check named, beside a rule of another type.
+rules() {
+    jq -cn '[{type: "deletion"},
+        {type: "required_status_checks", parameters: {
+            required_status_checks: ([{context: "build"}]
+                + ($ARGS.positional | map({context: .})))}}]' --args "$@"
+}
+
+# A page of a pull request's commits, each argument SHA:DATE, a date of - giving
+# the commit no committer.
+commits() {
+    jq -cn '$ARGS.positional | map(index(":") as $i | .[$i + 1:] as $date
+        | {sha: .[:$i], commit: {committer: (if $date == "-" then null
+            else {date: $date} end)}})' --args "$@"
+}
+
+# A GraphQL page of the pull request's changes of base, each argument the time
+# of one, a time of - giving it none, and of no deleted comments.
+bases() {
+    jq -cn '{data: {repository: {pullRequest: {timelineItems: {nodes:
+        ($ARGS.positional
+         | map(if . == "-" then {} else {createdAt: .} end))},
+        deletions: {nodes: [], pageInfo: {hasNextPage: false}}}}}}' \
+        --args "$@"
+}
+
+# A GraphQL page of no comments.
+empty_page='{"data": {"repository": {"pullRequest": {"comments": {"nodes": [],
+"pageInfo": {"hasNextPage": false, "endCursor": null}}}}}}'
+# A GraphQL page of the edit history of comment 1, holding no edits.
+edits_page='{"data": {"node": {"id": "C1", "userContentEdits": {"nodes": [],
+"pageInfo": {"hasNextPage": false, "endCursor": null}}}}}'
+
+# The state between cases: the default answers, no comments, nothing logged and
+# nothing expected, summaries built as Codex's manual runs give them, and the
+# calls to gh not checked.
+reset() {
+    unset want_log secline
+    find "$FAKE_DIR" -maxdepth 1 -name 'pull-*' -delete
+    api pull "$(pull)"
+    api open "$(open_pulls 7)"
+    api rules "$(rules review/codex/code review/codex/security)"
+    api commits "$(commits "$old:$before" "$head:$pushed")"
+    api comments "$empty_page"
+    api bases "$(bases)"
+    api reviews '[]'
+    api edits "$edits_page"
+    api runs '{"total_count": 0, "check_runs": []}'
+    : >"$FAKE_LOG"
+    : >"$FAKE_WRITES"
+    id=0
+    rid=100
+    rec=""
+    trigger="Manual request"
+    layout=summary
+    findings=""
+    want_writes=""
+    want_err=""
+}
+
+# The GraphQL actor for login $1, a Bot where it ends in [bot], with the id
+# after a # where one is given, Codex's own for Codex's login, or null for -.
+actor() {
+    jq -cn --arg l "$1" 'if $l == "-" then null
+        else ($l | split("#")) as [$login, $id]
+        | if $login | endswith("[bot]") then {__typename: "Bot",
+              login: $login[:-5], databaseId: (if $id then $id | tonumber
+                  elif $login == "chatgpt-codex-connector[bot]"
+                  then 199175422 else 1 end)}
+          else {__typename: "User", login: $login} end end'
+}
+
+# Appends a comment by login $1 with body $2 to the comments, as comment $id,
+# with GraphQL id C$id, last edited by login $3 where it is not -, or by an
+# account GitHub no longer names where it is ?, posted at $4 where given, else
+# at $posted, and last edited at $5, else when posted; a body of - is null.
+comment() {
+    local by=${3:--} edited=true created=${4-$posted}
+    if [ "$by" = - ]; then
+        edited=false
+    elif [ "$by" = "?" ]; then
+        by=-
+    fi
+    id=$((id + 1))
+    amend comments "$(jq -cn --argjson id "$id" --argjson author "$(actor "$1")" \
+        --arg body "$2" --argjson editor "$(actor "$by")" \
+        --argjson edited "$edited" --arg created "$created" \
+        --arg at "${5:-$created}" '
+        ".data.repository.pullRequest.comments.nodes += [\({databaseId: $id,
+            id: "C\($id)", author: $author,
+            body: (if $body == "-" then null else $body end),
+            createdAt: $created, editor: $editor,
+            lastEditedAt: (if $edited then $at else null end)} | tojson)]"' \
+        -r)"
+}
+
+# Appends a review by login $1, as $impostor or actor gives it, with body $2 on
+# commit $3, submitted at $4, else at $ended, as review $rid; a time of - is
+# null.
+review() {
+    rid=$((rid + 1))
+    amend reviews "$(jq -cn --argjson id "$rid" --arg l "$1" --arg body "$2" \
+        --arg commit "$3" --arg at "${4:-$ended}" -r '
+        ($l | split("#")) as [$login, $uid]
+        | ". + [\({id: $id, state: "COMMENTED", commit_id: $commit,
+            submitted_at: (if $at == "-" then null else $at end),
+            body: $body, user: {login: $login,
+                id: (if $uid then $uid | tonumber
+                    elif $login == "chatgpt-codex-connector[bot]"
+                    then 199175422 else 2 end),
+                type: (if $login | endswith("[bot]") then "Bot"
+                    else "User" end)}} | tojson)]"')"
+}
+
+# A Codex review body with findings of kind $1 for commit $2, the head by
+# default.
+findings_review() {
+    local t
+    t=$(<"$fixtures/review-$1")
+    printf '%s\n' "${t//@COMMIT@/"${2:-$short}"}"
+}
+
+# A summary body with code review $1 and security review $2, each
+# STATUS[@SHA][:ANY/UNRESOLVED], on the head where no SHA is given, the flags
+# false/false for a completed code review and null/null otherwise by default;
+# - gives a review not started, its commit_sha and status null as Codex gives
+# them, and bad gives 1. Its layout is fixture $3, else $layout, its rows give
+# trigger $trigger, $findings follows the table, and line 3 is $secline where
+# set, else the codex-security-review:v1 marker mirroring the security review,
+# blank where it has not started.
+summary_body() {
+    jq -rn --rawfile t "$fixtures/${3:-$layout}" --arg c "$1" --arg s "$2" \
+        --arg head "$head" --arg trigger "$trigger" --arg findings "$findings" \
+        --arg secline "${secline-@auto@}" '
+        def put($k; $v): split($k) | join($v);
+        def entry($kind):
+            if . == "-" then {commit_sha: null, has_any_findings: null,
+                has_unresolved_findings: null, status: null}
+            elif . == "bad" then 1
+            else (split(":") + [null])[:2] as [$x, $f]
+                | ($x | split("@") + [null]) as [$st, $sha]
+                | ($f // if $st == "completed" and $kind == "code"
+                    then "false/false" else "null/null" end)
+                | split("/") | map(fromjson) as [$any, $unresolved]
+                | {commit_sha: ($sha // $head), has_any_findings: $any,
+                    has_unresolved_findings: $unresolved, status: $st}
+            end;
+        def stamp: "<relative-time datetime=\"2000-01-01T00:00:00.000000Z\">2000-01-01T00:00:00.000000Z</relative-time>";
+        def cell($kind):
+            if . == "running" then "🔄 **Running** since \(stamp)"
+            elif . == "completed" then "✅ **Completed** \(stamp)"
+            elif . == "failed" then
+                (if $kind == "code" then "❌" else "\u26a0\ufe0f" end)
+                + " **Failed** \(stamp)<br/>We couldn\u2019t complete this review. Comment `@codex \(if $kind == "code" then "review" else "security review" end)` to try again."
+            else tostring end;
+        def row($label; $kind):
+            if type == "object" and .status != null
+            then ["| \($label) | \(.status | cell($kind)) | `\(.commit_sha | tostring | .[0:7])` | \($trigger) |"]
+            else [] end;
+        ($c | entry("code")) as $ce | ($s | entry("security")) as $se
+        | (if $secline != "@auto@" then $secline
+           elif ($se | type) == "object" and $se.status != null
+           then "<!-- codex-security-review:v1 \({blockingSeverityThreshold: "P0", headSha: $se.commit_sha, mergeGateEnabled: false, pullRequestNumber: 7, repository: "o/p", status: $se.status} | tojson) -->"
+           else "" end) as $l3
+        | $t | put("@STATE@"; {code_review: $ce, security_review: $se} | tojson)
+        | put("@SECURITY@"; $l3)
+        | put("@ROWS@"; $ce | row("📝 **Code Review**"; "code")
+            + ($se | row("🔒 **Security Review**"; "security")) | join("\n"))
+        | put("@FINDINGS@"; $findings) | rtrimstr("\n")'
+}
+
+# Adds a version at $1 with text $2, edited by login $3, Codex by default, or
+# none where it is ?, before the others in the edit history, which lists the
+# newest first.
+version() {
+    local by=${3:-$codex}
+    if [ "$by" = "?" ]; then
+        by=-
+    fi
+    amend edits "$(jq -cn --arg at "$1" --arg body "$2" \
+        --argjson editor "$(actor "$by")" -r '
+        ".data.node.userContentEdits.nodes |= [\({editedAt: $at,
+            deletedAt: null, diff: $body, editor: $editor} | tojson)] + ."')"
+}
+
+# Applies jq filter $2 to version $1 of the edit history, counted from the
+# newest at 0.
+tamper() {
+    amend edits ".data.node.userContentEdits.nodes[$1] |= ($2)"
+}
+
+# Adds Codex's summary as comment $id, created at the first of the versions
+# given, each TIME,CODE,SECURITY[,LAYOUT] with CODE and SECURITY as
+# summary_body takes them, oldest first, and edited by Codex to each later one,
+# with the last's text, its edit history replacing any other; and sets rec to
+# the record a check run reading it writes before any comment is used.
+versions() {
+    local v at code sec lay body first="" last=""
+    api edits "$edits_page"
+    for v in "$@"; do
+        IFS=, read -r at code sec lay <<<"$v"
+        body=$(summary_body "$code" "$sec" "$lay")
+        if [ $# -gt 1 ]; then
+            version "$at" "$body"
+        fi
+        first=${first:-$at}
+        last=$at
+    done
+    if [ $# -gt 1 ]; then
+        comment "$codex" "$body" "$codex" "$first" "$last"
+    else
+        comment "$codex" "$body" - "$first"
+    fi
+    amend edits ".data.node.id = \"C$id\""
+    rec="summary=$id at=$last comments="
+}
+
+# A clean code receipt's body for commit $1, ending $2.
+receipt_code() {
+    local t
+    t=$(<"$fixtures/receipt-code")
+    t=${t//@ENDING@/"${2:-Keep it up!}"}
+    printf '%s\n' "${t//@COMMIT@/"$1"}"
+}
+
+# A clean security receipt's body for commit $1.
+receipt_security() {
+    local t
+    t=$(<"$fixtures/receipt-security")
+    printf '%s\n' "${t//@COMMIT@/"$1"}"
+}
+
+# Adds Codex's clean receipts of both kinds for the head, posted at $1, else at
+# $ended, as code_receipt and security_receipt.
+receipts() {
+    comment "$codex" "$(receipt_code "$short")" - "${1:-$ended}"
+    code_receipt=$id
+    comment "$codex" "$(receipt_security "$short")" - "${1:-$ended}"
+    security_receipt=$id
+}
+
+# Adds Codex's summary of reviews of both kinds started at $posted and ending
+# as $1 and $2, completed by default, as summary_body takes them.
+codex_run() {
+    versions "$posted,running,running" \
+        "$ended,${1:-completed},${2:-completed}"
+}
+
+# Adds a clean manual run: codex_run, then the receipts.
+clean_run() {
+    codex_run "$@"
+    receipts
+}
+
+# Expects check $1 to be written as action $2 (created, updated ID, or
+# unchanged) in state $3 (waiting, reviewing, shared, clean, failed, or
+# unknown-reviewer or unknown-review), with summary $4, and external_id $5,
+# $rec by default, or none for -, and named on stderr.
+want() {
+    local name=$1 action=$2 kind=$3 summary=$4 record=${5-$rec}
+    local status=completed conclusion="" title body
+    case $kind in
+    waiting) status=in_progress title="waiting for Codex" ;;
+    reviewing) status=in_progress title="Codex reviewing" ;;
+    shared) status=in_progress title="waiting on a shared head" ;;
+    clean) conclusion=success title="Codex review clean" ;;
+    failed) conclusion=failure title="Codex review failed" ;;
+    unknown-reviewer) conclusion=failure title="unknown reviewer" ;;
+    unknown-review) conclusion=failure title="unknown review" ;;
+    esac
+    body=$(jq -cnS --arg s "$status" --arg c "$conclusion" --arg t "$title" \
+        --arg m "$summary" --arg r "$record" '
+        {status: $s, output: {title: $t, summary: $m}}
+        + if $c == "" then {} else {conclusion: $c} end
+        + if $r == "-" then {} else {external_id: $r} end')
+    case $action in
+    created)
+        want_writes+="POST $(jq -cS --arg n "$name" --arg h "$head" \
+            '. + {name: $n, head_sha: $h}' <<<"$body")"$'\n'
+        ;;
+    updated*)
+        want_writes+="PATCH ${action#updated } $body"$'\n'
+        action=updated
+        ;;
+    esac
+    want_err+="review-gate: $name: ${conclusion:-$status} ($action): $summary"
+    want_err+=$'\n'
+}
+
+# Expects both Codex checks to be created in state $1, with summaries $2 for
+# code and $3 for security, and records $4 and $5, $rec by default.
+want_both() {
+    want review/codex/code created "$1" "$2" "${4-$rec}"
+    want review/codex/security created "$1" "$3" "${5-$rec}"
+}
+
+# Expects both checks to fail with summary $1.
+want_failed() {
+    want_both failed "$1" "$1"
+}
+
+# Expects both checks to fail with summary $1, each then saying what to comment
+# to try again.
+want_retry() {
+    want_both failed "$1 $retry_code" "$1 $retry_security"
+}
+
+# Expects check review/codex/$1 to be created clean, recording receipt $2, the
+# kind's from receipts by default, none for -.
+want_clean() {
+    local used=${2-}
+    if [ -z "$used" ]; then
+        used=$code_receipt
+        if [ "$1" = security ]; then
+            used=$security_receipt
+        fi
+    elif [ "$used" = - ]; then
+        used=""
+    fi
+    want "review/codex/$1" created clean \
+        "Codex's $1 review of $short completed clean." "$rec$used"
+}
+
+# Expects both checks to be created clean, each recording its receipt, or none
+# where $1 is -.
+want_clean_both() {
+    want_clean code "${1-}"
+    want_clean security "${1-}"
+}
+
+# Runs the gate as case $1 with the arguments after $2, o/p 7 review-app where
+# none are given and none where the only one is "none", and checks it exits $2,
+# prints nothing on stdout, writes want_writes, prints want_err on stderr and,
+# where want_log is set, calls gh as it says; then resets.
+check() {
+    local name=$1 status=$2 rc=0
+    shift 2
+    if [ $# -eq 0 ]; then
+        set -- o/p 7 review-app
+    elif [ $# -eq 1 ] && [ "$1" = none ]; then
+        set --
+    fi
+    "$gate" "$@" >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$FAKE_WRITES")" != "${want_writes%$'\n'}" ]; then
+        fail "$name" "writes are: $(<"$FAKE_WRITES")"$'\n'"not: $want_writes"
+    elif [ "$(<"$work/err")" != "${want_err%$'\n'}" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"$'\n'"not: $want_err"
+    elif [ -v want_log ] && [ "$(<"$FAKE_LOG")" != "$want_log" ]; then
+        fail "$name" "gh was called as: $(<"$FAKE_LOG")"
+    fi
+    reset
+}
+
+usage="Usage: review-gate OWNER/REPO NUMBER APP"
+waiting_code="Codex has made no code review of $short yet. $ask_code"
+waiting_security="Codex has made no security review of $short yet. $ask_security"
+
+# Each argument is checked before gh is called.
+reset
+want_log=""
+want_err="review-gate: expected 3 arguments, got 0"$'\n'"$usage"
+check usage-none 2 none
+want_log=""
+want_err="review-gate: expected 3 arguments, got 4"$'\n'"$usage"
+check usage-four 2 o/p 7 review-app x
+want_log=""
+want_err="review-gate: expected 3 arguments, got 2"$'\n'"$usage"
+check usage-two 2 o/p 7
+for repo in o o/p/q "o p/q" ""; do
+    want_log=""
+    want_err="review-gate: $(printf %q "$repo") is not OWNER/REPO"$'\n'"$usage"
+    check "usage-repo-$repo" 2 "$repo" 7 review-app
+done
+for number in 0 07 x -1 ""; do
+    want_log=""
+    want_err="review-gate: $(printf %q "$number") is not a pull request"
+    want_err+=" number"$'\n'"$usage"
+    check "usage-number-$number" 2 o/p "$number" review-app
+done
+for app in Review -app "a b" ""; do
+    want_log=""
+    want_err="review-gate: $(printf %q "$app") is not an app slug"$'\n'"$usage"
+    check "usage-app-$app" 2 o/p 7 "$app"
+done
+for extra in review/codex review/codex/code/x other/codex/code "review/a b/c"; do
+    want_log=""
+    want_err="review-gate: REVIEW_GATE_CHECKS: $(printf %q "${extra%% *}") is"
+    want_err+=" not review/REVIEWER/KIND"$'\n'"$usage"
+    REVIEW_GATE_CHECKS="review/codex/code $extra" check "usage-extra-$extra" 2
+done
+
+# A number naming no pull request, such as a plain issue's, fails on the pull
+# request's 404 and reads nothing further.
+api pull 404
+want_log="api repos/o/p/pulls/7"
+want_err="gh: Not Found (HTTP 404)"
+check plain-issue 1
+
+# The head and base come from the pull request as the API gives it.
+api pull "{\"head\": {\"sha\": \"$short\"}, \"base\": {\"ref\": \"main\"}}"
+want_err="review-gate: pull request #7's head is not a commit SHA"
+check head-short 1
+api pull '{"base": {"ref": "main"}}'
+want_err="review-gate: pull request #7's head is not a commit SHA"
+check head-missing 1
+api pull "{\"head\": {\"sha\": \"${head^^}\"}, \"base\": {\"ref\": \"main\"}}"
+want_err="review-gate: pull request #7's head is not a commit SHA"
+check head-upper 1
+api pull "{\"head\": {\"sha\": \"$head\"}, \"base\": {\"ref\": \"\"}}"
+want_err="review-gate: pull request #7 has no base branch"
+check base-empty 1
+api pull "{\"head\": {\"sha\": \"$head\"}}"
+want_err="review-gate: pull request #7 has no base branch"
+check base-missing 1
+for state in '""' '"merged"' '"OPEN"' null 1; do
+    amend pull ".state = $state"
+    want_log="api repos/o/p/pulls/7"
+    want_err="review-gate: pull request #7 is neither open nor closed"
+    check "state-$state" 1
+done
+
+# The event's payload, naming another head, plays no part: the checks, and the
+# reads of check runs, go to the head the API gives, and the rules read are the
+# base branch's. With no summary, no edit history is read.
+printf '{"pull_request": {"head": {"sha": "%s"}}}\n' "$old" >"$work/event"
+amend pull '.base.ref = "next"'
+want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
+api --paginate repos/o/p/rules/branches/next
+api --paginate repos/o/p/pulls/7/commits\\?per_page=100
+api graphql --paginate -f owner=o -f name=p -F number=7 -f query=...
+api graphql -f owner=o -f name=p -F number=7 -f query=...
+api --paginate repos/o/p/pulls/7/reviews\\?per_page=100
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/code
+api -X POST repos/o/p/check-runs --input -
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/security
+api -X POST repos/o/p/check-runs --input -"
+want_both waiting "$waiting_code" "$waiting_security"
+GITHUB_EVENT_PATH=$work/event GITHUB_SHA=$old check head-from-api 0
+
+# Which checks are posted: those the rules require, across pages, and those
+# REVIEW_GATE_CHECKS names, each once, in order.
+api rules '[{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}]}}]'
+want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+=" names none"
+check none-required 0
+api rules '[]'
+want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+=" names none"
+REVIEW_GATE_CHECKS=" " check no-rules 0
+api rules '[]'
+want review/codex/code created waiting "$waiting_code"
+REVIEW_GATE_CHECKS=review/codex/code check extra-only 0
+api rules "$(rules review/codex/security)"$'\n'"$(rules review/codex/code)"
+want_both waiting "$waiting_code" "$waiting_security"
+check rules-pages 0
+api rules "$(rules review/codex/security)"
+want_both waiting "$waiting_code" "$waiting_security"
+REVIEW_GATE_CHECKS=" review/codex/security  review/codex/code " \
+    check extra-and-required 0
+api rules "$(rules review/codex)"
+want_err="review-gate: main requires review/codex, which is not"
+want_err+=" review/REVIEWER/KIND"
+check required-malformed 1
+
+# A check naming a reviewer or kind the registry lacks fails, recording
+# nothing.
+api rules "$(rules review/claude/code review/codex/style)"
+want review/claude/code created unknown-reviewer \
+    "review-gate knows no reviewer claude." -
+want review/codex/style created unknown-review \
+    "review-gate knows no style review by codex." -
+check unknown 0
+
+# No review yet, with only comments that are not Codex's summary, one of them
+# with no body.
+comment someone "@codex review"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" -
+want_both waiting "$waiting_code" "$waiting_security"
+check no-review 0
+
+# Clean on the head, in either layout of the summary, or both across its
+# history, each check recording the summary, its last edit and its receipt.
+clean_run
+want_clean_both
+check clean 0
+layout="summary-heading"
+clean_run
+want_clean_both
+check clean-heading 0
+versions "$posted,running,running,summary-heading" \
+    "$started,completed,running,summary" \
+    "$ended,completed,completed,summary-heading"
+receipts
+want_clean_both
+check clean-mixed-layouts 0
+for ending in "${endings[@]}"; do
+    codex_run
+    comment "$codex" "$(receipt_code "$short" "$ending")" - "$ended"
+    code_receipt=$id
+    comment "$codex" "$(receipt_security "$short")" - "$ended"
+    security_receipt=$id
+    want_clean_both
+    check "clean-$ending" 0
+done
+# Security false/false, as Codex gave it before November, is clean too.
+clean_run completed "completed:false/false"
+want_clean_both
+check clean-security-false 0
+# The security findings section lists earlier findings, some never marked
+# resolved; the head's own result decides.
+findings="### Security findings
+
+#### Advisory findings (2)
+
+- 🟡 [Old finding](https://example.com/o/p/pull/7#discussion_r1) · **Medium** · **Resolved**
+- 🟡 [Older finding](https://example.com/o/p/pull/7#discussion_r2) · **Medium**"
+clean_run
+want_clean_both
+check clean-findings-section 0
+
+# A run Codex started without a request, PR opened or New commits, posts no
+# receipt when clean, and the summary decides; a receipt beside it is not used.
+for t in "PR opened" "New commits"; do
+    trigger=$t
+    codex_run
+    want_clean_both -
+    check "automatic-$t" 0
+    trigger=$t
+    clean_run
+    want_clean_both -
+    check "automatic-receipts-$t" 0
+done
+
+# A manual run needs a clean receipt of the kind posted since it started.
+codex_run
+want_both failed \
+    "Codex's code review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_code" \
+    "Codex's security review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_security"
+check manual-no-receipt 0
+codex_run
+receipts "$earlier"
+want_both failed \
+    "Codex's code review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_code" \
+    "Codex's security review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_security"
+check manual-receipt-before-start 0
+codex_run
+comment "$codex" "$(receipt_security "$short")" - "$ended"
+security_receipt=$id
+want review/codex/code created failed \
+    "Codex's code review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_code"
+want_clean security
+check manual-security-receipt-only 0
+# Codex posts a receipt for each manual request, even of a head already
+# reviewed: each since the start is recorded.
+codex_run
+receipts
+first_code=$code_receipt first_security=$security_receipt
+receipts
+want_clean code "$first_code,$code_receipt"
+want_clean security "$first_security,$security_receipt"
+check manual-two-receipts 0
+
+# A trigger the gate does not recognise, a row naming another commit, or a
+# missing or repeated row, needs the receipt a manual run does.
+unknown_code="Codex's summary gives no trigger the gate recognises for its code review of $short, and no clean receipt confirms it. $retry_code"
+unknown_security="Codex's summary gives no trigger the gate recognises for its security review of $short, and no clean receipt confirms it. $retry_security"
+for t in "Mark a draft as ready" "" "manual request"; do
+    trigger=$t
+    codex_run
+    want_both failed "$unknown_code" "$unknown_security"
+    check "trigger-unknown-$t" 0
+    trigger=$t
+    clean_run
+    want_clean_both
+    check "trigger-unknown-receipts-$t" 0
+done
+# shellcheck disable=SC2016 # jq's own backticks, not command substitutions
+for filter in 'gsub("`abcdef0`"; "`abcdef1`")' \
+    'gsub("\n[|] [^|]* [*][*](Code|Security) Review[^\n]*"; "")' \
+    'sub("(?<r>\n[|] [^|]* [*][*]Code Review[^\n]*)"; "\(.r)\(.r)")
+        | sub("(?<r>\n[|] [^|]* [*][*]Security Review[^\n]*)"; "\(.r)\(.r)")'; do
+    trigger="PR opened"
+    codex_run
+    amend comments ".data.repository.pullRequest.comments.nodes[0].body |= ($filter)"
+    tamper 0 ".diff |= ($filter)"
+    want_both failed "$unknown_code" "$unknown_security"
+    check "trigger-row-$filter" 0
+done
+
+# Before a review starts, while it runs, and where it failed, as Codex marks
+# each in either emoji.
+versions "$posted,running,-"
+want review/codex/code created reviewing \
+    "Codex's code review of $short is running. If it stalls, comment @codex review."
+want review/codex/security created waiting "$waiting_security"
+check security-not-started 0
+versions "$posted,-,running"
+want review/codex/code created waiting "$waiting_code"
+want review/codex/security created reviewing \
+    "Codex's security review of $short is running. If it stalls, comment @codex security review."
+check code-not-started 0
+codex_run running running
+want_both reviewing "Codex's code review of $short is running. If it stalls, comment @codex review." \
+    "Codex's security review of $short is running. If it stalls, comment @codex security review."
+check running 0
+codex_run "failed:true/true" "failed:true/true"
+want_both failed "Codex's code review of $short failed. $retry_code" \
+    "Codex's security review of $short failed. $retry_security"
+check failed 0
+
+# Findings on the head fail the kind's check, whatever a receipt says: any
+# flag true, as Codex gives findings posted, findings since resolved, or a
+# completion it posted nothing for.
+for flags in true/true true/false true/null false/true null/true; do
+    clean_run "completed:$flags" "completed:$flags"
+    want_both failed \
+        "Codex's code review of $short has findings. Push a fix, then comment @codex review." \
+        "Codex's security review of $short has findings. Push a fix, then comment @codex security review."
+    check "findings-$flags" 0
+done
+# Flags Codex has not given for a clean review are not recognised: code takes
+# false/false alone, security false/false or null/null.
+for flags in null/null false/null null/false; do
+    clean_run "completed:$flags"
+    want review/codex/code created failed \
+        "Codex's summary comment 1 gives code_review in a form the gate does not recognise."
+    want_clean security
+    check "flags-code-$flags" 0
+done
+for flags in false/null null/false; do
+    clean_run completed "completed:$flags"
+    want_clean code
+    want review/codex/security created failed \
+        "Codex's summary comment 1 gives security_review in a form the gate does not recognise."
+    check "flags-security-$flags" 0
+done
+
+# A review by Codex with findings on the head, submitted since the review
+# started, in its second or later or at a time the gate cannot read, fails its
+# kind's check, the summary's clean result notwithstanding.
+for kind in code security; do
+    for at in "$started" "$posted" -; do
+        clean_run
+        review "$codex" "$(findings_review "$kind")" "$head" "$at"
+        if [ "$kind" = code ]; then
+            want review/codex/code created failed \
+                "Codex's review 101 of $short has findings. Push a fix, then comment @codex review."
+            want_clean security
+        else
+            want_clean code
+            want review/codex/security created failed \
+                "Codex's review 101 of $short has findings. Push a fix, then comment @codex security review."
+        fi
+        check "review-findings-$kind-$at" 0
+    done
+done
+# The latest review decides: a clean review of the same commit, requested
+# after Codex's review with findings, clears it, and one with findings
+# submitted since the new review started, in its second or later, fails.
+for kind in code security; do
+    for at in "$started" "$retried" "$later"; do
+        if [ "$kind" = code ]; then
+            versions "$posted,running,running" \
+                "$started,completed:true/true,completed" \
+                "$retried,running,running" "$ended,completed,completed"
+        else
+            versions "$posted,running,running" \
+                "$started,completed,completed:true/true" \
+                "$retried,running,running" "$ended,completed,completed"
+        fi
+        receipts
+        review "$codex" "$(findings_review "$kind")" "$head" "$at"
+        if [ "$at" = "$started" ]; then
+            want_clean_both
+        elif [ "$kind" = code ]; then
+            want review/codex/code created failed \
+                "Codex's review 101 of $short has findings. Push a fix, then comment @codex review."
+            want_clean security
+        else
+            want_clean code
+            want review/codex/security created failed \
+                "Codex's review 101 of $short has findings. Push a fix, then comment @codex security review."
+        fi
+        check "review-findings-rereviewed-$kind-$at" 0
+    done
+done
+# While a review of the head runs, an earlier one's findings wait on it.
+versions "$posted,running,running" "$started,completed:true/true,completed" \
+    "$retried,running,completed"
+receipts "$started"
+review "$codex" "$(findings_review code)" "$head" "$started"
+want review/codex/code created reviewing \
+    "Codex's code review of $short is running. If it stalls, comment @codex review."
+want_clean security
+check review-findings-running 0
+# One heading neither kind fails both, even where submitted before the review.
+clean_run
+review "$codex" "$(findings_review code | sed 's/Codex Review$/Codex Notes/')" \
+    "$head" "$pushed"
+want_both failed \
+    "Codex's review 101 of $short has findings. Push a fix, then comment @codex review." \
+    "Codex's review 101 of $short has findings. Push a fix, then comment @codex security review."
+check review-unknown-heading 0
+# Reviews of another commit, by anyone else, or by an app of Codex's login but
+# not its id, play no part; reviews are read across pages.
+clean_run
+review "$codex" "$(findings_review code "${old:0:10}")" "$old"
+review "$codex" "$(findings_review security "${old:0:10}")" "$old"
+for login in someone "other-reviewer[bot]" "$impostor"; do
+    review "$login" "$(findings_review code)" "$head"
+done
+api reviews "$(jq -c '.[:2]' "$FAKE_DIR/reviews")"$'\n'"$(jq -c '.[2:]' \
+    "$FAKE_DIR/reviews")"
+want_clean_both
+check review-others 0
+clean_run
+api reviews '[]'$'\n'"$(jq -cn --arg body "$(findings_review security)" \
+    --arg head "$head" '[{id: 7, commit_id: $head, body: $body,
+    user: {login: "chatgpt-codex-connector[bot]", id: 199175422,
+        type: "Bot"}}]')"
+want_clean code
+want review/codex/security created failed \
+    "Codex's review 7 of $short has findings. Push a fix, then comment @codex security review."
+check review-pages 0
+
+# A failure comment names no side, so one posted since the review started
+# fails both checks; one before it, as from a run since retried, does not.
+clean_run
+comment "$codex" "$(<"$fixtures/failure")" - "$started"
+want_both failed \
+    "Codex reported a failure in comment 4 after its code review of $short started. $retry_code" \
+    "Codex reported a failure in comment 4 after its security review of $short started. $retry_security" \
+    "${rec}4" "${rec}4"
+check failure-comment 0
+clean_run
+comment "$codex" "$(<"$fixtures/failure")" - ""
+want_both failed \
+    "Codex reported a failure in comment 4 after its code review of $short started. $retry_code" \
+    "Codex reported a failure in comment 4 after its security review of $short started. $retry_security" \
+    "${rec}4" "${rec}4"
+check failure-comment-unreadable-time 0
+comment "$codex" "$(<"$fixtures/failure")" - "$earlier"
+clean_run
+want_clean_both
+check failure-comment-earlier 0
+# As Codex retries a review that failed: the code review fails and the failure
+# comment follows; the security review carries on clean; a request restarts
+# both, rewriting the summary twice in a second, one of them stale.
+versions "$posted,running,running" "$started,failed:true/true,running" \
+    "$retried,failed:true/true,completed"
+comment "$codex" "$(<"$fixtures/failure")" - "$started"
+want review/codex/code created failed \
+    "Codex's code review of $short failed. $retry_code"
+want review/codex/security created failed \
+    "Codex reported a failure in comment 2 after its security review of $short started. $retry_security" \
+    "${rec}2"
+check failure-sequence 0
+comment "$codex" "$(<"$fixtures/failure")" - "$started"
+versions "$posted,running,running" "$started,failed:true/true,running" \
+    "$retried,failed:true/true,completed" \
+    "$after,running,running" "$after,failed:true/true,running" \
+    "$later,running,running" "$ended,completed,completed"
+receipts
+want_clean_both
+check failure-retried 0
+
+# Codex's refusal of a request from an account not linked to it plays no part;
+# any other comment by Codex since the review started fails both, as one the
+# gate does not recognise.
+clean_run
+comment "$codex" "To use Codex here, [create a Codex account and connect to github](https://chatgpt.com/codex/cloud/settings/connectors)."
+want_clean_both
+check not-linked 0
+for body in "Here is what I changed." - "Quoting: $(receipt_code "$short")"; do
+    clean_run
+    comment "$codex" "$body" - "$later"
+    want_both failed \
+        "Codex's comment 4 is of a form the gate does not recognise. $retry_code" \
+        "Codex's comment 4 is of a form the gate does not recognise. $retry_security" \
+        "${rec}4" "${rec}4"
+    check "unknown-comment-$body" 0
+done
+comment "$codex" "Here is what I changed." - "$earlier"
+clean_run
+want_clean_both
+check unknown-comment-earlier 0
+
+# A receipt for the head in wording the gate does not recognise fails both,
+# clean receipts of both kinds beside it, before or after, notwithstanding.
+clean_run
+comment "$codex" "$(receipt_code "$short" | sed "s/Didn't find any major/Found two/")"
+want_both failed \
+    "Codex's receipt comment 4 for $short reads as no clean review the gate recognises. A new commit clears it." \
+    "Codex's receipt comment 4 for $short reads as no clean review the gate recognises. A new commit clears it." \
+    "${rec}4" "${rec}4"
+check unrecognised-after-clean 0
+comment "$codex" "$(receipt_security "$short" | sed 's/No security issues/Two issues/')"
+clean_run
+want_both failed \
+    "Codex's receipt comment 1 for $short reads as no clean review the gate recognises. A new commit clears it." \
+    "Codex's receipt comment 1 for $short reads as no clean review the gate recognises. A new commit clears it." \
+    "${rec}1" "${rec}1"
+check unrecognised-before-clean 0
+# An unrecognised receipt for another commit plays no part.
+clean_run
+comment "$codex" "$(receipt_code "${old:0:10}" | sed "s/Didn't find any major/Found two/")"
+want_clean_both
+check unrecognised-other-commit 0
+# The sentence must open its line, and the security sentence stand alone.
+codex_run
+comment "$codex" "$(receipt_code "$short" | sed 's/^Codex Review/> Codex Review/')"
+comment "$codex" "$(receipt_security "$short" | sed 's/request\.$/request. Mostly./')"
+want_both failed \
+    "Codex's receipt comment 2 for $short reads as no clean review the gate recognises. A new commit clears it." \
+    "Codex's receipt comment 2 for $short reads as no clean review the gate recognises. A new commit clears it." \
+    "${rec}2" "${rec}2"
+check sentence-placement 0
+# A receipt for another commit does not count for the head.
+codex_run
+comment "$codex" "$(receipt_code "${old:0:10}")" - "$ended"
+comment "$codex" "$(receipt_security "${old:0:10}")" - "$ended"
+want_both failed \
+    "Codex's code review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_code" \
+    "Codex's security review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_security"
+check receipt-other-commit 0
+
+# A receipt naming no single commit of ten hex digits fails both.
+for commit in "${short:0:7}" "$head" "${short^^}" "$short "; do
+    clean_run
+    comment "$codex" "$(receipt_code "$commit")"
+    want_both failed \
+        "Codex's receipt comment 4 names no single reviewed commit of ten hex digits. A new commit clears it." \
+        "Codex's receipt comment 4 names no single reviewed commit of ten hex digits. A new commit clears it." \
+        "${rec}4" "${rec}4"
+    check "receipt-commit-$commit" 0
+done
+clean_run
+comment "$codex" "$(receipt_code "$short" | grep -v 'Reviewed commit')"
+want_both failed \
+    "Codex's receipt comment 4 names no single reviewed commit of ten hex digits. A new commit clears it." \
+    "Codex's receipt comment 4 names no single reviewed commit of ten hex digits. A new commit clears it." \
+    "${rec}4" "${rec}4"
+check receipt-commit-none 0
+clean_run
+comment "$codex" "$(receipt_code "$short")"$'\n'"**Reviewed commit:** \`$short\`"
+want_both failed \
+    "Codex's receipt comment 4 names no single reviewed commit of ten hex digits. A new commit clears it." \
+    "Codex's receipt comment 4 names no single reviewed commit of ten hex digits. A new commit clears it." \
+    "${rec}4" "${rec}4"
+check receipt-commit-twice 0
+# One posted before the head commit belongs to an earlier commit and plays no
+# part, unless it names the head; one whose posting time is unreadable may be
+# recent, so fails both.
+comment "$codex" "$(receipt_code "${short:0:7}")" - "$before"
+clean_run
+want_clean_both
+check receipt-commit-earlier 0
+for created in "" 2000-01-01 "${posted/Z/+00:00}"; do
+    comment "$codex" "$(receipt_code "${short:0:7}")" - "$created"
+    clean_run
+    want_both failed \
+        "Codex's receipt comment 1 names no single reviewed commit of ten hex digits. A new commit clears it." \
+        "Codex's receipt comment 1 names no single reviewed commit of ten hex digits. A new commit clears it." \
+        "${rec}1" "${rec}1"
+    check "receipt-commit-created-$created" 0
+done
+codex_run
+comment "$codex" "$(receipt_code "$short")" - "$pushed"
+comment "$codex" "$(receipt_security "$short" | grep -v 'Reviewed commit')" - \
+    "$pushed"
+want_both failed \
+    "Codex's receipt comment 3 names no single reviewed commit of ten hex digits. A new commit clears it." \
+    "Codex's receipt comment 3 names no single reviewed commit of ten hex digits. A new commit clears it." \
+    "${rec}3" "${rec}3"
+check receipt-commit-at-head 0
+
+# A state marker that is missing or unreadable, or whose keys are not Codex's,
+# fails both.
+for marker in "" "{" "[]" '"x"' "{\"code_review\": 1"; do
+    comment "$codex" "$(summary_body completed completed |
+        sed "2s/.*/<!-- codex-review-state:v1 $marker -->/")"
+    rec="summary=1 at=$posted comments="
+    want_failed "Codex's summary comment 1 has no readable codex-review-state:v1 marker."
+    check "state-marker-$marker" 0
+done
+comment "$codex" "$(summary_body completed completed | sed 2d)"
+rec="summary=1 at=$posted comments="
+want_failed "Codex's summary comment 1 has no readable codex-review-state:v1 marker."
+check state-marker-absent 0
+for filter in 'del(.security_review)' '. + {other_review: null}'; do
+    body=$(summary_body completed completed)
+    state=$(sed -n '2s/^<!-- codex-review-state:v1 \(.*\) -->$/\1/p' \
+        <<<"$body" | jq -c "$filter")
+    comment "$codex" "$(sed "2s|.*|<!-- codex-review-state:v1 $state -->|" \
+        <<<"$body")"
+    rec="summary=1 at=$posted comments="
+    want_failed "Codex's summary comment 1 gives a codex-review-state:v1 marker the gate does not recognise."
+    check "state-keys-$filter" 0
+done
+
+# An entry in a form the gate does not recognise, an unknown status among
+# them, fails its own check alone.
+for entry in bad "completed@x" "completed@${head^^}" "completed@$short" \
+    Completed queued in_progress; do
+    clean_run "$entry"
+    want review/codex/code created failed \
+        "Codex's summary comment 1 gives code_review in a form the gate does not recognise."
+    want_clean security
+    check "entry-$entry" 0
+done
+for filter in 'del(.has_any_findings)' '. + {severity: "P2"}' \
+    '.has_unresolved_findings = "no"' '.commit_sha = null' '.status = null'; do
+    clean_run
+    amend comments ".data.repository.pullRequest.comments.nodes[0].body |=
+        sub(\"codex-review-state:v1 (?<j>[^\\n]*) -->\";
+            \"codex-review-state:v1 \\(.j | fromjson
+                | .code_review |= ($filter) | tojson) -->\")"
+    tamper 0 "$(jq -r '.data.repository.pullRequest.comments.nodes[0].body
+        | ".diff = \(tojson)"' "$FAKE_DIR/comments")"
+    want review/codex/code created failed \
+        "Codex's summary comment 1 gives code_review in a form the gate does not recognise."
+    want_clean security
+    check "entry-$filter" 0
+done
+
+# Line 3 holds the security marker or nothing; anything else fails both, and
+# the security check needs the marker readable, in Codex's keys and values,
+# and completed on the head.
+for line in "x" "<!-- codex-security-review:v1 {" "## Codex Review Summary"; do
+    secline=$line
+    clean_run
+    want_failed "Codex's summary comment 1 has no readable codex-security-review:v1 marker."
+    check "security-line-$line" 0
+done
+secline=""
+clean_run
+want_clean code
+want review/codex/security created failed \
+    "Codex's summary comment 1 has no readable codex-security-review:v1 marker."
+check security-line-blank 0
+security_json() {
+    jq -cn --arg head "$head" "{blockingSeverityThreshold: \"P0\",
+        headSha: \$head, mergeGateEnabled: false, pullRequestNumber: 7,
+        repository: \"o/p\", status: \"completed\"} | $1"
+}
+for filter in 'del(.repository)' '. + {extra: 1}' '.status = "Done!"' \
+    ".headSha = \"$short\"" '.mergeGateEnabled = "no"' \
+    '.blockingSeverityThreshold = 0' '.pullRequestNumber = "7"' \
+    '.mergeGateEnabled = true' '.mergeGateEnabled = null' \
+    '.blockingSeverityThreshold = "P1"' '.blockingSeverityThreshold = "P2"' \
+    '.blockingSeverityThreshold = "p0"' '.blockingSeverityThreshold = null'; do
+    secline="<!-- codex-security-review:v1 $(security_json "$filter") -->"
+    clean_run
+    want_clean code
+    want review/codex/security created failed \
+        "Codex's summary comment 1 gives a codex-security-review:v1 marker the gate does not recognise."
+    check "security-marker-$filter" 0
+done
+for filter in '.status = "running"' ".headSha = \"$old\""; do
+    secline="<!-- codex-security-review:v1 $(security_json "$filter") -->"
+    clean_run
+    status=$(security_json "$filter" | jq -r .status)
+    sha=$(security_json "$filter" | jq -r .headSha)
+    want_clean code
+    want review/codex/security created failed \
+        "Codex's codex-security-review:v1 marker says $status on ${sha:0:10}, not completed on the head $short."
+    check "security-marker-$filter" 0
+done
+# The repository it names is not compared, since it can keep an old name.
+secline="<!-- codex-security-review:v1 $(security_json '.repository = "x/y"') -->"
+clean_run
+want_clean_both
+check security-marker-values 0
+
+# A review of an older commit waits for a review of the head, a clean one
+# notwithstanding, as after a push that started no review, or a result landing
+# on an older commit after a push.
+versions "$posted,running@$old,running@$old" \
+    "$ended,completed@$old,completed@$old"
+comment "$codex" "$(receipt_code "${old:0:10}")" - "$ended"
+comment "$codex" "$(receipt_security "${old:0:10}")" - "$ended"
+want_both waiting \
+    "Codex's last code review is of ${old:0:10}, not the head $short. $ask_code" \
+    "Codex's last security review is of ${old:0:10}, not the head $short. $ask_security"
+check older-commit 0
+versions "$posted,completed@$old,running" "$ended,completed@$old,completed"
+receipts
+want review/codex/code created waiting \
+    "Codex's last code review is of ${old:0:10}, not the head $short. $ask_code"
+want_clean security
+check sides-on-different-commits 0
+
+# Another app's, a person's, or an impostor's copy of the summary and receipts
+# is ignored.
+for login in "other-reviewer[bot]" someone chatgpt-codex-connector \
+    "$impostor"; do
+    comment "$login" "$(summary_body completed completed)"
+    comment "$login" "$(receipt_code "$short")"
+    comment "$login" "$(receipt_security "$short")"
+    want_both waiting "$waiting_code" "$waiting_security"
+    check "copy-$login" 0
+    codex_run
+    comment "$login" "$(receipt_code "$short")" - "$ended"
+    comment "$login" "$(receipt_security "$short")" - "$ended"
+    want_both failed \
+        "Codex's code review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_code" \
+        "Codex's security review of $short was requested by hand, but Codex posted no clean receipt for it. $retry_security"
+    check "copy-receipts-$login" 0
+done
+
+# Codex's summary counts only where it opens with its marker.
+comment "$codex" "Quoting: $(summary_body completed completed)"
+want_both waiting "$waiting_code" "$waiting_security"
+check marker-inside-summary 0
+
+# A summary or receipt someone other than Codex last edited fails both; Codex's
+# own edits do not.
+for editor in someone "other-reviewer[bot]" chatgpt-codex-connector "?" \
+    "$impostor"; do
+    by=$editor
+    if [ "$by" = "?" ]; then
+        by="an unknown account"
+    elif [ "$by" = "$impostor" ]; then
+        by="chatgpt-codex-connector[bot] 5"
+    fi
+    clean_run
+    amend comments ".data.repository.pullRequest.comments.nodes[0].editor =
+        $(actor "${editor/#\?/-}")"
+    want_both failed \
+        "Codex's summary comment 1 was last edited by $by, not Codex. $retry_code" \
+        "Codex's summary comment 1 was last edited by $by, not Codex. $retry_security" \
+        "${rec}1" "${rec}1"
+    check "edited-summary-$editor" 0
+    codex_run
+    comment "$codex" "$(receipt_code "$short")" "$editor" "$ended"
+    comment "$codex" "$(receipt_security "$short")" - "$ended"
+    want_both failed \
+        "Codex's receipt comment 2 was last edited by $by, not Codex. A new commit clears it." \
+        "Codex's receipt comment 2 was last edited by $by, not Codex. A new commit clears it." \
+        "${rec}2" "${rec}2"
+    check "edited-receipt-$editor" 0
+done
+codex_run
+comment "$codex" "$(receipt_code "$short")" "$codex" "$ended"
+code_receipt=$id
+comment "$codex" "$(receipt_security "$short")" - "$ended"
+security_receipt=$id
+want_clean_both
+check edited-by-codex 0
+# An edited receipt for another commit counts where it may be recent, as one
+# posted since the head commit may be, but not where it predates it.
+comment "$codex" "$(receipt_code "${old:0:10}")" someone "$before"
+clean_run
+want_clean_both
+check edited-receipt-earlier 0
+comment "$codex" "$(receipt_code "${old:0:10}")" someone
+clean_run
+want_both failed \
+    "Codex's receipt comment 1 was last edited by someone, not Codex. A new commit clears it." \
+    "Codex's receipt comment 1 was last edited by someone, not Codex. A new commit clears it." \
+    "${rec}1" "${rec}1"
+check edited-receipt-recent 0
+# One rewritten to name the head counts however old.
+comment "$codex" "$(receipt_code "$short")" someone "$before"
+clean_run
+want_both failed \
+    "Codex's receipt comment 1 was last edited by someone, not Codex. A new commit clears it." \
+    "Codex's receipt comment 1 was last edited by someone, not Codex. A new commit clears it." \
+    "${rec}1" "${rec}1"
+check edited-receipt-head 0
+
+# Codex's last summary is the one read, its own edit history with it.
+clean_run
+codex_run running running
+want_both reviewing "Codex's code review of $short is running. If it stalls, comment @codex review." \
+    "Codex's security review of $short is running. If it stalls, comment @codex security review."
+check last-summary 0
+codex_run running running
+clean_run
+want_clean_both
+check last-summary-clean 0
+
+# Codex rewrites its summary two or three times in a second as a review starts,
+# not always ending on the latest; where the latest second's versions differ,
+# the check waits for the next edit, whichever of them the summary shows.
+updating="Codex is updating its summary of the code review of $short; the check waits for its next edit. If none comes, comment @codex review."
+updating_security="Codex is updating its summary of the security review of $short; the check waits for its next edit. If none comes, comment @codex security review."
+versions "$posted,running,running" "$started,completed,completed" \
+    "$ended,running,running" "$ended,completed,completed"
+receipts
+want_both reviewing "$updating" "$updating_security"
+check racing-stale-last 0
+versions "$posted,running,running" "$started,completed,completed" \
+    "$ended,completed,completed" "$ended,running,running"
+receipts
+amend comments ".data.repository.pullRequest.comments.nodes[0].body =
+    $(jq '.data.node.userContentEdits.nodes[1].diff' "$FAKE_DIR/edits")"
+want_both reviewing "$updating" "$updating_security"
+check racing-stale-first 0
+# Versions alike in the latest second, as Codex's duplicate edits, are settled,
+# the gate JSON compared without the two keys Codex's edit history can leave
+# out.
+versions "$posted,running,running" "$ended,completed,completed" \
+    "$ended,completed,completed"
+receipts
+tamper 1 '.diff |= sub(",\"pullRequestNumber\":7,\"repository\":\"o/p\""; "")'
+want_clean_both
+check racing-duplicates 0
+# Versions differing in the gate JSON alone are not settled either.
+versions "$posted,running,running" "$ended,completed,completed" \
+    "$ended,completed,completed"
+receipts
+tamper 1 '.diff |= sub("\"status\":\"completed\"} -->"; "\"status\":\"running\"} -->")'
+want_both reviewing "$updating" "$updating_security"
+check racing-security-marker 0
+# A stale half in an earlier second does not end the review's start, so a
+# review restarted after a change of base passes once settled.
+api bases "$(bases "$changed")"
+versions "$posted,running,running" "$started,completed,completed" \
+    "$after,running,running" "$after,completed,completed" \
+    "$later,running,running" "$ended,completed,completed"
+receipts
+want_clean_both
+check racing-earlier-group 0
+# The summary's text must be one of the latest second's versions.
+versions "$posted,running,running" "$ended,completed,completed" \
+    "$ended,completed,completed"
+receipts
+tamper 0 '.diff += "x"'
+tamper 1 '.diff += "y"'
+want_retry "Codex's summary comment 1 has an edit history the gate cannot read."
+check racing-text 0
+
+# Once the base has changed, a clean review passes only where it started after
+# the latest change, in a later second, a review starting when Codex's summary
+# first shows it running on the head in the versions leading to the latest.
+# Expects check review/codex/$1 to be created clean, or waiting on a review
+# that did not start after the change of base at $3, $changed by default, where
+# $2 is stale.
+expect() {
+    if [ "$2" = clean ]; then
+        want_clean "$1"
+    else
+        local ask=$ask_code
+        if [ "$1" = security ]; then
+            ask=$ask_security
+        fi
+        want "review/codex/$1" created waiting \
+            "Codex's $1 review of $short did not start after the change of base on ${3:-$changed}. $ask"
+    fi
+}
+# Runs case $1 after a change of base at $changed, with the summary's versions
+# the arguments after $3 and clean receipts, expecting code to be $2 and
+# security $3, each clean or stale.
+started() {
+    local name=$1 code=$2 security=$3
+    shift 3
+    api bases "$(bases "$changed")"
+    versions "$@"
+    receipts
+    expect code "$code"
+    expect security "$security"
+    check "started-$name" 0
+}
+started before stale stale "$started,running,running" \
+    "$ended,completed,completed"
+started after clean clean "$after,running,running" "$ended,completed,completed"
+started same-second stale stale "$changed,running,running" \
+    "$ended,completed,completed"
+# As Codex edits its summary, a review not yet started before the other.
+started staggered clean clean "$after,-,running" "$after,running,running" \
+    "$later,completed,running" "$ended,completed,completed"
+started security-later stale clean "$started,running,-" \
+    "$after,running,running" "$ended,completed,completed"
+started code-later clean stale "$started,-,running" \
+    "$after,running,running" "$ended,completed,completed"
+# A review running across the change dates from its start.
+started across stale stale "$started,running,running" \
+    "$after,running,running" "$ended,completed,completed"
+# Of several reviews in one history, the latest of the head counts: one started
+# after an earlier review of the head, of another commit, or one that failed,
+# passes; versions still completed from an earlier one leave its start.
+started again clean clean "$posted,running,running" \
+    "$started,completed,completed" "$after,running,running" \
+    "$ended,completed,completed"
+started after-other-commit clean clean "$posted,running@$old,running@$old" \
+    "$started,completed@$old,completed@$old" "$after,running,running" \
+    "$ended,completed,completed"
+started after-failed clean clean "$posted,running,running" \
+    "$started,failed,failed" "$after,running,running" \
+    "$ended,completed,completed"
+started not-again stale stale "$posted,running,running" \
+    "$started,completed,completed" "$ended,completed,completed"
+# However the changes are listed, the latest counts.
+for times in "$earlier $changed" "$changed $earlier"; do
+    read -r -a times <<<"$times"
+    api bases "$(bases "${times[@]}")"
+    versions "$started,running,running" "$ended,completed,completed"
+    receipts
+    expect code stale
+    expect security stale
+    check "started-bases-${times[0]}" 0
+done
+api bases "$(bases "$earlier")"
+versions "$started,running,running" "$ended,completed,completed"
+receipts
+expect code clean
+expect security clean
+check started-after-earlier-base 0
+
+# The history of the last summary is read once per run, every page of it.
+api bases "$(bases "$changed")"
+comment "$codex" "$(summary_body "completed@$old" "completed@$old")"
+versions "$after,running,running" "$ended,completed,completed"
+receipts
+want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
+api --paginate repos/o/p/rules/branches/main
+api --paginate repos/o/p/pulls/7/commits\\?per_page=100
+api graphql --paginate -f owner=o -f name=p -F number=7 -f query=...
+api graphql -f owner=o -f name=p -F number=7 -f query=...
+api --paginate repos/o/p/pulls/7/reviews\\?per_page=100
+api graphql --paginate -f id=C2 -f query=...
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/code
+api -X POST repos/o/p/check-runs --input -
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/security
+api -X POST repos/o/p/check-runs --input -"
+want_clean_both
+check history-read 0
+api bases "$(bases "$changed")"
+versions "$started,running,running" "$after,running,running" \
+    "$ended,completed,completed"
+receipts
+api edits "$(jq -c '.data.node.userContentEdits |= (.nodes |= .[:2]
+    | .pageInfo = {hasNextPage: true, endCursor: "a"})' "$FAKE_DIR/edits")
+$(jq -c '.data.node.userContentEdits.nodes |= .[2:]' "$FAKE_DIR/edits")"
+expect code stale
+expect security stale
+check history-pages 0
+# A summary never edited shows only its creation.
+versions "$posted,completed,completed"
+receipts
+want review/codex/code created failed \
+    "Codex's summary comment 1 never shows its code review of $short running, so when it started is unknown. $retry_code"
+want review/codex/security created failed \
+    "Codex's summary comment 1 never shows its security review of $short running, so when it started is unknown. $retry_security"
+check history-never-edited 0
+
+# A review the history never shows running on the head fails, since when it
+# started is unknown, with or without a change of base.
+for history in "$after,completed,completed $ended,completed,completed" \
+    "$after,running@$old,running@$old $ended,completed,completed" \
+    "$after,failed,failed $ended,completed,completed"; do
+    read -r -a history <<<"$history"
+    versions "${history[@]}"
+    receipts
+    want review/codex/code created failed \
+        "Codex's summary comment 1 never shows its code review of $short running, so when it started is unknown. $retry_code"
+    want review/codex/security created failed \
+        "Codex's summary comment 1 never shows its security review of $short running, so when it started is unknown. $retry_security"
+    check "never-running-${history[0]#*,}" 0
+done
+
+# A history that is not all the summary's pages, as GitHub gives them, fails
+# both.
+unreadable="Codex's summary comment 1 has an edit history the gate cannot read."
+for page in "" '"x"' '{"data": null}' '{"data": {"node": null}}' \
+    '{"data": {"node": {"id": "C1"}}}' \
+    '{"data": {"node": {"id": "C1", "userContentEdits": {"nodes": {}}}}}' \
+    '{"data": {"node": {"id": "C1", "userContentEdits": {"nodes": [1],
+"pageInfo": {"hasNextPage": false}}}}}' \
+    '{"data": {"node": {"id": "C1", "userContentEdits": {"nodes": []}}}}' \
+    '{"data": {"node": {"id": "C1", "userContentEdits": {"nodes": [],
+"pageInfo": "x"}}}}'; do
+    clean_run
+    api edits "$page"
+    want_retry "$unreadable"
+    check "history-page-$page" 0
+done
+for filter in '.data.node.id = "C2"' \
+    '.data.node.userContentEdits.pageInfo.hasNextPage = true' \
+    '.data.node.userContentEdits.pageInfo.hasNextPage = null' \
+    '.data.node.userContentEdits.nodes = []'; do
+    clean_run
+    amend edits "$filter"
+    want_retry "$unreadable"
+    check "history-$filter" 0
+done
+# An unedited summary with edits, or with no readable creation time, fails.
+versions "$posted,running,running" "$ended,completed,completed"
+receipts
+amend comments '.data.repository.pullRequest.comments.nodes[0]
+    |= (.lastEditedAt = null | .editor = null)'
+rec="summary=1 at=$posted comments="
+want_retry "$unreadable"
+check history-unedited-edits 0
+for created in "" 2000-01-03; do
+    versions "$created,completed,completed"
+    receipts
+    rec=""
+    want_retry "$unreadable"
+    check "history-unedited-created-$created" 0
+done
+# A version deleted, with no time or text, out of order, or the latest not the
+# comment's last edit or text, fails both.
+for filter in '.deletedAt = "2000-01-05T00:00:00Z"' '.diff = null' \
+    '.diff = 1' '.editedAt = null' '.editedAt = ""' \
+    '.editedAt = "2000-01-03"' '.editedAt = "2000-01-03T06:00:00+00:00"'; do
+    for i in 0 1; do
+        clean_run
+        tamper "$i" "$filter"
+        want_retry "$unreadable"
+        check "history-version-$i-$filter" 0
+    done
+done
+versions "$after,running,running" "$later,running,running" \
+    "$ended,completed,completed"
+receipts
+tamper 1 '.editedAt = "2000-01-03T01:00:00Z"'
+want_retry "$unreadable"
+check history-order 0
+# GitHub can list versions again after the oldest, out of order; a repeat
+# identical to a version listed before plays no part.
+versions "$posted,running,running" "$started,running,running" \
+    "$ended,completed,completed"
+receipts
+amend edits '.data.node.userContentEdits.nodes |= . + .[1:]'
+want_clean_both
+check history-repeated 0
+versions "$posted,running,running" "$started,running,running" \
+    "$ended,completed,completed"
+receipts
+amend edits '.data.node.userContentEdits.nodes |= . + (.[1:] | .[0].diff += "x")'
+want_retry "$unreadable"
+check history-repeated-differing 0
+clean_run
+amend comments ".data.repository.pullRequest.comments.nodes[0].lastEditedAt =
+    \"$later\""
+rec="summary=1 at=$later comments="
+want_retry "$unreadable"
+check history-last-edit 0
+clean_run
+tamper 0 '.diff += "x"'
+want_retry "$unreadable"
+check history-latest 0
+
+# A version anyone other than Codex edited fails both, where the review's start
+# or result rests on it.
+for editor in someone "other-reviewer[bot]" chatgpt-codex-connector "?" \
+    "$impostor"; do
+    by=$editor
+    if [ "$by" = "?" ]; then
+        by="an unknown account"
+    elif [ "$by" = "$impostor" ]; then
+        by="chatgpt-codex-connector[bot] 5"
+    fi
+    for i in 0 1; do
+        clean_run
+        tamper "$i" ".editor = $(actor "${editor/#\?/-}")"
+        want_retry "Codex's summary comment 1 was edited by $by, not Codex."
+        check "history-editor-$i-$editor" 0
+    done
+done
+
+# A version with no readable state marker, or one whose keys are not Codex's,
+# fails both; one giving an entry the gate does not recognise fails that
+# entry's check.
+for filter in 'sub("<!-- codex-review-state:v1 [^\n]*-->"; "")' \
+    'sub("codex-review-state:v1 \\{"; "codex-review-state:v1 {{")' \
+    'sub(",\"security_review\":[^}]*}"; "")'; do
+    clean_run
+    tamper 1 ".diff |= $filter"
+    want_retry "Codex's summary comment 1 has a version with no readable codex-review-state:v1 marker."
+    check "history-marker-$filter" 0
+done
+for entry in bad Running "running@${head^^}" "running@$short"; do
+    versions "$posted,$entry,running" "$ended,completed,completed"
+    receipts
+    want review/codex/code created failed \
+        "Codex's summary comment 1 has a version giving code_review in a form the gate does not recognise. $retry_code"
+    want_clean security
+    check "history-entry-$entry" 0
+done
+
+# The review rests on the versions from the second before it started to the
+# latest: one older, edited by anyone else, deleted or unreadable, plays no
+# part, so a later review clears it; one in the second before fails.
+# Adds a review of the head started at $later after one at $posted, the
+# versions counted from the newest at 0.
+rerun() {
+    versions "$posted,running,running" "$started,completed,completed" \
+        "$later,running,running" "$ended,completed,completed"
+    receipts
+}
+for filter in '.editor = {__typename: "User", login: "someone"}' \
+    '.deletedAt = "2000-01-05T00:00:00Z" | .diff = null' \
+    '.diff |= sub("<!-- codex-review-state:v1 [^\n]*-->"; "")' \
+    '.diff |= sub("\"status\":\"running\""; "\"status\":\"Running\"")'; do
+    rerun
+    tamper 3 "$filter"
+    want_clean_both
+    check "history-old-$filter" 0
+done
+rerun
+tamper 2 '.editor = {__typename: "User", login: "someone"}'
+want_retry "Codex's summary comment 1 was edited by someone, not Codex."
+check history-before-start-editor 0
+rerun
+tamper 2 '.deletedAt = "2000-01-05T00:00:00Z" | .diff = null'
+want_retry "$unreadable"
+check history-before-start-deleted 0
+# A version unreadable within the run ends it there, so the version is one the
+# review rests on.
+versions "$posted,running,running" "$started,running,running" \
+    "$later,running,running" "$ended,completed,completed"
+receipts
+tamper 2 '.diff |= sub("<!-- codex-review-state:v1 [^\n]*-->"; "")'
+want_retry "Codex's summary comment 1 has a version with no readable codex-review-state:v1 marker."
+check history-within-run 0
+
+# Adds to the pull request's deleted comments one by each login given, - for
+# an author GitHub does not give.
+deleted() {
+    local login
+    for login in "$@"; do
+        amend bases ".data.repository.pullRequest.deletions.nodes += [
+            {deletedCommentAuthor: $(actor "$login")}]"
+    done
+}
+# Once the base has changed, a review dated from the summary's creation fails
+# where a comment by Codex, or by an author not given, has been deleted, since
+# the summary may have been posted again, hiding an earlier start; a new review
+# clears it.
+reposted() {
+    local ask=$ask_code
+    if [ "$1" = security ]; then
+        ask=$ask_security
+    fi
+    echo "Summary comment 1 was posted showing the $1 review of $short running, and a comment by Codex has been deleted, so when the review started is unknown. $ask"
+}
+for logins in "$codex" - "someone $codex" "$impostor"; do
+    read -r -a logins <<<"$logins"
+    api bases "$(bases "$changed")"
+    deleted "${logins[@]}"
+    versions "$after,running,running" "$ended,completed,completed"
+    receipts
+    want review/codex/code created failed "$(reposted code)"
+    want review/codex/security created failed "$(reposted security)"
+    check "deleted-${logins[*]}" 0
+done
+api bases "$(bases "$changed")"
+deleted someone "other-reviewer[bot]"
+versions "$after,running,running" "$ended,completed,completed"
+receipts
+expect code clean
+expect security clean
+check deleted-others 0
+api bases "$(bases "$changed")"
+deleted "$codex"
+versions "$posted,-,-" "$after,running,running" "$ended,completed,completed"
+receipts
+expect code clean
+expect security clean
+check deleted-edited-start 0
+api bases "$(bases "$changed")"
+deleted "$codex"
+versions "$started,running,running" "$ended,completed,completed"
+receipts
+expect code stale
+expect security stale
+check deleted-stale 0
+api bases "$(bases "$changed")"
+deleted "$codex"
+versions "$after,running,-" "$later,running,running" \
+    "$ended,completed,completed"
+receipts
+want review/codex/code created failed "$(reposted code)"
+expect security clean
+check deleted-security-later 0
+deleted "$codex"
+versions "$after,running,running" "$ended,completed,completed"
+receipts
+want_clean_both
+check deleted-unchanged 0
+# Deletions not all read fail a review dated from the summary's creation alone.
+for filter in '.pageInfo.hasNextPage = true' '.pageInfo.hasNextPage = null' \
+    'del(.pageInfo)' '.nodes = {}' '.nodes = [1]' '. = null'; do
+    api bases "$(bases "$changed")"
+    amend bases ".data.repository.pullRequest.deletions |= ($filter)"
+    versions "$after,running,running" "$ended,completed,completed"
+    receipts
+    want review/codex/code created failed \
+        "The deleted comments of the pull request cannot all be read, so when the code review of $short started is unknown. $ask_code"
+    want review/codex/security created failed \
+        "The deleted comments of the pull request cannot all be read, so when the security review of $short started is unknown. $ask_security"
+    check "deleted-unreadable-$filter" 0
+    api bases "$(bases "$changed")"
+    amend bases ".data.repository.pullRequest.deletions |= ($filter)"
+    versions "$posted,-,-" "$after,running,running" \
+        "$ended,completed,completed"
+    receipts
+    expect code clean
+    expect security clean
+    check "deleted-unreadable-edited-start-$filter" 0
+done
+
+# A change of base whose time is unreadable fails a clean review, but leaves a
+# check that waits alone.
+for page in "$(bases "")" "$(bases 2000-01-03)" "$(bases "${changed/Z/+00:00}")" \
+    "$(bases -)" "$(bases "$earlier" -)" '"x"' '{"data": null}' \
+    '{"data": {"repository": {"pullRequest": null}}}' \
+    '{"data": {"repository": {"pullRequest": {"timelineItems": {"nodes": {}}}}}}' \
+    '{"data": {"repository": {"pullRequest": {"timelineItems": {"nodes": [1]}}}}}'; do
+    api bases "$page"
+    clean_run
+    want_failed "The pull request's latest change of base has no readable time."
+    check "base-unreadable-$page" 0
+done
+api bases '"x"'
+want_both waiting "$waiting_code" "$waiting_security"
+check base-unreadable-waiting 0
+
+# Comments are read across pages.
+codex_run
+mv -- "$FAKE_DIR/comments" "$work/page1"
+api comments "$empty_page"
+receipts
+api comments "$(<"$work/page1")"$'\n'"$(<"$FAKE_DIR/comments")"
+want_clean_both
+check comments-pages 0
+
+# A check run as run prints it: id $1, name $2, app $3, status $4, conclusion
+# $5, title $6, summary $7 and external_id $8, null where not given.
+run() {
+    jq -cn --argjson id "$1" --arg name "$2" --arg app "$3" --arg s "$4" \
+        --arg c "$5" --arg t "$6" --arg m "$7" --arg r "${8-@null@}" '
+        {id: $id, name: $name, app: {slug: $app}, status: $s,
+         conclusion: (if $c == "" then null else $c end),
+         output: {title: $t, summary: $m},
+         external_id: (if $r == "@null@" then null else $r end)}'
+}
+# A page of check runs, each argument a run as run prints it.
+page() {
+    jq -cn '{check_runs: [$ARGS.positional[] | fromjson]}' --args "$@"
+}
+
+# An existing check run of this app is updated, the latest where there are
+# several, and left alone where it already says the same, its external_id
+# included; another app's run, or a run of another name, is not reused.
+failed_code=$(run 5 review/codex/code review-app completed failure \
+    "Codex review failed" x)
+running_code=$(run 6 review/codex/code review-app in_progress "" \
+    "Codex reviewing" y)
+other_app=$(run 9 review/codex/code other-app in_progress "" x x \
+    "summary=99 at=$ended comments=")
+other_name=$(run 7 build review-app in_progress "" x x)
+waiting=$(run 8 review/codex/security review-app in_progress "" \
+    "waiting for Codex" "$waiting_security" "")
+api runs "$(page "$failed_code" "$running_code" "$other_app" "$waiting")"
+want review/codex/code "updated 6" waiting "$waiting_code"
+want review/codex/security unchanged waiting "$waiting_security"
+check runs-reused 0
+api runs "$(page "$other_app")"$'\n'"$(page "$other_name")"
+want_both waiting "$waiting_code" "$waiting_security"
+check runs-other 0
+# A finished run is updated to a new finished state, but never reopened: a
+# check going back to in_progress gets a new run.
+failed_code=$(run 6 review/codex/code review-app completed failure \
+    "Codex review failed" x)
+clean_security=$(run 8 review/codex/security review-app completed success \
+    "Codex review clean" x)
+api runs "$(page "$failed_code" "$clean_security")"
+clean_run
+want review/codex/code "updated 6" clean \
+    "Codex's code review of $short completed clean." "$rec$code_receipt"
+want review/codex/security "updated 8" clean \
+    "Codex's security review of $short completed clean." \
+    "$rec$security_receipt"
+check runs-finished 0
+codex_run running running
+api runs "$(page "$failed_code" "$(run 8 review/codex/security review-app \
+    in_progress "" "Codex reviewing" \
+    "Codex's security review of $short is running. If it stalls, comment @codex security review." "$rec")")"
+want review/codex/code created reviewing \
+    "Codex's code review of $short is running. If it stalls, comment @codex review."
+want review/codex/security unchanged reviewing \
+    "Codex's security review of $short is running. If it stalls, comment @codex security review."
+check runs-reopened 0
+# A run saying the same with another external_id is updated.
+codex_run running running
+api runs "$(page "$(run 6 review/codex/code review-app in_progress "" \
+    "Codex reviewing" "Codex's code review of $short is running. If it stalls, comment @codex review." \
+    "summary=1 at=$posted comments=")")"
+want review/codex/code "updated 6" reviewing \
+    "Codex's code review of $short is running. If it stalls, comment @codex review."
+want review/codex/security created reviewing \
+    "Codex's security review of $short is running. If it stalls, comment @codex security review."
+check runs-record-changed 0
+api runs '{"check_runs": [{"id": "x", "name": "review/codex/code", "app": {"slug": "review-app"}, "status": "in_progress", "conclusion": null, "output": {}}]}'
+want_err="review-gate: check run review/codex/code on $short has no id"
+check runs-bad-id 1
+
+# Each check run records the evidence it rested on, and a later run finding a
+# recorded comment gone, or an older summary than recorded, fails, keeping the
+# record, until a review started since passes.
+# Answers the check-run reads with the latest run of each Codex check, as
+# written by an earlier run, in progress, with external_ids $1 for code and $2
+# for security.
+recorded() {
+    local code security
+    code=$(run 6 review/codex/code review-app in_progress "" x x "$1")
+    security=$(run 8 review/codex/security review-app in_progress "" x x "$2")
+    api runs "$(page "$code" "$security")"
+}
+rolled_code="Codex comments an earlier run of this check rested on are gone, so it needs a review started since. $ask_code"
+rolled_security="Codex comments an earlier run of this check rested on are gone, so it needs a review started since. $ask_security"
+# Expects both checks to be updated in state $1 with summaries $2 and $3 and
+# records $4 and $5.
+want_updated() {
+    want review/codex/code "updated 6" "$1" "$2" "$3"
+    want review/codex/security "updated 8" "$1" "$4" "$5"
+}
+# The same evidence passes.
+clean_run
+recorded "$rec$code_receipt" "$rec$security_receipt"
+want_updated clean "Codex's code review of $short completed clean." \
+    "$rec$code_receipt" \
+    "Codex's security review of $short completed clean." \
+    "$rec$security_receipt"
+check record-same 0
+# The newest summary deleted, an older one on the head left: the older one's
+# review started before the record.
+clean_run
+newer="summary=9 at=$ended comments="
+recorded "$newer" "$newer"
+want_updated failed "$rolled_code" "$newer" "$rolled_security" "$newer"
+check record-summary-older 0
+# A recorded receipt deleted.
+clean_run
+gone="summary=1 at=$ended comments=9"
+recorded "$gone" "$gone"
+want_updated failed "$rolled_code" "$gone" "$rolled_security" "$gone"
+check record-receipt-gone 0
+# A failure comment the record rested on deleted.
+gone="summary=1 at=$ended comments=$((id + 5))"
+clean_run
+recorded "$gone" "$gone"
+want_updated failed "$rolled_code" "$gone" "$rolled_security" "$gone"
+check record-failure-gone 0
+# A record the gate cannot read fails a clean review on that commit, kept as it
+# is, however fresh the review, but leaves a check that waits alone.
+bad_record="An earlier run of this check left a record the gate cannot read, so the check fails on this commit. A new commit clears it."
+for bad in x "summary=1 at=$ended" "summary=1 at=2000-01-04 comments=" \
+    "summary=01 at=$ended comments=" "summary=1 at=$ended comments=2,"; do
+    clean_run
+    recorded "$bad" "$bad"
+    want_updated failed "$bad_record" "$bad" "$bad_record" "$bad"
+    check "record-bad-$bad" 0
+done
+versions "$posted,running,running" "$started,completed,completed" \
+    "$later,running,running" "$ended,completed,completed"
+receipts
+recorded x x
+want_updated failed "$bad_record" x "$bad_record" x
+check record-bad-fresh-review 0
+recorded x x
+want_updated waiting "$waiting_code" x "$waiting_security" x
+check record-bad-waiting 0
+# A summary whose last edit has no readable time keeps the record it finds.
+versions ",completed,completed"
+receipts
+kept="summary=1 at=$ended comments="
+recorded "$kept" "$kept"
+want_updated failed "$unreadable $retry_code" "$kept" \
+    "$unreadable $retry_security" "$kept"
+check record-kept-unreadable-time 0
+# While no clean review is due, the record is kept.
+codex_run running running
+newer="summary=9 at=$ended comments="
+recorded "$newer" "$newer"
+want_updated reviewing "Codex's code review of $short is running. If it stalls, comment @codex review." "$newer" \
+    "Codex's security review of $short is running. If it stalls, comment @codex security review." "$newer"
+check record-kept-running 0
+newer="summary=9 at=$ended comments="
+recorded "$newer" "$newer"
+want_updated waiting "$waiting_code" "$newer" "$waiting_security" "$newer"
+check record-kept-no-summary 0
+# A review started after the recorded time passes, recording afresh.
+versions "$posted,running,running" "$started,completed,completed" \
+    "$later,running,running" "$ended,completed,completed"
+receipts
+newer="summary=9 at=$after comments=8"
+recorded "$newer" "$newer"
+want_updated clean "Codex's code review of $short completed clean." \
+    "$rec$code_receipt" \
+    "Codex's security review of $short completed clean." \
+    "$rec$security_receipt"
+check record-fresh-review 0
+versions "$posted,running,running" "$started,completed,completed" \
+    "$later,running,running" "$ended,completed,completed"
+receipts
+newer="summary=9 at=$later comments="
+recorded "$newer" "$newer"
+want_updated failed "$rolled_code" "$newer" "$rolled_security" "$newer"
+check record-same-second 0
+# A newer summary than recorded, the recorded one gone, is new evidence.
+clean_run
+api runs "$(page "$(run 6 review/codex/code review-app in_progress "" x x \
+    "summary=1 at=$ended comments=")")"
+amend comments '.data.repository.pullRequest.comments.nodes |= map(
+    .databaseId += 10 | .id = "C\(.databaseId)")'
+amend edits '.data.node.id = "C11"'
+rec="summary=11 at=$ended comments="
+want review/codex/code "updated 6" clean \
+    "Codex's code review of $short completed clean." \
+    "${rec}$((code_receipt + 10))"
+want review/codex/security created clean \
+    "Codex's security review of $short completed clean." \
+    "${rec}$((security_receipt + 10))"
+check record-newer-summary 0
+# Another app's record plays no part.
+clean_run
+api runs "$(page "$(run 9 review/codex/code other-app in_progress "" x x \
+    "summary=9 at=$ended comments=")")"
+want_clean_both
+check record-other-app 0
+
+# The head commit's committer date is read from the pull request's commits,
+# across pages, from the head's own entry: a receipt naming no commit, posted
+# after the head commit but before a later-dated commit listed beside it, fails
+# both.
+api commits "$(commits "$old:$before")"$'\n'"$(commits "$head:$pushed" \
+    "${old:0:39}0:2000-01-03T00:00:00Z")"
+comment "$codex" "$(receipt_code "${short:0:7}")" - "$earlier"
+clean_run
+want_both failed \
+    "Codex's receipt comment 1 names no single reviewed commit of ten hex digits. A new commit clears it." \
+    "Codex's receipt comment 1 names no single reviewed commit of ten hex digits. A new commit clears it." \
+    "${rec}1" "${rec}1"
+check commits-head-entry 0
+# A head the commits do not list, as where a pull request has more than GitHub
+# lists, fails closed, as does a page that is no list of commits.
+for page in "$(commits "$old:$pushed")" "[]" '"x"' '[1, "x", null]' \
+    "$(commits "$short:$pushed")" "$(commits "${head^^}:$pushed")"; do
+    api commits "$page"
+    want_err="review-gate: pull request #7's commits do not list its head $short"
+    check "commits-no-head-$page" 1
+done
+# The head commit's committer date must be readable.
+for date in "" - 2000-01-01 "${pushed/Z/+00:00}"; do
+    api commits "$(commits "$head:$date")"
+    want_err="review-gate: commit $short has no committer date"
+    check "commit-date-$date" 1
+done
+for entry in "{\"sha\": \"$head\"}" "{\"sha\": \"$head\", \"commit\": {}}" \
+    "{\"sha\": \"$head\", \"commit\": \"x\"}" \
+    "{\"sha\": \"$head\", \"commit\": {\"committer\": {\"date\": 1}}}"; do
+    api commits "[$entry]"
+    want_err="review-gate: commit $short has no committer date"
+    check "commit-date-entry-$entry" 1
+done
+
+# The summary of a check waiting while pull requests $1 share the head.
+shared_summary() {
+    echo "Pull requests $1 are open on the head $short, so share its checks." \
+        "Close all but one for this check to pass."
+}
+shared_57=$(shared_summary "#5 and #7")
+
+# Another open pull request into o/p with the head shares its checks, so a
+# check that would pass waits, naming each, across pages and in order, and
+# keeping the latest run's record, none where there is no run.
+clean_run
+api open "$(open_pulls 7 5)"
+want_both shared "$shared_57" "$shared_57" "" ""
+check shared-waits 0
+clean_run
+api open "$(open_pulls 9 7)"$'\n'"$(open_pulls 5 9)"
+want_both shared "$(shared_summary "#5, #7 and #9")" \
+    "$(shared_summary "#5, #7 and #9")" "" ""
+check shared-pages 0
+clean_run
+api runs "$(page "$(run 6 review/codex/code review-app completed success \
+    "Codex review clean" x "$rec$code_receipt")")"
+api open "$(open_pulls 7 5)"
+want review/codex/code created shared "$shared_57" "$rec$code_receipt"
+want review/codex/security created shared "$shared_57" ""
+check shared-keeps-record 0
+# The base repository's name is matched as GitHub matches it, without case, and
+# a pull request from a fork into o/p counts.
+clean_run
+api open "$(open_pulls 7 5::O/P)"
+want_both shared "$shared_57" "$shared_57" "" ""
+check shared-base-case 0
+clean_run
+api open "$(open_pulls 7 5)"
+amend open '.[1].head.repo = {full_name: "fork/p"}'
+want_both shared "$shared_57" "$shared_57" "" ""
+check shared-from-fork 0
+# A check that would not pass is posted as it is.
+api open "$(open_pulls 7 5)"
+want_both waiting "$waiting_code" "$waiting_security"
+check shared-not-clean 0
+api open "$(open_pulls 7 5)"
+api rules "$(rules review/claude/code)"
+want review/claude/code created unknown-reviewer \
+    "review-gate knows no reviewer claude." -
+check shared-failure 0
+# A pull request closed, on another head, or into another repository, a fork
+# of o/p included, shares nothing.
+for entry in "5:$head:o/p:closed" "5:$old" 5::x/p 5::fork/p; do
+    clean_run
+    api open "$(open_pulls 7 "$entry")"
+    want_clean_both
+    check "shared-not-$entry" 0
+done
+
+# A listing of open pull requests that leaves out the one run for, or that
+# cannot be read, fails closed, posting nothing.
+for entries in 5 "7:$old 5" "7::x/p" "7:::closed"; do
+    read -r -a list <<<"$entries"
+    api open "$(open_pulls "${list[@]}")"
+    want_err="review-gate: the open pull requests of o/p leave out #7"
+    check "open-without-self-$entries" 1
+done
+for page in '"x"' '{}' '[1]' '[null]' "$(open_pulls 7)"$'\n'"{}"; do
+    api open "$page"
+    want_err="review-gate: the open pull requests of o/p cannot be read"
+    check "open-unreadable-$page" 1
+done
+for filter in 'del(.number)' '.number = "5"' '.number = 0' '.number = 5.5' \
+    '.state = null' '.head = "x"' '.head.sha = null' '.base.repo = null' \
+    'del(.base)'; do
+    api open "$(open_pulls 7 5)"
+    amend open ".[1] |= ($filter)"
+    want_err="review-gate: the open pull requests of o/p cannot be read"
+    check "open-entry-$filter" 1
+done
+
+# Run for a closed pull request, the gate posts nothing for it, but runs again
+# for each open pull request with its head, which posts that one's checks.
+api pull "$(pull closed)"
+api open "$(open_pulls "5:$old" 6::x/p)"
+want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100"
+want_err="review-gate: pull request #7 is closed, and no open one has its head"
+want_err+=" $short"
+check closed-alone 0
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api open "$(open_pulls 5)"
+want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
+api repos/o/p/pulls/5
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
+api --paginate repos/o/p/rules/branches/main
+api --paginate repos/o/p/pulls/5/commits\\?per_page=100
+api graphql --paginate -f owner=o -f name=p -F number=5 -f query=...
+api graphql -f owner=o -f name=p -F number=5 -f query=...
+api --paginate repos/o/p/pulls/5/reviews\\?per_page=100
+api graphql --paginate -f id=C1 -f query=...
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/code
+api -X POST repos/o/p/check-runs --input -
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/security
+api -X POST repos/o/p/check-runs --input -"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_clean_both
+check closed-reruns 0
+# Each open one in turn, each still sharing the head with the others but not
+# with the closed one, though the listing lags and still gives it open.
+for entries in "8 5" "7 8 5"; do
+    clean_run
+    api pull "$(pull closed)"
+    api pull-5 "$(pull)"
+    api pull-8 "$(pull)"
+    read -r -a list <<<"$entries"
+    api open "$(open_pulls "${list[@]}")"
+    for other in 5 8; do
+        want_err+="review-gate: pull request #7 is closed; running for"
+        want_err+=" #$other, which has its head $short"$'\n'
+        want_both shared "$(shared_summary "#5 and #8")" \
+            "$(shared_summary "#5 and #8")" "" ""
+    done
+    check "closed-reruns-shared-$entries" 0
+done
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api open "$(open_pulls 7 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_clean_both
+check closed-listed-open 0
+# A run again that finds its own pull request closed too fails rather than run
+# again in turn, and a failing run again ends the run with its status.
+api pull "$(pull closed)"
+api pull-5 "$(pull closed)"
+api open "$(open_pulls 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_err+="review-gate: pull request #5, listed open beside #7, is closed"
+check closed-rerun-closed 1
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api open "$(open_pulls 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'"gh: fake failure"
+FAKE_FAIL="api repos/o/p/pulls/5" check closed-rerun-fails 3
+# One failing leaves the others to run, the first failure's status ending it.
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull closed)"
+api pull-8 "$(pull)"
+api open "$(open_pulls 8 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_err+="review-gate: pull request #5, listed open beside #7, is closed"$'\n'
+want_err+="review-gate: pull request #7 is closed; running for #8, which has its"
+want_err+=" head $short"$'\n'
+want_both shared "$(shared_summary "#5 and #8")" \
+    "$(shared_summary "#5 and #8")" "" ""
+check closed-rerun-closed-then-open 1
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api pull-8 "$(pull closed)"
+api open "$(open_pulls 8 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_both shared "$(shared_summary "#5 and #8")" \
+    "$(shared_summary "#5 and #8")" "" ""
+want_err+="review-gate: pull request #7 is closed; running for #8, which has its"
+want_err+=" head $short"$'\n'
+want_err+="review-gate: pull request #8, listed open beside #7, is closed"
+check closed-rerun-open-then-closed 1
+# A closed pull request's listing must be readable too.
+api pull "$(pull closed)"
+api open '[1]'
+want_err="review-gate: the open pull requests of o/p cannot be read"
+check closed-unreadable 1
+# A run again for a closed one runs no further, whatever REVIEW_GATE_BEFORE
+# gives, so the open one on that head is not run for.
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api open "$(open_pulls 5 "8:$old")"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_clean_both
+REVIEW_GATE_BEFORE=$old check closed-rerun-ignores-before 0
+
+# Run with REVIEW_GATE_BEFORE, the head a push moved the pull request from, the
+# gate posts the pull request's checks on its new head, $old here, then runs
+# again for each other open pull request into o/p still on the head it left.
+pushed() {
+    amend pull ".head.sha = \"$old\""
+    api pull-5 "$(pull)"
+    api pull-8 "$(pull)"
+}
+# Expects pull request 7's checks to wait for a review of $old.
+want_pushed() {
+    local was=$short head=$old short=${old:0:10}
+    want review/codex/code created waiting \
+        "Codex's last code review is of $was, not the head $short. $ask_code"
+    want review/codex/security created waiting \
+        "Codex's last security review is of $was, not the head $short. $ask_security"
+}
+left="review-gate: pull request #7 has left the head $short; running for"
+clean_run
+pushed
+api open "$(open_pulls "7:$old" 5 6::x/p "9:$head:o/p:closed")"
+want_pushed
+want_err+="$left #5, which has that head"$'\n'
+want_clean_both
+REVIEW_GATE_BEFORE=$head check pushed-reruns 0
+# Each other on that head runs once, the two still sharing it.
+clean_run
+pushed
+api open "$(open_pulls 8 "7:$old" 5)"
+want_pushed
+for other in 5 8; do
+    want_err+="$left #$other, which has that head"$'\n'
+    want_both shared "$(shared_summary "#5 and #8")" \
+        "$(shared_summary "#5 and #8")" "" ""
+done
+REVIEW_GATE_BEFORE=$head check pushed-reruns-shared 0
+# With no other open pull request into o/p on that head, nothing more runs.
+clean_run
+pushed
+api open "$(open_pulls "7:$old" 6::x/p "9:$head:o/p:closed")"
+want_pushed
+REVIEW_GATE_BEFORE=$head check pushed-alone 0
+# A REVIEW_GATE_BEFORE naming the head itself moves nothing.
+clean_run
+api open "$(open_pulls 7 5)"
+want_both shared "$shared_57" "$shared_57" "" ""
+REVIEW_GATE_BEFORE=$head check pushed-same-head 0
+# Where the base requires no review check, the others still run.
+pushed
+api rules "$(rules)"
+api open "$(open_pulls "7:$old" 5)"
+want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+=" names none"$'\n'"$left #5, which has that head"$'\n'
+want_err+="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+=" names none"
+REVIEW_GATE_BEFORE=$head check pushed-no-checks 0
+# A run again that fails ends the run with its status, once each other has run.
+clean_run
+pushed
+api pull-5 "$(pull closed)"
+api open "$(open_pulls "7:$old" 5 8)"
+want_pushed
+want_err+="$left #5, which has that head"$'\n'
+want_err+="review-gate: pull request #5, listed open beside #7, is closed"$'\n'
+want_err+="$left #8, which has that head"$'\n'
+want_both shared "$(shared_summary "#5 and #8")" \
+    "$(shared_summary "#5 and #8")" "" ""
+REVIEW_GATE_BEFORE=$head check pushed-rerun-fails 1
+# A REVIEW_GATE_BEFORE that is not a commit SHA fails before any call, and a
+# listing that cannot be read fails before any check is posted.
+for sha in x "${head^^}" "$short" "${head}0"; do
+    want_log=""
+    want_err="review-gate: REVIEW_GATE_BEFORE: $(printf %q "$sha") is not a"
+    want_err+=" commit SHA"$'\n'"$usage"
+    REVIEW_GATE_BEFORE=$sha check "pushed-before-$sha" 2
+done
+pushed
+api open "$(open_pulls "7:$old" 5)"$'\n''[1]'
+want_err="review-gate: the open pull requests of o/p cannot be read"
+REVIEW_GATE_BEFORE=$head check pushed-unreadable 1
+
+# A failing request ends the run with gh's own report and status.
+export FAKE_FAIL
+for FAKE_FAIL in "api repos/o/p/pulls/7" \
+    "api --paginate repos/o/p/pulls\\?state=open\\&per_page=100" \
+    "api --paginate repos/o/p/rules/branches/main" \
+    "api --paginate repos/o/p/pulls/7/commits\\?per_page=100" \
+    "api graphql --paginate -f owner=o -f name=p -F number=7 -f query=..." \
+    "api graphql -f owner=o -f name=p -F number=7 -f query=..." \
+    "api --paginate repos/o/p/pulls/7/reviews\\?per_page=100" \
+    "api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/code" \
+    "api -X POST repos/o/p/check-runs --input -"; do
+    want_err="gh: fake failure"
+    check "gh-fails-$FAKE_FAIL" 3
+done
+api runs "$(page "$running_code")"
+FAKE_FAIL="api -X PATCH repos/o/p/check-runs/6 --input -"
+want_err="gh: fake failure"
+check gh-patch-fails 3
+clean_run
+FAKE_FAIL="api graphql --paginate -f id=C1 -f query=..."
+want_err="gh: fake failure"
+check gh-edits-fails 3
+unset FAKE_FAIL
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

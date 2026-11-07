@@ -1,6 +1,6 @@
 # Common library for Shell
 
-Shell scripts a repository takes as a submodule to pin and upgrade its Dockerfile and workflows, build and push its images, lint its Dockerfiles, shell, YAML and release version, approve proposed workflows, work across and release several projects together, check its Ansible, and plan and apply its Terraform. The sections up to and including *Planning and applying Terraform* are for such a repository; *Working on this repository* covers working on this one.
+Shell scripts a repository takes as a submodule to pin and upgrade its Dockerfile and workflows, build and push its images, lint its Dockerfiles, shell, YAML and release version, approve proposed workflows, gate merges on reviews, work across and release several projects together, check its Ansible, and plan and apply its Terraform. The sections up to and including *Planning and applying Terraform* are for such a repository; *Working on this repository* covers working on this one.
 
 ## Requirements
 
@@ -9,7 +9,7 @@ Bash 4.4 or newer. Every executable script here opens `set -Eeuo pipefail` follo
 The scripts also run these, which a repository needs wherever it runs them:
 
 - `docker/`: git, and the docker CLI with BuildKit and Compose v2; `docker/upgrade` also runs `curl`, `sha256sum` and `timeout`, and `lint/dockerfile-locks`; for a `# TRACK LOCK` line or an exec-form `RUN` it also runs `jq`, and for a `# TRACK LOCK` line a container of the image the lock resolves in, with network
-- `github/`: git
+- `github/`: git; `gh` and `jq` for `github/review-gate`
 - `lint/`: ShellCheck and `file` for `lint/shell`; mikefarah's `yq` and `diff` for `lint/yaml-keys`; `jq` for `lint/dockerfile-locks` where a `RUN` is in exec form
 - `project/`: git and `make`; the docker CLI with Compose v2 for `project/start` and `project/stop`, which `project/build` and `project/upgrade` also run, with a Compose whose `up` takes `--pull`, `--wait` and `--wait-timeout`, and whose `pull` takes `--ignore-buildable`, for `project/start`; `script` for `project/upgrade`; `timeout` for `project/tag-list-origin`, which `project/tag-create` runs
 - `ansible/`: ansible-lint, and `jq` for `ansible/inventory-ssh-known-hosts`
@@ -363,6 +363,53 @@ Here, the target runs `github/workflows-approve`:
 make workflows-approve
 ```
 
+## Gating merges on reviews
+
+`github/review-gate` posts a pull request's review checks, each a check run named `review/REVIEWER/KIND` on its head commit, from what the reviewer has posted on the pull request, so a ruleset requiring them blocks a merge until each review is clean on the latest commit. Codex is the reviewer it knows, with the checks `review/codex/code` and `review/codex/security`. Each check waits while Codex has made no review of the head commit, or one is running, passes once a review of its kind, however it was started, came back clean on the head commit, and fails on anything else, any form of Codex's output it does not recognise included; the details are at the top of `github/review-gate`.
+
+A review is clean where Codex's summary comment gives it completed on the head commit with no findings flagged, Codex has posted no review with findings of its kind on that commit since the review started, and Codex has reported no failure since then. The latest review decides, so a clean review of the same commit, requested again, clears an earlier review's findings; a review with findings submitted in the second the review started, or at a time the gate cannot read, counts against it. The summary's cumulative list of security findings is not read: the head's own result decides. A review a person requested also needs Codex's clean receipt, which Codex posts only for a request, and so does one whose trigger the summary does not give in a form the gate recognises; a review Codex started itself, as when the pull request was opened, posts none when clean.
+
+A review reads the diff against the base branch of its time, so once the pull request's base is changed, as from `latest` to `stable`, a clean review counts only where it started after the change; otherwise each check waits for a new review. A review's start is read from the edit history of Codex's summary comment, which shows each review running before it completes; where the versions from just before that start onwards cannot be read, or include an edit by anyone other than Codex, the check fails until a new review. After a change of base, a review dated from the summary's creation also fails once a comment by Codex has been deleted, since a summary deleted and posted again may hide an earlier start.
+
+Check runs belong to a commit, so pull requests open on the same head commit share its checks, and a clean review of one could pass the other. So while another open pull request of the repository has the same head, a check that would pass waits instead, naming the pull requests; closing all but one, or pushing to all but one, lets the remaining one's checks pass, since the gate runs again for it when another is closed or pushed from that head. A listing of the open pull requests the gate cannot read fails the run.
+
+The gate cannot close three gaps, each lasting until a later run posts the current state: a pull request opened or reopened on a head that already passes carries that pass until the gate's run for it posts the wait, and a run already under way can post its pass after that; a merge into a new base before the gate's run for the change posts the checks goes unchecked; and the run again after a close or a push runs beside the remaining pull request's own runs, so can post a state read just before theirs.
+
+It reads only what the Codex app posted, known by the app's account rather than by Codex's markers, which anyone can paste. Anyone with write access to the repository can edit a comment, so a summary or receipt someone other than Codex last edited fails both checks; such a receipt, or one naming no single commit, fails them while it may belong to the head's review, so a new commit clears it. Anyone with write access can also delete a comment, so each check run records in its `external_id` the summary and the comments it rested on; where a later run finds one of them gone, or an older summary in place of the one recorded, the check fails until a review started since passes, so deleting Codex's newest comments cannot bring back an older clean result.
+
+The gate starts no review: a person comments `@codex review` on the pull request, or `@codex security review` for the security review alone, as the check's summary says.
+
+A check run counts towards a required check only when it comes from the GitHub App the rule names, which a workflow's own token is not, so the checks are posted with a token of a review app allowed to write checks and read pull requests and metadata, and nothing else. The gate makes only the calls GitHub lists for those permissions, so it reads the head commit through the pull request's commits, never the commit itself or the issue, which need Contents and Issues, and the workflow runs it only for a pull request. GitHub lists at most 250 commits of a pull request, so for a pull request with more the head is not among them and the run fails without posting any check; squashing or splitting the branch clears it. The app's private key is in the Actions secret `REVIEW_APP_PRIVATE_KEY` and its client id in the Actions variable `REVIEW_APP_CLIENT_ID`, each available to the repository's Actions as a repository or organisation one, and the app is installed on the repository.
+
+### Setting a repository up
+
+The workflow, `github/review.yml`, runs the gate on each pull request event, a change of base and a closing included, and each comment on a pull request, from the default branch's code, never the pull request's. A repository copies it as a proposal (*Approving workflows*):
+
+```sh
+mkdir -p .github/workflows.new
+cp lib/shell-common/github/review.yml .github/workflows.new/review.yml
+```
+
+Once that is committed and pushed, it is approved:
+
+```sh
+make workflows-approve
+```
+
+GitHub runs a `pull_request_target` or `issue_comment` workflow only from the default branch, so the gate starts once the approval reaches it. Its `# TRACK USES` lines let `docker/upgrade` re-pin the copy with the repository's other workflows (*Upgrading the library*).
+
+The checks posted are those the base branch's rules require. To post others as well, such as to try the gate before any rule requires its checks, the Actions variable `REVIEW_GATE_CHECKS` names them, space-separated:
+
+```sh
+gh variable set REVIEW_GATE_CHECKS --body 'review/codex/code review/codex/security'
+```
+
+The workflow runs the gate with the repository, the pull request's number and the review app's slug, and the app's token in `GH_TOKEN`, and on a push `REVIEW_GATE_BEFORE` holding the head pushed from:
+
+```sh
+lib/shell-common/github/review-gate OWNER/REPO NUMBER APP
+```
+
 ## Building and pushing images
 
 The `docker/` scripts that build or push tagged images, or log in, such as `docker/build-dev-latest` and `docker/login`, read the image repository, such as `ghcr.io/OWNER/NAME`, from a `.dockerrepo` file at the calling repository's root.
@@ -548,7 +595,7 @@ DC_UID=1001
 make test
 ```
 
-The lint is ShellCheck and shfmt on every Bash script; `lint/yaml-keys`, which shows each file whose keys are not sorted as a unified diff against its sorted form, and yamllint on the YAML files `bin/files` lists, with `docker-compose config` on `docker-compose.yml` and actionlint on the workflows; dockerfmt, hadolint and `lint/dockerfile-locks` on the `Dockerfile`; mdformat on `README.md`; checkmake on the `Makefile`; and dotenv-linter on `.env.example`. The tests are the `test/*/*.test` scripts, each at the path of the script it tests under `test/`, run side by side, as many at a time as there are CPUs; each failing test is named, and the run fails if any did.
+The lint is ShellCheck and shfmt on every Bash script; `lint/yaml-keys`, which shows each file whose keys are not sorted as a unified diff against its sorted form, and yamllint on the YAML files `bin/files` lists, with `docker-compose config` on `docker-compose.yml` and actionlint on the workflows and `github/review.yml`; dockerfmt, hadolint and `lint/dockerfile-locks` on the `Dockerfile`; mdformat on `README.md`; checkmake on the `Makefile`; and dotenv-linter on `.env.example`. The tests are the `test/*/*.test` scripts, each at the path of the script it tests under `test/`, run side by side, as many at a time as there are CPUs; each failing test is named, and the run fails if any did.
 
 Named tests skip the lint, and each must be a `test/*/*.test` path from the repository's root:
 
@@ -599,6 +646,8 @@ Base images are pinned by digest, tools downloaded from GitHub by `ARG` and chec
 ```sh
 make upgrade
 ```
+
+`docker/upgrade` re-pins only a workflow in a `.github/workflows` directory, so the actions `github/review.yml` pins are moved by hand (*Updating a pin by hand*); each repository's copy of it is re-pinned with that repository's own workflows.
 
 Where the build or tests fail, fix them, then finish the upgrade:
 

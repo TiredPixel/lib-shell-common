@@ -1,0 +1,21 @@
+<!-- codex-review-receipt:v1 -->
+
+
+### 🛡️ Codex Security Review · _Automatically triggered_
+
+Here are some automated security review suggestions for this pull request.
+
+**Reviewed commit:** `@COMMIT@`
+    
+
+<details> <summary>ℹ️ About Codex security reviews in GitHub</summary>
+<br/>
+
+This is an experimental Codex feature. Security reviews are triggered when:
+- You comment "@codex security review"
+- A regular code review gets triggered (for example, "@codex review" or when a PR is opened), and you’re opted in so security review runs alongside code review
+
+Once complete, Codex will leave suggestions, or a comment if no findings are found.
+
+
+</details>

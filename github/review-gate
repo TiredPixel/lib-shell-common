@@ -1,0 +1,879 @@
+#!/usr/bin/env bash
+#
+# Posts the review checks of pull request NUMBER in repository OWNER/REPO, each
+# a check run named review/REVIEWER/KIND on the pull request's head commit, from
+# what the reviewer has posted on the pull request. Run in a GitHub Actions job
+# on pull_request_target, closed included, and issue_comment, from the default
+# branch's code, with GH_TOKEN holding a token of the review app whose slug is
+# APP, allowed to write checks and read pull requests and metadata. A check run
+# counts towards a required check only from the app the rule names, which an
+# Actions job's own token is not.
+#
+# Usage: review-gate OWNER/REPO NUMBER APP
+#
+# Each REST call is one GitHub's "Permissions required for GitHub Apps" lists
+# for an app with only Checks write, Pull requests read and Metadata read: the
+# pull request, the repository's open ones, its commits and reviews under Pull
+# requests, the branch's rules under Metadata, and listing, creating and
+# updating check runs under Checks. So the head commit's committer date comes
+# from the pull request's commits, not the commit itself, which needs Contents.
+# GitHub documents no permissions for GraphQL, saying an app's queries are to be
+# tested ("Choosing permissions for a GitHub App"), so the trial pull request
+# must confirm the review app's token can read the comments, base-change and
+# edit-history queries below; where it cannot, gh fails and so does the run.
+#
+# The head commit and base branch are read from the API, never from the event,
+# so a run started by an older event still checks the latest commit. The checks
+# posted are each review/REVIEWER/KIND check the base branch's rules require,
+# and each named in REVIEW_GATE_CHECKS, space-separated, so a reviewer can be
+# tried before any rule requires its checks. A number naming no pull request,
+# such as an issue's, fails the run, since the pull request's read answers 404;
+# telling an issue from the issues endpoint would need Issues read.
+#
+# Each check run is created once on the head commit, then updated in place: the
+# latest run this app made of that name there is the one patched, and it is left
+# alone where nothing has changed. A completed run is never reopened, since
+# GitHub documents no way back from completed, so a check going back to
+# in_progress gets a new run. A check is in_progress while the review is
+# awaited or running, and otherwise completed with conclusion success, where the
+# review came back clean on the head commit, or failure, its summary saying why
+# and what to comment. A check naming a reviewer or kind the registry below does
+# not hold fails.
+#
+# The codex reviewer, kinds code and security, reads only what the GitHub App
+# chatgpt-codex-connector posted: comments whose GraphQL author is the Bot of
+# that login and id 199175422, and reviews whose REST user is. Anyone can paste
+# Codex's markers, and anyone with write access can edit or delete a comment, so
+# a summary or receipt someone else last edited fails both checks. A review of
+# a kind passes only where all of these hold, however it was started:
+#
+# - Codex's last summary comment, opening
+#   <!-- codex-pull-request-review-summary -->, has the codex-review-state:v1
+#   JSON on line 2 and, on line 3, the codex-security-review:v1 JSON or, before
+#   any security review, nothing; the heading below them, ## or <details>, is
+#   not read. Each JSON holds exactly the keys and values Codex has been seen to
+#   give, mergeGateEnabled false and blockingSeverityThreshold P0 among them, so
+#   an unknown key, value, status or layout fails.
+# - The kind's entry is completed on the head, with has_any_findings and
+#   has_unresolved_findings false, or, for security, both null. For security,
+#   the codex-security-review:v1 JSON says completed on the head too. The
+#   summary's cumulative list of security findings is not read: the head's own
+#   result decides.
+# - No review by Codex on the head with findings of that kind, headed ###, an
+#   emoji, then Codex Review for code or Codex Security Review for security, was
+#   submitted since the review started, as dated below, in that second or later,
+#   or at a time the gate cannot read. The latest review decides, so a clean
+#   review of the same commit clears an earlier one's findings. A review by
+#   Codex on the head headed otherwise fails both, whenever submitted.
+# - The summary's edit history shows the review running on the head and then
+#   completed: the review started in the first second showing it running in the
+#   versions leading to the latest. Codex rewrites the summary two or three
+#   times in a second as a review starts, sometimes ending on a stale half, so
+#   where the latest second's versions differ the check waits for the next edit.
+#   GitHub can list a version again, out of order, so a repeat is dropped. A
+#   history out of order or not ending in the comment's text fails, as does a
+#   version the gate cannot read, or edited by anyone else, from the second
+#   before the review started to the latest; older versions play no part.
+# - Once the base has changed, the latest change being the latest
+#   BaseRefChangedEvent, the review started in a later second, since it read a
+#   diff against the base of its time; otherwise the check waits for a new one.
+#   A change whose time is unreadable fails. A review dated from the summary's
+#   creation fails too where a comment by Codex, or by an author GitHub does not
+#   give, has been deleted, or the first 100 deletions do not show all.
+# - No comment by Codex since the review started, other than a summary, a
+#   receipt or its refusal of an account not linked to Codex, is its failure
+#   comment, "Codex Review: Something went wrong.", which names no side, so
+#   fails both, or of a form the gate does not recognise.
+# - Where the summary's row for the kind gives the trigger Manual request,
+#   Codex posted a clean receipt for it since it started: a comment opening
+#   <!-- codex-review-receipt:v1 --> whose **Reviewed commit:** is ten hex
+#   digits of the head and which has a line beginning "Codex Review: Didn't find
+#   any major issues." for code, or reading "Security review completed. No
+#   security issues were found in this pull request." for security. PR opened
+#   and New commits post none when clean. A trigger the gate does not recognise,
+#   or a row whose commit is not the head's, needs the receipt as Manual
+#   request does.
+#
+# A receipt for the head that reads as neither, or one that names no single
+# commit of ten hex digits or that someone else last edited, fails both checks
+# where it may belong to the head's review: where it names the head, or was
+# posted no earlier than the head commit's committer date.
+#
+# Each Codex check run records in its external_id the evidence it rested on, as
+# summary=ID at=TIME comments=ID,..., the summary comment, its last edit, and
+# the receipts or failing comments used. Where a later run finds a recorded
+# comment gone, or a summary older than the one recorded, the check fails,
+# keeping that record, until a review started after the recorded time passes,
+# so deleting Codex's newest comments cannot bring back an older clean result.
+# A record the gate cannot read, as a change of its format would leave, says
+# nothing of what it rested on, so the check fails on that commit for good.
+#
+# Check runs belong to a commit, not a pull request, so pull requests sharing a
+# head commit share its checks, and a clean review of one could pass another.
+# While another open pull request into the repository has the same head, a
+# check that would pass waits instead, keeping the latest run's record, its
+# summary naming them all and saying to close all but one. The repository's
+# open pull requests are listed whole, since GitHub lists a commit's own pull
+# requests only as the merged one once the commit is on the default branch. Run
+# for a closed pull request, the gate posts nothing for it, but runs again for
+# each open one with its head, so closing one of two lets the other pass. That
+# run again leaves out the closed one, should the listing still give it open,
+# and fails where it finds its own pull request closed too. Likewise, where
+# REVIEW_GATE_BEFORE gives the head a push moved the pull request from, as a
+# synchronize event's before does, the gate, once this one's checks are posted,
+# runs again for each other open one still on that head, which no longer shares
+# it with this one; a REVIEW_GATE_BEFORE that is not a commit SHA fails the run
+# before any call.
+#
+# The gate cannot close three gaps, each lasting until a later run posts the
+# current state. A pull request opened or reopened on a head that already
+# passes carries that pass until the gate's run for it posts the wait, and a
+# run that listed the open pull requests before then can post a pass after it.
+# A change of base leaves the head's checks as they were until the gate's run
+# for it posts them, so a merge into the new base in that window goes
+# unchecked. A run again after a close or a push runs beside the other pull
+# request's own runs, not after them, so can post a state read just before
+# theirs.
+#
+# Each check posted is named on stderr with its state. A failing request ends
+# the run with gh's status; a pull request whose head is not a commit SHA, or
+# with no base branch, or neither open nor closed, or whose commits do not list
+# the head, a listing of open pull requests that cannot be read or leaves out
+# the open one run for, or a head commit with no committer date, ends it with 1.
+# A run again for another pull request that fails ends the run with its status,
+# once each other has run.
+# GitHub lists at most 250 commits of a pull request, so a head beyond them
+# fails closed.
+# Needs gh and jq.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=${0##*/}
+
+die() {
+    echo "$prog: $*" >&2
+    exit 1
+}
+
+# Names what is wrong with an argument, then the usage, and exits 2.
+usage() {
+    echo "$prog: $*" >&2
+    echo "Usage: $prog OWNER/REPO NUMBER APP" >&2
+    exit 2
+}
+
+# The reviewers the gate knows: each one's kinds, each posted as the check
+# review/REVIEWER/KIND and evaluated by review_REVIEWER, given the kind and the
+# external_id of the check's latest run, which prints the check's state as a
+# JSON object with status, conclusion, title, summary and, where the run is to
+# record one, record, its external_id.
+declare -A reviewers=([codex]="code security")
+
+check_name='^review/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+
+if [ $# -ne 3 ]; then
+    usage "expected 3 arguments, got $#"
+fi
+repo=$1 number=$2 app=$3
+if ! [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    usage "$(printf %q "$repo") is not OWNER/REPO"
+fi
+if ! [[ $number =~ ^[1-9][0-9]*$ ]]; then
+    usage "$(printf %q "$number") is not a pull request number"
+fi
+if ! [[ $app =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    usage "$(printf %q "$app") is not an app slug"
+fi
+read -r -a extra <<<"${REVIEW_GATE_CHECKS:-}"
+for name in "${extra[@]}"; do
+    if ! [[ $name =~ $check_name ]]; then
+        usage "REVIEW_GATE_CHECKS: $(printf %q "$name") is not" \
+            "review/REVIEWER/KIND"
+    fi
+done
+before=${REVIEW_GATE_BEFORE:-}
+if [ -n "$before" ] && ! [[ $before =~ ^[0-9a-f]{40}$ ]]; then
+    usage "REVIEW_GATE_BEFORE: $(printf %q "$before") is not a commit SHA"
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+pull=$(gh api "repos/$repo/pulls/$number")
+head=$(jq -r '.head.sha | strings' <<<"$pull")
+base=$(jq -r '.base.ref | strings' <<<"$pull")
+if ! [[ $head =~ ^[0-9a-f]{40}$ ]]; then
+    die "pull request #$number's head is not a commit SHA"
+fi
+if [ -z "$base" ]; then
+    die "pull request #$number has no base branch"
+fi
+pr_state=$(jq -r '.state | strings' <<<"$pull")
+if [ "$pr_state" != open ] && [ "$pr_state" != closed ]; then
+    die "pull request #$number is neither open nor closed"
+fi
+short=${head:0:10}
+
+# The numbers of the repository's open pull requests with head $2, which share
+# its checks, as $1 says: this one, if listed, or the others. A run again leaves
+# out the pull request it runs again from, which the run before read closed or
+# on another head, since the listing can lag behind; reopening it, or pushing
+# to it, runs the gate for it.
+gh api --paginate "repos/$repo/pulls?state=open&per_page=100" >"$work/open"
+if ! jq -se '
+    def at(f): try f catch null;
+    all(.[]; type == "array") and all(.[][]; type == "object"
+        and (at(.number) | type == "number" and . >= 1 and . == floor)
+        and (at(.state) | type) == "string"
+        and (at(.head.sha) | type) == "string"
+        and (at(.base.repo.full_name) | type) == "string")' \
+    "$work/open" >/dev/null; then
+    die "the open pull requests of $repo cannot be read"
+fi
+sharing() {
+    jq -rs --arg repo "$repo" --arg head "$2" --argjson n "$number" \
+        --arg which "$1" --arg from "${_REVIEW_GATE_FROM-}" '
+        [.[][] | select(.state == "open" and .head.sha == $head
+            and (.base.repo.full_name | ascii_downcase)
+                == ($repo | ascii_downcase))
+         | .number | select((. == $n) == ($which == "self"))
+         | select(tostring != $from)] | unique[]' \
+        "$work/open"
+}
+lines=$(sharing others "$head")
+others=()
+if [ -n "$lines" ]; then
+    mapfile -t others <<<"$lines"
+fi
+
+# Runs the gate again for each pull request after $1 and $2, saying before each
+# that this one $1 and the other has $2. Each runs however the ones before it
+# ended, so one failing leaves no other waiting; it returns the first failure's
+# status, which ends the run. A run again, which _REVIEW_GATE_FROM names and
+# REVIEW_GATE_BEFORE leaves unset, runs no further, so a listing out of date
+# cannot send runs round in a loop.
+run_again() {
+    local why=$1 has=$2 other rc status=0
+    shift 2
+    for other in "$@"; do
+        echo "$prog: pull request #$number $why; running for #$other, which" \
+            "has $has" >&2
+        rc=0
+        _REVIEW_GATE_FROM=$number REVIEW_GATE_BEFORE='' "${BASH_SOURCE[0]}" \
+            "$repo" "$other" "$app" || rc=$?
+        if [ "$status" -eq 0 ]; then
+            status=$rc
+        fi
+    done
+    return "$status"
+}
+
+if [ "$pr_state" = closed ] && [ -n "${_REVIEW_GATE_FROM-}" ]; then
+    die "pull request #$number, listed open beside #$_REVIEW_GATE_FROM, is" \
+        "closed"
+elif [ "$pr_state" = closed ]; then
+    if [ ${#others[@]} -eq 0 ]; then
+        echo "$prog: pull request #$number is closed, and no open one has its" \
+            "head $short" >&2
+    fi
+    run_again "is closed" "its head $short" "${others[@]}"
+    exit
+fi
+self=$(sharing self "$head")
+if [ -z "$self" ]; then
+    die "the open pull requests of $repo leave out #$number"
+fi
+# The others open on the head this one was pushed from, which shared its checks
+# till then, so each runs again once this one's checks are posted, since no
+# event of its own may come to let it pass.
+moved=()
+if [ -n "$before" ] && [ "$before" != "$head" ]; then
+    lines=$(sharing others "$before")
+    if [ -n "$lines" ]; then
+        mapfile -t moved <<<"$lines"
+    fi
+fi
+run_again_moved() {
+    run_again "has left the head ${before:0:10}" "that head" "${moved[@]}"
+}
+if [ ${#others[@]} -gt 0 ]; then
+    # shellcheck disable=SC2016 # jq's own $variables, not the shell's
+    shared=$(jq -rn --arg short "$short" '$ARGS.positional | map(tonumber)
+        | sort | map("#\(.)") | (.[:-1] | join(", ")) + " and " + .[-1]
+        | "Pull requests \(.) are open on the head \($short), so share its checks. Close all but one for this check to pass."' \
+        --args "$number" "${others[@]}")
+fi
+
+# Each page of a listing is an array of its own, so the pages are joined. Lines
+# are read from a command substitution rather than a process substitution,
+# whose status bash can lose.
+gh api --paginate "repos/$repo/rules/branches/$base" >"$work/rules"
+lines=$(jq -rs '
+    [.[][] | select(.type == "required_status_checks")
+     | .parameters.required_status_checks[]?.context
+     | strings | select(startswith("review/"))] | unique[]' "$work/rules")
+required=()
+if [ -n "$lines" ]; then
+    mapfile -t required <<<"$lines"
+fi
+for name in "${required[@]}"; do
+    if ! [[ $name =~ $check_name ]]; then
+        die "$base requires $(printf %q "$name"), which is not" \
+            "review/REVIEWER/KIND"
+    fi
+done
+checks=("${required[@]}" "${extra[@]}")
+if [ ${#checks[@]} -gt 0 ]; then
+    lines=$(printf '%s\n' "${checks[@]}" | LC_ALL=C sort -u)
+    mapfile -t checks <<<"$lines"
+fi
+if [ ${#checks[@]} -eq 0 ]; then
+    echo "$prog: $base requires no review/ check, and REVIEW_GATE_CHECKS" \
+        "names none" >&2
+    run_again_moved
+    exit
+fi
+
+gh api --paginate "repos/$repo/pulls/$number/commits?per_page=100" \
+    >"$work/commits"
+if ! jq -se --arg head "$head" 'any(.[][]?; .sha? == $head)' \
+    "$work/commits" >/dev/null; then
+    die "pull request #$number's commits do not list its head $short"
+fi
+since=$(jq -rs --arg head "$head" 'first(.[][]? | select(.sha? == $head))
+    | .commit?.committer?.date? | strings' "$work/commits")
+if ! [[ $since =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    die "commit $short has no committer date"
+fi
+
+# A GraphQL actor's login as the REST API gives it, with [bot] after an app's,
+# and, for a Bot named as Codex is but with another id, that id after it, so it
+# is never taken for Codex.
+# shellcheck disable=SC2016 # jq's own $variables, not the shell's
+who_jq='def who: if type != "object" then null
+    elif .__typename != "Bot" then .login
+    elif .login == "chatgpt-codex-connector" and .databaseId != 199175422
+    then "\(.login)[bot] \(.databaseId)"
+    else "\(.login)[bot]" end;'
+
+# The comments, each as {id, node, body, created, updated, login, editor,
+# edited}, node being its GraphQL id. GraphQL alone says who last edited a
+# comment.
+# shellcheck disable=SC2016 # GraphQL's own $variables, not the shell's
+query='query($owner: String!, $name: String!, $number: Int!,
+        $endCursor: String) {
+    repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+            comments(first: 100, after: $endCursor) {
+                nodes {
+                    id databaseId body createdAt lastEditedAt
+                    author { __typename login ... on Bot { databaseId } }
+                    editor { __typename login ... on Bot { databaseId } }
+                }
+                pageInfo { hasNextPage endCursor }
+            }
+        }
+    }
+}'
+gh api graphql --paginate -f owner="${repo%/*}" -f name="${repo#*/}" \
+    -F number="$number" -f query="$query" >"$work/pages"
+jq -s "$who_jq"'
+    [.[].data.repository.pullRequest.comments.nodes[]
+     | {id: .databaseId, node: .id, body: (.body // ""), created: .createdAt,
+        updated: (.lastEditedAt // .createdAt), login: (.author | who),
+        editor: (.editor | who),
+        edited: (.lastEditedAt != null or .editor != null)}]' \
+    "$work/pages" >"$work/comments"
+
+# The time of the latest change of base, empty where there has been none, or
+# unreadable where any change's time is not one, which fails a clean review.
+# GitHub lists the timeline oldest first, so the last 100 hold the latest. With
+# it, the first 100 deletions of a comment, which a review dated from the
+# summary's creation needs to have been none of Codex's.
+# shellcheck disable=SC2016 # GraphQL's own $variables, not the shell's
+query='query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+            timelineItems(itemTypes: [BASE_REF_CHANGED_EVENT], last: 100) {
+                nodes { ... on BaseRefChangedEvent { createdAt } }
+            }
+            deletions: timelineItems(itemTypes: [COMMENT_DELETED_EVENT],
+                    first: 100) {
+                nodes {
+                    ... on CommentDeletedEvent {
+                        deletedCommentAuthor { __typename login }
+                    }
+                }
+                pageInfo { hasNextPage }
+            }
+        }
+    }
+}'
+gh api graphql -f owner="${repo%/*}" -f name="${repo#*/}" \
+    -F number="$number" -f query="$query" >"$work/bases"
+# shellcheck disable=SC2016 # jq's own $variables, not the shell's
+based=$(jq -r '
+    def stamp: type == "string"
+        and test("^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$");
+    (try .data.repository.pullRequest.timelineItems.nodes catch null) as $n
+    | if $n == [] then ""
+      elif ($n | type) == "array"
+        and all($n[]; (try .createdAt catch null) | stamp)
+      then [$n[].createdAt] | max
+      else "unreadable" end' "$work/bases")
+# Whether a comment Codex may have posted has been deleted: codex where one by
+# an account of Codex's login, or by an author GitHub does not give, has been,
+# empty where none has, or unreadable where the deletions are not all read.
+# shellcheck disable=SC2016 # jq's own $variables, not the shell's
+deleted=$(jq -r '
+    (try .data.repository.pullRequest.deletions catch null) as $d
+    | if ($d | type) != "object" or ($d.nodes | type) != "array"
+        or any($d.nodes[]; type != "object")
+        or (try $d.pageInfo.hasNextPage catch null) != false
+      then "unreadable"
+      elif any($d.nodes[]; .deletedCommentAuthor
+          | type != "object" or .login == "chatgpt-codex-connector")
+      then "codex"
+      else "" end' "$work/bases")
+
+# The pull request's reviews, each as {id, commit, submitted, codex, body},
+# codex where Codex's app submitted it.
+gh api --paginate "repos/$repo/pulls/$number/reviews?per_page=100" \
+    >"$work/review-pages"
+jq -s '[.[][] | {id, commit: .commit_id, submitted: .submitted_at,
+    body: (.body // ""),
+    codex: (.user.id == 199175422 and .user.type == "Bot"
+        and .user.login == "chatgpt-codex-connector[bot]")}]' \
+    "$work/review-pages" >"$work/reviews"
+
+# Every page of the edit history of Codex's last summary comment, the one the
+# codex reviewer reads; none where there is no summary.
+: >"$work/edits"
+summary=$(jq -r '
+    map(select(.login == "chatgpt-codex-connector[bot]" and (.body
+        | startswith("<!-- codex-pull-request-review-summary -->"))))
+    | last | .node? | strings' "$work/comments")
+if [ -n "$summary" ]; then
+    # shellcheck disable=SC2016 # GraphQL's own $variables, not the shell's
+    query='query($id: ID!, $endCursor: String) {
+        node(id: $id) {
+            ... on IssueComment {
+                id
+                userContentEdits(first: 100, after: $endCursor) {
+                    nodes {
+                        editedAt deletedAt diff
+                        editor { __typename login ... on Bot { databaseId } }
+                    }
+                    pageInfo { hasNextPage endCursor }
+                }
+            }
+        }
+    }'
+    gh api graphql --paginate -f id="$summary" -f query="$query" \
+        >"$work/edits"
+fi
+
+# shellcheck disable=SC2016 # jq's own $variables, not the shell's
+codex_jq='
+    def bot: "chatgpt-codex-connector[bot]";
+    def sha40: type == "string" and test("^[0-9a-f]{40}$");
+    def stamp: type == "string"
+        and test("^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$");
+    def check($status; $conclusion; $title; $summary):
+        {status: $status, conclusion: $conclusion, title: $title,
+         summary: $summary};
+    def waiting($s): check("in_progress"; null; "waiting for Codex"; $s);
+    def reviewing($s): check("in_progress"; null; "Codex reviewing"; $s);
+    def clean($s): check("completed"; "success"; "Codex review clean"; $s);
+    def failed($s): check("completed"; "failure"; "Codex review failed"; $s);
+    # The JSON object a line <!-- NAME {...} --> holds, or null.
+    def marker($name):
+        [capture("^<!-- " + $name + " (?<j>\\{.*\\}) -->$").j] | first
+        | if . == null then null else (try fromjson catch null) end
+        | if type == "object" then . else null end;
+    # A summary body as {state, sec}: the JSON of line 2, and that of line 3,
+    # null where line 3 is blank, as before any security review, or "bad".
+    def markers:
+        split("\n") as $l
+        | {state: ($l[1] // "" | marker("codex-review-state:v1")),
+           sec: ($l[2] // "" | if . == "" then null
+               else marker("codex-security-review:v1") // "bad" end)};
+    def state_ok: type == "object"
+        and keys == ["code_review", "security_review"];
+    def entry_ok: type == "object"
+        and keys == ["commit_sha", "has_any_findings",
+            "has_unresolved_findings", "status"]
+        and ((.commit_sha == null and .status == null)
+            or ((.commit_sha | sha40)
+                and (.status | IN("running", "completed", "failed"))))
+        and all(.has_any_findings, .has_unresolved_findings;
+            . == null or type == "boolean");
+    def sec_ok: type == "object"
+        and keys == ["blockingSeverityThreshold", "headSha",
+            "mergeGateEnabled", "pullRequestNumber", "repository", "status"]
+        and (.headSha | sha40)
+        and (.status | IN("running", "completed", "failed"))
+        and .blockingSeverityThreshold == "P0"
+        and .mergeGateEnabled == false
+        and (.pullRequestNumber | type) == "number"
+        and (.repository | type) == "string";
+    def reviewed:
+        [match("\\*\\*Reviewed commit:\\*\\*\\s*`([^`]*)`"; "g")
+         .captures[0].string];
+    # code or security for a receipt reading clean for that kind, else null.
+    def receipt_kind:
+        split("\n") | map(sub("\\s+$"; ""))
+        | if any(startswith("Codex Review: Didn\u0027t find any major issues."))
+          then "code"
+          elif any(. == "Security review completed. No security issues were found in this pull request.")
+          then "security"
+          else null end;
+    # code or security for a review with findings of that kind, else null.
+    def review_kind:
+        split("\n") | map(sub("\\s+$"; ""))
+        | if any(test("^### \\S+ Codex Review$")) then "code"
+          elif any(test("^### \\S+ Codex Security Review( |$)"))
+          then "security"
+          else null end;
+    # The kind of comment Codex posted, null for one the gate does not know.
+    def form:
+        if startswith("<!-- codex-pull-request-review-summary -->")
+        then "summary"
+        elif startswith("<!-- codex-review-receipt:v1 -->") then "receipt"
+        elif startswith("Codex Review: Something went wrong.") then "failure"
+        elif startswith("To use Codex here, [create a Codex account and connect to github](")
+        then "not-linked"
+        else null end;
+    # The trigger cell of the summary table row $label Review, or null where
+    # there is not one such row naming the head.
+    def trigger($label):
+        [split("\n")[] | capture("^\\| \\S+ \\*\\*" + $label
+            + " Review\\*\\* \\| .* \\| `(?<c>[0-9a-f]{7})` \\| (?<t>[^|]*) \\|$")]
+        | if length == 1 and .[0].c == $head[0:7] then .[0].t else null end;
+    # A comment someone other than Codex last edited, and the check failing on
+    # it, saying $then what clears it.
+    def forged: .edited and .editor != bot;
+    def forgery($what; $then):
+        failed("Codex\u0027s \($what) comment \(.id) was last edited by \(.editor // "an unknown account"), not Codex. \($then)")
+        + {uses: [.id]};
+    # A page of the edit history of the comment whose GraphQL id is $node.
+    def edits_page($node):
+        type == "object" and (.data | type) == "object"
+        and (.data.node | type) == "object" and .data.node.id == $node
+        and (.data.node.userContentEdits | type) == "object"
+        and (.data.node.userContentEdits.nodes | type) == "array"
+        and all(.data.node.userContentEdits.nodes[]; type == "object");
+    # The versions of summary $s, newest first, each as {at, body, editor,
+    # deleted}, from every page of its edit history, $pages, or null where those
+    # are not all its pages. GitHub can list a version twice, out of order, so
+    # only the first of identical versions is kept.
+    def history($s; $pages):
+        if $pages == [] or any($pages[]; edits_page($s.node) | not)
+            or (try $pages[-1].data.node.userContentEdits.pageInfo.hasNextPage
+                catch null) != false
+        then null
+        else
+            [$pages[].data.node.userContentEdits.nodes[]
+             | {at: .editedAt, body: .diff, editor: (.editor | who),
+                deleted: (.deletedAt != null)}]
+            | reduce .[] as $v ([]; if any(.[]; . == $v) then . else . + [$v] end)
+            | if . == [] and $s.edited then null
+              elif . == [] then [{at: $s.created, body: $s.body, editor: bot,
+                  deleted: false}]
+              elif $s.edited | not then null
+              else . end
+        end;
+    # The index after the last item of the array not matching f.
+    def run_start(f): . as $a
+        | ([range(length) | select($a[.] | f | not)] | last // -1) + 1;
+    # The external_id of the latest run, as {summary, at, comments}, null where
+    # there is none, or {bad: true}.
+    def parse_record:
+        if . == "" then null
+        else [capture("^summary=(?<s>[1-9][0-9]*) at=(?<a>\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ) comments=(?<c>([1-9][0-9]*(,[1-9][0-9]*)*)?)$")]
+            | first
+            | if . == null then {bad: true}
+              else {bad: false, summary: (.s | tonumber), at: .a,
+                  comments: (.c | if . == "" then []
+                      else split(",") | map(tonumber) end)} end
+        end;
+
+    $head[0:10] as $short
+    | "\($kind) review" as $what
+    | (if $kind == "security" then "@codex security review"
+       else "@codex review" end) as $cmd
+    | "Comment \($cmd) to start one." as $ask
+    | "Comment \($cmd) to try again." as $retry
+    | "A new commit clears it." as $recommit
+    | map(select(.login == bot)) as $own
+    | ($own | map(.id)) as $ids
+    | ($own | map(select(.body | form == "summary")) | last) as $summary
+    | ($record | parse_record) as $rec
+    | (if $summary == null then
+        waiting("Codex has made no \($what) of \($short) yet. \($ask)")
+      elif $summary | forged then
+        $summary | forgery("summary"; $retry)
+      else
+        ($summary.body | markers) as $m
+        | $m.state as $state
+        | $state["\($kind)_review"]? as $e
+        | ($reviews[0] | map(select(.codex and .commit == $head)))
+            as $on_head
+        | ($on_head | map(select(.body | review_kind == null)) | first)
+            as $unknown
+        | if $state == null then
+            failed("Codex\u0027s summary comment \($summary.id) has no readable codex-review-state:v1 marker.")
+          elif $state | state_ok | not then
+            failed("Codex\u0027s summary comment \($summary.id) gives a codex-review-state:v1 marker the gate does not recognise.")
+          elif $m.sec == "bad" then
+            failed("Codex\u0027s summary comment \($summary.id) has no readable codex-security-review:v1 marker.")
+          elif $e | entry_ok | not then
+            failed("Codex\u0027s summary comment \($summary.id) gives \($kind)_review in a form the gate does not recognise.")
+          elif $e.status == null then
+            waiting("Codex has made no \($what) of \($short) yet. \($ask)")
+          elif $e.commit_sha != $head then
+            waiting("Codex\u0027s last \($what) is of \($e.commit_sha[0:10]), not the head \($short). \($ask)")
+          elif $unknown != null then
+            failed("Codex\u0027s review \($unknown.id) of \($short) has findings. Push a fix, then comment \($cmd).")
+          elif $e.status == "running" then
+            reviewing("Codex\u0027s \($what) of \($short) is running. If it stalls, comment \($cmd).")
+          elif $e.status == "failed" then
+            failed("Codex\u0027s \($what) of \($short) failed. \($retry)")
+          elif $e.has_any_findings == true or $e.has_unresolved_findings == true
+          then
+            failed("Codex\u0027s \($what) of \($short) has findings. Push a fix, then comment \($cmd).")
+          elif [$e.has_any_findings, $e.has_unresolved_findings]
+            | . != [false, false] and ($kind == "code" or . != [null, null])
+          then
+            failed("Codex\u0027s summary comment \($summary.id) gives \($kind)_review in a form the gate does not recognise.")
+          elif $kind == "security" and $m.sec == null then
+            failed("Codex\u0027s summary comment \($summary.id) has no readable codex-security-review:v1 marker.")
+          elif $kind == "security" and ($m.sec | sec_ok | not) then
+            failed("Codex\u0027s summary comment \($summary.id) gives a codex-security-review:v1 marker the gate does not recognise.")
+          elif $kind == "security" and ($m.sec.headSha != $head
+            or $m.sec.status != "completed")
+          then
+            failed("Codex\u0027s codex-security-review:v1 marker says \($m.sec.status) on \($m.sec.headSha[0:10]), not completed on the head \($short).")
+          else
+            ($own
+                | map(select(.body | form == "receipt")
+                  | (.body | reviewed) as $c
+                  | .commit = (if ($c | length) == 1
+                        and ($c[0] | test("^[0-9a-f]{10}$"))
+                      then $c[0] else null end)
+                  | .head = (.commit as $x
+                      | $x != null and ($head | startswith($x)))
+                  # A creation time it cannot read may be recent.
+                  | .recent = (if .created | stamp
+                      then .created >= $since else true end)
+                  | .kind = (.body | receipt_kind)))
+                as $receipts
+            | ($receipts | map(select(.head or .recent))) as $current
+            | ($current | map(select(forged)) | first) as $edited
+            | ($current | map(select(.commit == null)) | first) as $bad
+            | ($receipts | map(select(.head))) as $mine
+            | ($mine | map(select(.kind == null)) | first) as $odd
+            | ($mine | map(select(.kind == $kind))) as $clean
+            | ($summary | history(.; $edits)) as $h
+            | if $edited != null then
+                $edited | forgery("receipt"; $recommit)
+              elif $bad != null then
+                failed("Codex\u0027s receipt comment \($bad.id) names no single reviewed commit of ten hex digits. \($recommit)")
+                + {uses: [$bad.id]}
+              elif $odd != null then
+                failed("Codex\u0027s receipt comment \($odd.id) for \($short) reads as no clean review the gate recognises. \($recommit)")
+                + {uses: [$odd.id]}
+              elif $based != "" and ($based | stamp | not) then
+                failed("The pull request\u0027s latest change of base has no readable time.")
+              elif $h == null
+                or any($h[]; .at | stamp | not)
+                or any(range(1; $h | length); $h[. - 1].at < $h[.].at)
+                or $h[0].at != $summary.updated
+                or ($h | map(select(.at == $h[0].at))
+                    | any(.body == $summary.body) | not)
+              then
+                failed("Codex\u0027s summary comment \($summary.id) has an edit history the gate cannot read. \($retry)")
+              else
+                ($h | map(if (.body | type) == "string" then .body | markers
+                    else {state: null, sec: null} end)) as $vm
+                # The versions grouped by second, oldest first, each as {at,
+                # i, e}: back from the latest, the groups showing the review
+                # completed on the head, then those showing it running there.
+                # A version whose entry the gate cannot read shows neither.
+                | [range($h | length) | . as $i | $vm[$i].state as $s
+                    | {at: $h[$i].at, i: $i,
+                       e: (if ($s | state_ok)
+                           and ($s["\($kind)_review"] | entry_ok)
+                           then $s["\($kind)_review"] else null end)}]
+                | group_by(.at) as $g
+                | ($g | run_start(all(.[]; .e.commit_sha == $head
+                    and .e.status == "completed"))) as $done
+                | ($g[:$done] | run_start(any(.[]; .e.commit_sha == $head
+                    and .e.status == "running"))) as $first
+                # The versions the decision rests on: from the group before
+                # the review started, which shows it had not, to the latest.
+                | [$g[([$first - 1, 0] | max):][][].i] as $w
+                | ($w | map($h[.]) | map(select(.editor != bot)) | first)
+                    as $other
+                | if any($w[]; $h[.].deleted or ($h[.].body | type) != "string")
+                  then
+                    failed("Codex\u0027s summary comment \($summary.id) has an edit history the gate cannot read. \($retry)")
+                  elif $other != null then
+                    failed("Codex\u0027s summary comment \($summary.id) was edited by \($other.editor // "an unknown account"), not Codex. \($retry)")
+                  elif any($w[]; $vm[.].state | state_ok | not) then
+                    failed("Codex\u0027s summary comment \($summary.id) has a version with no readable codex-review-state:v1 marker. \($retry)")
+                  elif any($w[]; $vm[.].state["\($kind)_review"] | entry_ok | not)
+                  then
+                    failed("Codex\u0027s summary comment \($summary.id) has a version giving \($kind)_review in a form the gate does not recognise. \($retry)")
+                  elif [$g[-1][].i | $vm[.] | [.state, (.sec
+                          | if type == "object"
+                            then del(.pullRequestNumber, .repository)
+                            else . end)]]
+                      | unique | length > 1
+                  then
+                    reviewing("Codex is updating its summary of the \($what) of \($short); the check waits for its next edit. If none comes, comment \($cmd).")
+                  else
+                    $g[$first][0].at as $start
+                    | ($own | map(select((.body | form | IN("summary",
+                            "receipt", "not-linked") | not)
+                        and ((.created | stamp | not)
+                            or .created >= $start))) | first) as $after
+                    | ($clean | map(select((.created | stamp)
+                        and .created >= $start))) as $receipt
+                    # A review submitted in the second of the start may
+                    # belong to this review, so counts against it.
+                    | ($on_head | map(select((.body | review_kind) == $kind
+                        and ((.submitted | stamp | not)
+                            or .submitted >= $start))) | first) as $found
+                    | ($summary.body | trigger(if $kind == "code"
+                        then "Code" else "Security" end)) as $trigger
+                    | if $first == $done then
+                        failed("Codex\u0027s summary comment \($summary.id) never shows its \($what) of \($short) running, so when it started is unknown. \($retry)")
+                      elif $found != null then
+                        failed("Codex\u0027s review \($found.id) of \($short) has findings. Push a fix, then comment \($cmd).")
+                      elif $based != "" and $start <= $based then
+                        waiting("Codex\u0027s \($what) of \($short) did not start after the change of base on \($based). \($ask)")
+                      elif $based != "" and $first == 0
+                        and $deleted == "unreadable"
+                      then
+                        failed("The deleted comments of the pull request cannot all be read, so when the \($what) of \($short) started is unknown. \($ask)")
+                      elif $based != "" and $first == 0 and $deleted != ""
+                      then
+                        failed("Summary comment \($summary.id) was posted showing the \($what) of \($short) running, and a comment by Codex has been deleted, so when the review started is unknown. \($ask)")
+                      elif $after != null and ($after.body | form) == "failure"
+                      then
+                        failed("Codex reported a failure in comment \($after.id) after its \($what) of \($short) started. \($retry)")
+                        + {uses: [$after.id]}
+                      elif $after != null then
+                        failed("Codex\u0027s comment \($after.id) is of a form the gate does not recognise. \($retry)")
+                        + {uses: [$after.id]}
+                      elif $receipt == [] and $trigger == "Manual request" then
+                        failed("Codex\u0027s \($what) of \($short) was requested by hand, but Codex posted no clean receipt for it. \($retry)")
+                      elif $receipt == []
+                        and ($trigger | IN("PR opened", "New commits") | not)
+                      then
+                        failed("Codex\u0027s summary gives no trigger the gate recognises for its \($what) of \($short), and no clean receipt confirms it. \($retry)")
+                      else
+                        clean("Codex\u0027s \($what) of \($short) completed clean.")
+                        + {start: $start, uses: (if $trigger == "Manual request"
+                            or ($trigger | IN("PR opened", "New commits") | not)
+                            then $receipt | map(.id) else [] end)}
+                      end
+                  end
+              end
+          end
+      end) as $d
+    | ($rec != null and ($rec.bad or $summary == null
+        or $summary.id < $rec.summary
+        or any($rec.comments[]; . as $c | $ids | index([$c]) | not)))
+        as $rolled
+    | if $rolled and $rec.bad and $d.conclusion == "success" then
+        failed("An earlier run of this check left a record the gate cannot read, so the check fails on this commit. \($recommit)")
+        + {record: $record}
+      elif $rolled and ($d.conclusion != "success" or $d.start <= $rec.at)
+      then
+        (if $d.conclusion == "success" then
+            failed("Codex comments an earlier run of this check rested on are gone, so it needs a review started since. \($ask)")
+         else $d end) + {record: $record}
+      elif $summary == null or ($summary.updated | stamp | not) then
+        $d + {record: $record}
+      else
+        $d + {record: "summary=\($summary.id) at=\($summary.updated) comments=\($d.uses // [] | map(tostring) | join(","))"}
+      end
+    | {status, conclusion, title, summary, record}'
+
+review_codex() {
+    jq -c --arg head "$head" --arg kind "$1" --arg record "$2" \
+        --arg since "$since" --arg based "$based" --arg deleted "$deleted" \
+        --slurpfile edits "$work/edits" --slurpfile reviews "$work/reviews" \
+        "$who_jq$codex_jq" "$work/comments"
+}
+
+# The state, as review_REVIEWER prints it, of a check that fails with title $1
+# and summary $2.
+failure() {
+    jq -cn --arg title "$1" --arg summary "$2" \
+        '{status: "completed", conclusion: "failure", title: $title,
+          summary: $summary}'
+}
+
+for name in "${checks[@]}"; do
+    reviewer=${name#review/}
+    kind=${reviewer#*/}
+    reviewer=${reviewer%%/*}
+
+    gh api --paginate "repos/$repo/commits/$head/check-runs?check_name=$name" \
+        >"$work/runs"
+    run=$(jq -cs --arg name "$name" --arg app "$app" '
+        [.[].check_runs[] | select(.name == $name and .app.slug? == $app)]
+        | max_by(.id)' "$work/runs")
+    record=$(jq -r '.external_id? // "" | strings' <<<"$run")
+
+    if ! [ -v "reviewers[$reviewer]" ]; then
+        state=$(failure "unknown reviewer" \
+            "review-gate knows no reviewer $reviewer.")
+    elif ! [[ " ${reviewers[$reviewer]} " = *" $kind "* ]]; then
+        state=$(failure "unknown review" \
+            "review-gate knows no $kind review by $reviewer.")
+    else
+        state=$("review_$reviewer" "$kind" "$record")
+    fi
+    if [ ${#others[@]} -gt 0 ] &&
+        jq -e '.conclusion == "success"' <<<"$state" >/dev/null; then
+        state=$(jq -c --arg summary "$shared" --arg record "$record" '
+            {status: "in_progress", conclusion: null,
+             title: "waiting on a shared head", summary: $summary}
+            + if has("record") then {record: $record} else {} end' \
+            <<<"$state")
+    fi
+
+    body=$(jq -cn --argjson s "$state" '
+        {status: $s.status, output: {title: $s.title, summary: $s.summary}}
+        + if $s.conclusion then {conclusion: $s.conclusion} else {} end
+        + if $s | has("record") then {external_id: $s.record} else {} end')
+    if [ "$run" != null ] && jq -e --argjson s "$state" '.status == $s.status
+        and .conclusion == $s.conclusion and .output.title == $s.title
+        and .output.summary == $s.summary
+        and (.external_id // "") == ($s.record // "")' <<<"$run" >/dev/null; then
+        action=unchanged
+    elif [ "$run" = null ] || jq -e --argjson s "$state" \
+        '.status == "completed" and $s.status != "completed"' \
+        <<<"$run" >/dev/null; then
+        body=$(jq -c --arg name "$name" --arg head "$head" \
+            '{name: $name, head_sha: $head} + .' <<<"$body")
+        gh api -X POST "repos/$repo/check-runs" --input - <<<"$body" >/dev/null
+        action=created
+    else
+        id=$(jq -r '.id' <<<"$run")
+        if ! [[ $id =~ ^[1-9][0-9]*$ ]]; then
+            die "check run $name on $short has no id"
+        fi
+        gh api -X PATCH "repos/$repo/check-runs/$id" --input - \
+            <<<"$body" >/dev/null
+        action=updated
+    fi
+    jq -r --arg name "$name" --arg action "$action" --arg prog "$prog" \
+        '"\($prog): \($name): \(.conclusion // .status) (\($action)):" +
+         " \(.summary)"' <<<"$state" >&2
+done
+run_again_moved
