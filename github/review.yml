@@ -54,7 +54,9 @@ jobs:
         name: Post review checks
         run: |
           lib/shell-common/github/review-gate "$REPO" "$NUMBER" "$APP"
-    # Bounded so a hung run stops well before GitHub's default timeout.
+    # The gate's own run, which takes seconds, bounded so a hung one stops well
+    # before GitHub's default timeout; a Codex review takes as long as it takes,
+    # the check waiting meanwhile.
     timeout-minutes: 5
 name: Review
 "on":
