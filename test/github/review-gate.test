@@ -883,6 +883,28 @@ comment "$codex" "Here is what I changed." - "$earlier"
 clean_run
 want_clean_both
 check unknown-comment-earlier 0
+# A comment by Codex since the review started, or at a time the gate cannot
+# read, that someone else last edited fails both, whatever it now says, since
+# a failure comment can be edited into a refusal; Codex's own edits, and one
+# posted before the review, do not.
+not_linked="To use Codex here, [create a Codex account and connect to github](https://chatgpt.com/codex/cloud/settings/connectors)."
+for at in "$started" ""; do
+    clean_run
+    comment "$codex" "$not_linked" someone "$at"
+    want_both failed \
+        "Codex's comment 4 was last edited by someone, not Codex. $retry_code" \
+        "Codex's comment 4 was last edited by someone, not Codex. $retry_security" \
+        "${rec}4" "${rec}4"
+    check "edited-not-linked-$at" 0
+done
+clean_run
+comment "$codex" "$not_linked" "$codex" "$started"
+want_clean_both
+check edited-not-linked-by-codex 0
+clean_run
+comment "$codex" "$not_linked" someone "$earlier"
+want_clean_both
+check edited-not-linked-earlier 0
 
 # A receipt for the head in wording the gate does not recognise fails both,
 # clean receipts of both kinds beside it, before or after, notwithstanding.

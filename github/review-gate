@@ -44,8 +44,9 @@
 # chatgpt-codex-connector posted: comments whose GraphQL author is the Bot of
 # that login and id 199175422, and reviews whose REST user is. Anyone can paste
 # Codex's markers, and anyone with write access can edit or delete a comment, so
-# a summary or receipt someone else last edited fails both checks. A review of
-# a kind passes only where all of these hold, however it was started:
+# a summary or receipt someone else last edited fails both checks, as does any
+# other comment by Codex since the review started. A review of a kind passes
+# only where all of these hold, however it was started:
 #
 # - Codex's last summary comment, opening
 #   <!-- codex-pull-request-review-summary -->, has the codex-review-state:v1
@@ -80,10 +81,12 @@
 #   A change whose time is unreadable fails. A review dated from the summary's
 #   creation fails too where a comment by Codex, or by an author GitHub does not
 #   give, has been deleted, or the first 100 deletions do not show all.
-# - No comment by Codex since the review started, other than a summary, a
-#   receipt or its refusal of an account not linked to Codex, is its failure
-#   comment, "Codex Review: Something went wrong.", which names no side, so
-#   fails both, or of a form the gate does not recognise.
+# - No comment by Codex posted since the review started, or at a time the gate
+#   cannot read, other than its summary, was last edited by anyone else, which
+#   fails both, since an edit can turn any into one exempt here. None, other
+#   than a summary, a receipt or its refusal of an account not linked to Codex,
+#   is its failure comment, "Codex Review: Something went wrong.", which names
+#   no side, so fails both, or of a form the gate does not recognise.
 # - Where the summary's row for the kind gives the trigger Manual request,
 #   Codex posted a clean receipt for it since it started: a comment opening
 #   <!-- codex-review-receipt:v1 --> whose **Reviewed commit:** is ten hex
@@ -734,10 +737,14 @@ codex_jq='
                     reviewing("Codex is updating its summary of the \($what) of \($short); the check waits for its next edit. If none comes, comment \($cmd).")
                   else
                     $g[$first][0].at as $start
-                    | ($own | map(select((.body | form | IN("summary",
-                            "receipt", "not-linked") | not)
-                        and ((.created | stamp | not)
-                            or .created >= $start))) | first) as $after
+                    | ($own | map(select((.created | stamp | not)
+                        or .created >= $start))) as $since_start
+                    # One edited by someone else may have been rewritten
+                    # into a form exempt below.
+                    | ($since_start | map(select(.id != $summary.id
+                        and forged)) | first) as $tampered
+                    | ($since_start | map(select(.body | form | IN("summary",
+                        "receipt", "not-linked") | not)) | first) as $after
                     | ($clean | map(select((.created | stamp)
                         and .created >= $start))) as $receipt
                     # A review submitted in the second of the start may
@@ -760,6 +767,9 @@ codex_jq='
                       elif $based != "" and $first == 0 and $deleted != ""
                       then
                         failed("Summary comment \($summary.id) was posted showing the \($what) of \($short) running, and a comment by Codex has been deleted, so when the review started is unknown. \($ask)")
+                      elif $tampered != null then
+                        failed("Codex\u0027s comment \($tampered.id) was last edited by \($tampered.editor // "an unknown account"), not Codex. \($retry)")
+                        + {uses: [$tampered.id]}
                       elif $after != null and ($after.body | form) == "failure"
                       then
                         failed("Codex reported a failure in comment \($after.id) after its \($what) of \($short) started. \($retry)")
