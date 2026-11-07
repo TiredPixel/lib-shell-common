@@ -55,6 +55,9 @@ case $* in
 "api graphql -f owner=o -f name=p -F number="*" -f query="*) answer bases ;;
 "api graphql --paginate -f id="*" -f query="*) answer edits ;;
 "api --paginate repos/o/p/commits/"*"/check-runs?check_name="*) answer runs ;;
+"api --paginate repos/o/p/commits/"*"/check-runs?filter=all&per_page=100")
+    answer head-runs
+    ;;
 "api -X POST repos/o/p/check-runs --input -")
     echo "POST $(jq -cS .)" >>"$FAKE_WRITES"
     echo '{"id": 900}'

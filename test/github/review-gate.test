@@ -139,6 +139,7 @@ reset() {
     api reviews '[]'
     api edits "$edits_page"
     api runs '{"total_count": 0, "check_runs": []}'
+    api head-runs '{"total_count": 0, "check_runs": []}'
     : >"$FAKE_LOG"
     : >"$FAKE_WRITES"
     id=0
@@ -2175,6 +2176,165 @@ FAKE_FAIL="api graphql --paginate -f id=C1 -f query=..."
 want_err="gh: fake failure"
 check gh-edits-fails 3
 unset FAKE_FAIL
+
+# A run for an open pull request that fails once it has read the head, before
+# its checks are all posted, fails each review/ check run of the app on the
+# head not failing already, across pages, as listed, so one passing from an
+# earlier pull request on that head cannot pass this one.
+# The summary of a check failed as the run fails$1.
+gate_failed() {
+    echo "review-gate failed on pull request #7 before posting its checks$1." \
+        "A run of the gate that completes posts this check again."
+}
+# Expects check run $1, named $2, to be failed with summary $3.
+want_invalidated() {
+    want_writes+="PATCH $1 $(jq -cnS --arg m "$3" '{status: "completed",
+        conclusion: "failure",
+        output: {title: "review gate failed", summary: $m}}')"$'\n'
+    want_err+="review-gate: $2: failure (updated): $3"$'\n'
+}
+no_head="pull request #7's commits do not list its head $short"
+passed_code=$(run 11 review/codex/code review-app completed success \
+    "Codex review clean" x)
+passed_security=$(run 15 review/codex/security review-app completed success \
+    "Codex review clean" x)
+failed_security=$(run 12 review/codex/security review-app completed failure \
+    "Codex review failed" x)
+running_security=$(run 15 review/codex/security review-app in_progress "" \
+    "Codex reviewing" x)
+api head-runs "$(page "$passed_code" "$failed_security" \
+    "$(run 13 review/codex/code other-app completed success x x)" \
+    "$(run 14 build review-app completed success x x)")"
+amend head-runs "., $(page "$running_security" \
+    "$(run 16 review/other/kind review-app completed neutral x x)")"
+api commits "$(commits "$old:$pushed")"
+want_err="review-gate: $no_head"$'\n'
+for entry in 11:review/codex/code 15:review/codex/security \
+    16:review/other/kind; do
+    want_invalidated "${entry%%:*}" "${entry#*:}" "$(gate_failed ": $no_head")"
+done
+check invalidated-commits 1
+# Likewise for every failure after the head is read: a pull request with no
+# base branch, an open listing or rules that fail, a committer date missing, or
+# a request failing, the gate's own posting included, after a check is posted.
+api head-runs "$(page "$passed_code")"
+api pull "{\"state\": \"open\", \"head\": {\"sha\": \"$head\"}}"
+want_err="review-gate: pull request #7 has no base branch"$'\n'
+want_invalidated 11 review/codex/code \
+    "$(gate_failed ": pull request #7 has no base branch")"
+check invalidated-no-base 1
+api head-runs "$(page "$passed_code")"
+api open '[1]'
+want_err="review-gate: the open pull requests of o/p cannot be read"$'\n'
+want_invalidated 11 review/codex/code \
+    "$(gate_failed ": the open pull requests of o/p cannot be read")"
+check invalidated-open-unreadable 1
+api head-runs "$(page "$passed_code")"
+api rules "$(rules review/codex)"
+error="main requires review/codex, which is not review/REVIEWER/KIND"
+want_err="review-gate: $error"$'\n'
+want_invalidated 11 review/codex/code "$(gate_failed ": $error")"
+check invalidated-rules 1
+api head-runs "$(page "$passed_code")"
+api commits "$(commits "$head:-")"
+want_err="review-gate: commit $short has no committer date"$'\n'
+want_invalidated 11 review/codex/code \
+    "$(gate_failed ": commit $short has no committer date")"
+check invalidated-date 1
+api head-runs "$(page "$passed_code")"
+want_err="gh: fake failure"$'\n'
+want_invalidated 11 review/codex/code \
+    "$(gate_failed " with status 3; its job's log says why")"
+FAKE_FAIL="api --paginate repos/o/p/pulls/7/reviews\\?per_page=100" \
+    check invalidated-gh-fails 3
+api head-runs "$(page "$passed_code")"
+want review/codex/code created waiting "$waiting_code"
+want_err+="gh: fake failure"$'\n'
+want_invalidated 11 review/codex/code \
+    "$(gate_failed " with status 3; its job's log says why")"
+FAKE_FAIL="api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/security" \
+    check invalidated-after-posting 3
+# Where the head's check runs cannot be listed, or read, or one cannot be
+# failed, the run says so, failing others still, and ends with its status.
+api head-runs "$(page "$passed_code")"
+api commits "$(commits "$old:$pushed")"
+want_err="review-gate: $no_head"$'\n'"gh: fake failure"$'\n'
+want_err+="review-gate: cannot fail the review/ checks of review-app on"
+want_err+=" $short: their check runs cannot be listed"
+FAKE_FAIL="api --paginate repos/o/p/commits/$head/check-runs\\?filter=all\\&per_page=100" \
+    check invalidate-list-fails 1
+for page in '[1]' '{}' '{"check_runs": [1]}' \
+    "$(page)"$'\n''{"check_runs": "x"}'; do
+    api head-runs "$page"
+    api commits "$(commits "$old:$pushed")"
+    want_err="review-gate: $no_head"$'\n'
+    want_err+="review-gate: cannot fail the review/ checks of review-app on"
+    want_err+=" $short: their check runs cannot be read"
+    check "invalidate-unreadable-$page" 1
+done
+api head-runs "$(page "$passed_code" "$passed_security")"
+api commits "$(commits "$old:$pushed")"
+want_err="review-gate: $no_head"$'\n'"gh: fake failure"$'\n'
+want_err+="review-gate: cannot fail check run 11, review/codex/code, on $short"
+want_err+=$'\n'
+want_invalidated 15 review/codex/security "$(gate_failed ": $no_head")"
+FAKE_FAIL="api -X PATCH repos/o/p/check-runs/11 --input -" \
+    check invalidate-patch-fails 1
+api head-runs '{"check_runs": [{"id": "x", "name": "review/codex/code", "app": {"slug": "review-app"}, "conclusion": "success"}]}'
+api commits "$(commits "$old:$pushed")"
+want_err="review-gate: $no_head"$'\n'
+want_err+="review-gate: cannot fail check run review/codex/code on $short: it"
+want_err+=" has no id"
+check invalidate-bad-id 1
+# With no run to fail, nothing is posted.
+api commits "$(commits "$old:$pushed")"
+want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
+api --paginate repos/o/p/rules/branches/main
+api --paginate repos/o/p/pulls/7/commits\\?per_page=100
+api --paginate repos/o/p/commits/$head/check-runs\\?filter=all\\&per_page=100"
+want_err="review-gate: $no_head"
+check invalidate-none 1
+# A run that fails before reading the head, or for a closed pull request, or
+# for a pull request neither open nor closed, or that ends with its checks
+# posted, or with none to post, fails nothing, a run again failing after it
+# included.
+for case in head-short closed-unreadable state-merged no-checks moved-fails; do
+    api head-runs "$(page "$passed_code")"
+    status=1
+    case $case in
+    head-short)
+        api pull "{\"state\": \"open\", \"head\": {\"sha\": \"$short\"}}"
+        want_err="review-gate: pull request #7's head is not a commit SHA"
+        ;;
+    closed-unreadable)
+        api pull "$(pull closed)"
+        api open '[1]'
+        want_err="review-gate: the open pull requests of o/p cannot be read"
+        ;;
+    state-merged)
+        api pull "$(pull merged)"
+        want_err="review-gate: pull request #7 is neither open nor closed"
+        ;;
+    no-checks)
+        api rules "$(rules)"
+        want_err="review-gate: main requires no review/ check, and"
+        want_err+=" REVIEW_GATE_CHECKS names none"
+        status=0
+        ;;
+    moved-fails)
+        clean_run
+        pushed
+        api pull-5 "$(pull closed)"
+        api open "$(open_pulls "7:$old" 5)"
+        want_pushed
+        want_err+="$left #5, which has that head"$'\n'
+        want_err+="review-gate: pull request #5, listed open beside #7, is"
+        want_err+=" closed"
+        ;;
+    esac
+    REVIEW_GATE_BEFORE=$head check "invalidate-not-$case" "$status"
+done
 
 if [ "$failures" -gt 0 ]; then
     exit 1

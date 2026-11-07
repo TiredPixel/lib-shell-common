@@ -147,13 +147,26 @@
 # once each other has run.
 # GitHub lists at most 250 commits of a pull request, so a head beyond them
 # fails closed.
+#
+# A run for an open pull request that ends in failure once it has read the
+# head, before its checks are all posted, fails each review/ check run of the
+# app on the head that is not failing already, its summary naming the error,
+# since a run passing there, posted for another pull request on that head,
+# would otherwise let this one merge unreviewed. Where they cannot all be
+# failed, the run says so, and fails all the same.
 # Needs gh and jq.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 prog=${0##*/}
 
+# The head's checks are failed where the run ends while this is set, naming
+# $error, the message the run died with, where there is one.
+armed=""
+error=""
+
 die() {
+    error=$*
     echo "$prog: $*" >&2
     exit 1
 }
@@ -199,8 +212,73 @@ if [ -n "$before" ] && ! [[ $before =~ ^[0-9a-f]{40}$ ]]; then
     usage "REVIEW_GATE_BEFORE: $(printf %q "$before") is not a commit SHA"
 fi
 
+# Fails each review/ check run of the app on the head whose conclusion is not
+# failure, as the run ends with status $1 before posting its checks. Every such
+# run is failed, not only the latest of each name, so none passes whichever
+# GitHub counts, and one in progress shows the error too. Where they cannot all
+# be failed, it says why on stderr, the run's status failing the run already.
+invalidate() {
+    local why summary body lines id name
+    if [ -n "$error" ]; then
+        why=": $error"
+    else
+        why=" with status $1; its job's log says why"
+    fi
+    summary="review-gate failed on pull request #$number before posting its"
+    summary+=" checks$why. A run of the gate that completes posts this check"
+    summary+=" again."
+    body=$(jq -cn --arg summary "$summary" '{status: "completed",
+        conclusion: "failure",
+        output: {title: "review gate failed", summary: $summary}}')
+    if ! gh api --paginate \
+        "repos/$repo/commits/$head/check-runs?filter=all&per_page=100" \
+        >"$work/head-runs"; then
+        echo "$prog: cannot fail the review/ checks of $app on $short: their" \
+            "check runs cannot be listed" >&2
+        return
+    fi
+    if ! lines=$(jq -rse --arg app "$app" '
+        if all(.[]; type == "object" and (.check_runs | type) == "array"
+            and all(.check_runs[]; type == "object"))
+        then [.[].check_runs[]
+              | select(.app.slug? == $app and (.name | type) == "string"
+                  and (.name | startswith("review/"))
+                  and .conclusion != "failure")
+              | [.id, .name] | @tsv] | join("\n")
+        else false end' "$work/head-runs"); then
+        echo "$prog: cannot fail the review/ checks of $app on $short: their" \
+            "check runs cannot be read" >&2
+        return
+    fi
+    if [ -z "$lines" ]; then
+        return
+    fi
+    while IFS=$'\t' read -r id name <&3; do
+        if ! [[ $id =~ ^[1-9][0-9]*$ ]]; then
+            echo "$prog: cannot fail check run $name on $short: it has no id" >&2
+        elif gh api -X PATCH "repos/$repo/check-runs/$id" --input - \
+            <<<"$body" >/dev/null; then
+            echo "$prog: $name: failure (updated): $summary" >&2
+        else
+            echo "$prog: cannot fail check run $id, $name, on $short" >&2
+        fi
+    done 3<<<"$lines"
+}
+
+# Ends the run with its status, first failing the head's checks where it fails
+# while armed.
+finish() {
+    local status=$?
+    if [ -n "$armed" ] && [ "$status" -ne 0 ]; then
+        armed=""
+        invalidate "$status"
+    fi
+    rm -rf -- "$work"
+    exit "$status"
+}
+
 work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+trap finish EXIT
 
 pull=$(gh api "repos/$repo/pulls/$number")
 head=$(jq -r '.head.sha | strings' <<<"$pull")
@@ -208,14 +286,18 @@ base=$(jq -r '.base.ref | strings' <<<"$pull")
 if ! [[ $head =~ ^[0-9a-f]{40}$ ]]; then
     die "pull request #$number's head is not a commit SHA"
 fi
+short=${head:0:10}
+pr_state=$(jq -r '.state | strings' <<<"$pull")
+# A closed pull request cannot merge, so the run for it posts nothing.
+if [ "$pr_state" = open ]; then
+    armed=1
+fi
 if [ -z "$base" ]; then
     die "pull request #$number has no base branch"
 fi
-pr_state=$(jq -r '.state | strings' <<<"$pull")
 if [ "$pr_state" != open ] && [ "$pr_state" != closed ]; then
     die "pull request #$number is neither open nor closed"
 fi
-short=${head:0:10}
 
 # The numbers of the repository's open pull requests with head $2, which share
 # its checks, as $1 says: this one, if listed, or the others. A run again leaves
@@ -333,6 +415,7 @@ fi
 if [ ${#checks[@]} -eq 0 ]; then
     echo "$prog: $base requires no review/ check, and REVIEW_GATE_CHECKS" \
         "names none" >&2
+    armed=""
     run_again_moved
     exit
 fi
@@ -886,4 +969,5 @@ for name in "${checks[@]}"; do
         '"\($prog): \($name): \(.conclusion // .status) (\($action)):" +
          " \(.summary)"' <<<"$state" >&2
 done
+armed=""
 run_again_moved
