@@ -139,7 +139,7 @@ printf '#!/usr/bin/env bashful\n' >"$t/docker/e"
 : >"$t/docker/f"
 mkdir "$t/docker/sub"
 printf '#!/usr/bin/env bash\n' >"$t/docker/sub/g"
-check shebangs "$t" 0 "$(shells "shell docker/b"$'\n'"shell docker/b2"$'\n'"shell docker/b3")"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+check shebangs "$t" 0 "$(shells "shell docker/b"$'\n'"shell docker/b2"$'\n'"shell docker/b3")"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml"$'\n'"yaml github/review.yml" ""
 
 # The fixtures are read at any depth, by the same first-line rule.
 t=$(tree fixtures)
@@ -149,12 +149,13 @@ mkdir -p "$t/test/fixtures/docker/u/v"
 printf '#!/bin/bash\n' >"$t/test/fixtures/docker/u/v/d"
 printf '#!/bin/sh\n' >"$t/test/fixtures/docker/u/e"
 : >"$t/test/fixtures/docker/u/f"
-check fixtures "$t" 0 "$(shells "" "shell test/fixtures/b"$'\n'"shell $fixture"$'\n'"shell test/fixtures/docker/t/c"$'\n'"shell test/fixtures/docker/u/v/d")"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+check fixtures "$t" 0 "$(shells "" "shell test/fixtures/b"$'\n'"shell $fixture"$'\n'"shell test/fixtures/docker/t/c"$'\n'"shell test/fixtures/docker/u/v/d")"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml"$'\n'"yaml github/review.yml" ""
 
 # Both workflow directories are read, only for *.yml and *.yaml directly in
 # them, the two suffixes GitHub runs a workflow under (GitHub's workflow syntax
 # reference, docs.github.com, checked 2026-11); a directory whose name only
-# begins like theirs is not.
+# begins like theirs is not. The review gate's workflow template follows them,
+# as it does in every case.
 t=$(tree workflows)
 mkdir -p "$t/.github/workflows" "$t/.github/workflows.new/sub" "$t/.github/x" \
     "$t/.github/workflows-old"
@@ -165,12 +166,12 @@ mkdir -p "$t/.github/workflows" "$t/.github/workflows.new/sub" "$t/.github/x" \
 : >"$t/.github/workflows.new/a.yml"
 : >"$t/.github/workflows.new/sub/d.yml"
 : >"$t/.github/x/e.yml"
-check workflows "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml"$'\n'"yaml .github/workflows.new/a.yml"$'\n'"yaml .github/workflows/b.yml"$'\n'"yaml .github/workflows/c.yaml" ""
+check workflows "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml"$'\n'"yaml .github/workflows.new/a.yml"$'\n'"yaml .github/workflows/b.yml"$'\n'"yaml .github/workflows/c.yaml"$'\n'"yaml github/review.yml" ""
 
 # .github/ present with no workflow directory in it.
 t=$(tree github-empty)
 mkdir "$t/.github"
-check github-empty "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+check github-empty "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml"$'\n'"yaml github/review.yml" ""
 
 for d in "${dirs[@]}"; do
     t=$(tree "missing-${d//\//-}")
@@ -210,7 +211,7 @@ FILES=$files check no-scripts-bin "$t" 1 "" "bin/files: bin/ holds no bash scrip
 # bin/files alone is enough, found by its shell=bash line.
 t=$(tree only-files-bin)
 rm -- "$t/bin/a"
-check only-files-bin "$t" 0 "$(shells | grep -vxF 'shell bin/a')"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+check only-files-bin "$t" 0 "$(shells | grep -vxF 'shell bin/a')"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml"$'\n'"yaml github/review.yml" ""
 
 for d in docker test/fixtures .github; do
     t=$(tree "find-fails-${d//\//-}")
@@ -223,7 +224,7 @@ done
 t=$(tree tmp-unlinked)
 mkdir "$work/tmp-unlinked-tmp"
 TMPDIR=$work/tmp-unlinked-tmp FAKE_FIND_TMP_EMPTY=1 check tmp-unlinked "$t" 0 \
-    "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml" ""
+    "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .hadolint.yaml"$'\n'"yaml github/review.yml" ""
 
 # A signal while find runs leaves nothing in TMPDIR. check reports any failure
 # on fd 4, so its stderr carries only bash's report of the signal.
