@@ -36,12 +36,13 @@ lint:
 
 ## Upgrading the library
 
-A repository's `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile` and workflows, and commits the result in an `upgrade-post` target once its build and tests pass. The first two lines of `upgrade-pre` make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
+A repository's `Makefile` moves the submodule to its latest commit in an `upgrade-pre` target, before re-pinning its own `Dockerfile` and workflows, and commits the result in an `upgrade-post` target once its build and tests pass. The first two lines of `upgrade-pre` make the submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead. The third refuses a workflow proposal still pending (*Approving workflows*) before the submodule moves: `docker/upgrade` refuses one too, but only once the submodule has moved, which would leave the move uncommitted beside the proposal.
 
 ```make
 upgrade-pre:
 	git submodule sync lib/shell-common
 	git submodule update --init --checkout lib/shell-common
+	lib/shell-common/github/workflows-pending
 	cd lib/shell-common && git checkout latest && git pull --ff-only
 	lib/shell-common/docker/upgrade --record tmp/upgrade.record Dockerfile .github/workflows/*.yml
 upgrade:
