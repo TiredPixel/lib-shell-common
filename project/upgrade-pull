@@ -2,12 +2,17 @@
 #
 # Fast-forwards the repository, then moves every submodule, recursively, to the
 # head of its origin's default branch: an upgrade's first step, which
-# project/upgrade runs. project/pull brings the tree in line with origin without
-# moving any submodule past the commit recorded for it.
+# project/upgrade runs. From a branch other than the default, each listed
+# project takes a branch of the same name instead. project/pull brings the tree
+# in line with origin without moving any submodule past the commit recorded for
+# it.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+prog=${0##*/}
+
+f_projects=.projects
 
 # --ff-only here and below, whatever the caller's pull.rebase or pull.ff: a
 # diverged branch stops the sweep, where a merge or a rebase would succeed,
@@ -24,6 +29,63 @@ git pull --ff-only --no-recurse-submodules
 export PROJECT_SUBMODULE_INIT=$dir/submodule-init
 "$PROJECT_SUBMODULE_INIT"
 
+# Run from a branch other than the repository's default, as a sweep for a pull
+# request is, each listed project takes the upgrade on a branch of the same
+# name, since its default branch may take changes only through a pull request.
+# Only listed projects commit an upgrade, so no other submodule is branched.
+# HEAD is a branch here, since the pull above refuses a detached one. A
+# repository made with git init and pushed has no origin/HEAD, so origin is
+# asked where it is missing.
+branch=$(git symbolic-ref --short HEAD)
+if ref=$(git symbolic-ref -q --short refs/remotes/origin/HEAD); then
+    default=${ref#origin/}
+else
+    # Assigned on its own, so that errexit sees git fail.
+    heads=$(git ls-remote --symref origin HEAD)
+    default=
+    while IFS= read -r line <&3; do
+        case $line in
+        "ref: refs/heads/"*$'\t'HEAD)
+            line=${line#ref: refs/heads/}
+            default=${line%$'\t'HEAD}
+            break
+            ;;
+        esac
+    done 3<<<"$heads"
+    if [ -z "$default" ]; then
+        echo "$prog: origin names no default branch" >&2
+        exit 1
+    fi
+fi
+
+unset PROJECT_BRANCH
+if [ "$branch" != "$default" ] && [ -f "$f_projects" ]; then
+    export PROJECT_BRANCH=$branch PROJECT_PROG=$prog
+
+    # A branch of that name that exists only on origin is refused, before any
+    # submodule moves: the upgrade would run its Makefile, and anyone able to
+    # push a branch could have put it there. One held locally is the caller's
+    # own, so it is taken as it stands, and a resumed sweep goes on where it
+    # left off. Each project's directory is printed resolved, so the sweep
+    # below knows a listed project however .projects spells its path, as
+    # each-without-project does. Assigned on its own, so that errexit sees the
+    # pass fail. The string is for the sh each-without-project runs, which
+    # expands it.
+    # shellcheck disable=SC2016
+    PROJECT_LISTED=$("$dir/each-without-project" sh -c '
+        set -eu
+        git fetch -q origin
+        if ! git show-ref --verify -q "refs/heads/$PROJECT_BRANCH" &&
+            git show-ref --verify -q "refs/remotes/origin/$PROJECT_BRANCH"
+        then
+            echo "$PROJECT_PROG: $PWD: origin/$PROJECT_BRANCH exists with no" \
+                "local $PROJECT_BRANCH; check it out once reviewed" >&2
+            exit 1
+        fi
+        pwd -P')
+    export PROJECT_LISTED
+fi
+
 # One sweep, from here, over every submodule of this repository, whether
 # .projects names it or not -- and --recursive reaches theirs in turn. Run from
 # inside each project instead, the recursion would start one level too low: it
@@ -37,13 +99,28 @@ export PROJECT_SUBMODULE_INIT=$dir/submodule-init
 # the usual one still follows its own. git submodule update --remote is not
 # used: it also defaults to the remote HEAD, but under --rebase or --merge acts
 # on whatever branch the submodule already has checked out. Only the remote's
-# name is stripped, since a branch name may itself hold a slash. The string is
-# for the sh foreach runs in each submodule, which expands it.
+# name is stripped, since a branch name may itself hold a slash.
+#
+# A listed project on the sweep's branch takes it here, in place of its default
+# branch, so its submodules are brought in line with that branch before foreach
+# descends into them. A new one starts from origin's default branch with no
+# upstream, so a push names its own. The string is for the sh foreach runs in
+# each submodule, which expands it.
 # shellcheck disable=SC2016
 git submodule foreach --recursive '
     set -eu
     ref=$(git symbolic-ref --short refs/remotes/origin/HEAD)
     branch=${ref#origin/}
-    git checkout --no-recurse-submodules "$branch"
-    git pull --ff-only --no-recurse-submodules
+    if [ -n "${PROJECT_BRANCH:-}" ] &&
+        printf "%s\n" "$PROJECT_LISTED" | grep -qxF -- "$(pwd -P)"; then
+        if git show-ref --verify -q "refs/heads/$PROJECT_BRANCH"; then
+            git checkout --no-recurse-submodules "$PROJECT_BRANCH"
+        else
+            git checkout --no-recurse-submodules -b "$PROJECT_BRANCH" \
+                --no-track "origin/$branch"
+        fi
+    else
+        git checkout --no-recurse-submodules "$branch"
+        git pull --ff-only --no-recurse-submodules
+    fi
     "$PROJECT_SUBMODULE_INIT"'
