@@ -5,8 +5,8 @@
 # run pending in the group, the latest, and each run reads the pull request's
 # state afresh, so the last one posts the current state, however many comments
 # Codex's edits queue. The gate's run again for another pull request after a
-# close runs in the closed one's group, so beside the other's own runs, a gap
-# the gate's header names.
+# close or a push runs in the first one's group, so beside the other's own runs,
+# a gap the gate's header names.
 concurrency:
   cancel-in-progress: false
   group: review-${{ github.event.number || github.event.issue.number }}
@@ -52,6 +52,9 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           NUMBER: ${{ github.event.number || github.event.issue.number }}
           REPO: ${{ github.repository }}
+          # The head a push moved the pull request from, so the gate runs again
+          # for any other pull request left on it; only synchronize gives one.
+          REVIEW_GATE_BEFORE: ${{ github.event.before }}
           REVIEW_GATE_CHECKS: ${{ vars.REVIEW_GATE_CHECKS }}
         name: Post review checks
         run: |
@@ -78,4 +81,5 @@ name: Review
       - opened
       - ready_for_review
       - reopened
+      # A push leaves any other pull request on the old head free to pass.
       - synchronize

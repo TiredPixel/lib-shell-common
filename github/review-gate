@@ -118,7 +118,12 @@
 # for a closed pull request, the gate posts nothing for it, but runs again for
 # each open one with its head, so closing one of two lets the other pass. That
 # run again leaves out the closed one, should the listing still give it open,
-# and fails where it finds its own pull request closed too.
+# and fails where it finds its own pull request closed too. Likewise, where
+# REVIEW_GATE_BEFORE gives the head a push moved the pull request from, as a
+# synchronize event's before does, the gate, once this one's checks are posted,
+# runs again for each other open one still on that head, which no longer shares
+# it with this one; a REVIEW_GATE_BEFORE that is not a commit SHA fails the run
+# before any call.
 #
 # The gate cannot close three gaps, each lasting until a later run posts the
 # current state. A pull request opened or reopened on a head that already
@@ -126,8 +131,9 @@
 # run that listed the open pull requests before then can post a pass after it.
 # A change of base leaves the head's checks as they were until the gate's run
 # for it posts them, so a merge into the new base in that window goes
-# unchecked. A run again after a close runs beside the other pull request's own
-# runs, not after them, so can post a state read just before theirs.
+# unchecked. A run again after a close or a push runs beside the other pull
+# request's own runs, not after them, so can post a state read just before
+# theirs.
 #
 # Each check posted is named on stderr with its state. A failing request ends
 # the run with gh's status; a pull request whose head is not a commit SHA, or
@@ -185,6 +191,10 @@ for name in "${extra[@]}"; do
             "review/REVIEWER/KIND"
     fi
 done
+before=${REVIEW_GATE_BEFORE:-}
+if [ -n "$before" ] && ! [[ $before =~ ^[0-9a-f]{40}$ ]]; then
+    usage "REVIEW_GATE_BEFORE: $(printf %q "$before") is not a commit SHA"
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
@@ -204,10 +214,11 @@ if [ "$pr_state" != open ] && [ "$pr_state" != closed ]; then
 fi
 short=${head:0:10}
 
-# The numbers of the repository's open pull requests with the head, which
-# share its checks, as $1 says: this one, if listed, or the others. A run again
-# leaves out the pull request it runs again from, which the run before read
-# closed, since the listing can lag behind; reopening it runs the gate for it.
+# The numbers of the repository's open pull requests with head $2, which share
+# its checks, as $1 says: this one, if listed, or the others. A run again leaves
+# out the pull request it runs again from, which the run before read closed or
+# on another head, since the listing can lag behind; reopening it, or pushing
+# to it, runs the gate for it.
 gh api --paginate "repos/$repo/pulls?state=open&per_page=100" >"$work/open"
 if ! jq -se '
     def at(f): try f catch null;
@@ -220,7 +231,7 @@ if ! jq -se '
     die "the open pull requests of $repo cannot be read"
 fi
 sharing() {
-    jq -rs --arg repo "$repo" --arg head "$head" --argjson n "$number" \
+    jq -rs --arg repo "$repo" --arg head "$2" --argjson n "$number" \
         --arg which "$1" --arg from "${_REVIEW_GATE_FROM-}" '
         [.[][] | select(.state == "open" and .head.sha == $head
             and (.base.repo.full_name | ascii_downcase)
@@ -229,14 +240,34 @@ sharing() {
          | select(tostring != $from)] | unique[]' \
         "$work/open"
 }
-lines=$(sharing others)
+lines=$(sharing others "$head")
 others=()
 if [ -n "$lines" ]; then
     mapfile -t others <<<"$lines"
 fi
 
-# A run again for another pull request, which _REVIEW_GATE_FROM names, runs no
-# further, so a listing out of date cannot send runs round in a loop.
+# Runs the gate again for each pull request after $1 and $2, saying before each
+# that this one $1 and the other has $2. Each runs however the ones before it
+# ended, so one failing leaves no other waiting; it returns the first failure's
+# status, which ends the run. A run again, which _REVIEW_GATE_FROM names and
+# REVIEW_GATE_BEFORE leaves unset, runs no further, so a listing out of date
+# cannot send runs round in a loop.
+run_again() {
+    local why=$1 has=$2 other rc status=0
+    shift 2
+    for other in "$@"; do
+        echo "$prog: pull request #$number $why; running for #$other, which" \
+            "has $has" >&2
+        rc=0
+        _REVIEW_GATE_FROM=$number REVIEW_GATE_BEFORE='' "${BASH_SOURCE[0]}" \
+            "$repo" "$other" "$app" || rc=$?
+        if [ "$status" -eq 0 ]; then
+            status=$rc
+        fi
+    done
+    return "$status"
+}
+
 if [ "$pr_state" = closed ] && [ -n "${_REVIEW_GATE_FROM-}" ]; then
     die "pull request #$number, listed open beside #$_REVIEW_GATE_FROM, is" \
         "closed"
@@ -245,25 +276,26 @@ elif [ "$pr_state" = closed ]; then
         echo "$prog: pull request #$number is closed, and no open one has its" \
             "head $short" >&2
     fi
-    # Each runs however the ones before it ended, so one failing leaves no other
-    # waiting; the first failure's status ends the run.
-    status=0
-    for other in "${others[@]}"; do
-        echo "$prog: pull request #$number is closed; running for #$other," \
-            "which has its head $short" >&2
-        rc=0
-        _REVIEW_GATE_FROM=$number "${BASH_SOURCE[0]}" "$repo" "$other" \
-            "$app" || rc=$?
-        if [ "$status" -eq 0 ]; then
-            status=$rc
-        fi
-    done
-    exit "$status"
+    run_again "is closed" "its head $short" "${others[@]}"
+    exit
 fi
-self=$(sharing self)
+self=$(sharing self "$head")
 if [ -z "$self" ]; then
     die "the open pull requests of $repo leave out #$number"
 fi
+# The others open on the head this one was pushed from, which shared its checks
+# till then, so each runs again once this one's checks are posted, since no
+# event of its own may come to let it pass.
+moved=()
+if [ -n "$before" ] && [ "$before" != "$head" ]; then
+    lines=$(sharing others "$before")
+    if [ -n "$lines" ]; then
+        mapfile -t moved <<<"$lines"
+    fi
+fi
+run_again_moved() {
+    run_again "has left the head ${before:0:10}" "that head" "${moved[@]}"
+}
 if [ ${#others[@]} -gt 0 ]; then
     # shellcheck disable=SC2016 # jq's own $variables, not the shell's
     shared=$(jq -rn --arg short "$short" '$ARGS.positional | map(tonumber)
@@ -298,7 +330,8 @@ fi
 if [ ${#checks[@]} -eq 0 ]; then
     echo "$prog: $base requires no review/ check, and REVIEW_GATE_CHECKS" \
         "names none" >&2
-    exit 0
+    run_again_moved
+    exit
 fi
 
 gh api --paginate "repos/$repo/pulls/$number/commits?per_page=100" \
@@ -843,3 +876,4 @@ for name in "${checks[@]}"; do
         '"\($prog): \($name): \(.conclusion // .status) (\($action)):" +
          " \(.summary)"' <<<"$state" >&2
 done
+run_again_moved

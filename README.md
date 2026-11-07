@@ -371,9 +371,9 @@ A review is clean where Codex's summary comment gives it completed on the head c
 
 A review reads the diff against the base branch of its time, so once the pull request's base is changed, as from `latest` to `stable`, a clean review counts only where it started after the change; otherwise each check waits for a new review. A review's start is read from the edit history of Codex's summary comment, which shows each review running before it completes; where the versions from just before that start onwards cannot be read, or include an edit by anyone other than Codex, the check fails until a new review. After a change of base, a review dated from the summary's creation also fails once a comment by Codex has been deleted, since a summary deleted and posted again may hide an earlier start.
 
-Check runs belong to a commit, so pull requests open on the same head commit share its checks, and a clean review of one could pass the other. So while another open pull request of the repository has the same head, a check that would pass waits instead, naming the pull requests; closing all but one lets the remaining one's checks pass, since the gate runs again for it when another is closed. A listing of the open pull requests the gate cannot read fails the run.
+Check runs belong to a commit, so pull requests open on the same head commit share its checks, and a clean review of one could pass the other. So while another open pull request of the repository has the same head, a check that would pass waits instead, naming the pull requests; closing all but one, or pushing to all but one, lets the remaining one's checks pass, since the gate runs again for it when another is closed or pushed from that head. A listing of the open pull requests the gate cannot read fails the run.
 
-The gate cannot close three gaps, each lasting until a later run posts the current state: a pull request opened or reopened on a head that already passes carries that pass until the gate's run for it posts the wait, and a run already under way can post its pass after that; a merge into a new base before the gate's run for the change posts the checks goes unchecked; and the run again after a close runs beside the remaining pull request's own runs, so can post a state read just before theirs.
+The gate cannot close three gaps, each lasting until a later run posts the current state: a pull request opened or reopened on a head that already passes carries that pass until the gate's run for it posts the wait, and a run already under way can post its pass after that; a merge into a new base before the gate's run for the change posts the checks goes unchecked; and the run again after a close or a push runs beside the remaining pull request's own runs, so can post a state read just before theirs.
 
 It reads only what the Codex app posted, known by the app's account rather than by Codex's markers, which anyone can paste. Anyone with write access to the repository can edit a comment, so a summary or receipt someone other than Codex last edited fails both checks; such a receipt, or one naming no single commit, fails them while it may belong to the head's review, so a new commit clears it. Anyone with write access can also delete a comment, so each check run records in its `external_id` the summary and the comments it rested on; where a later run finds one of them gone, or an older summary in place of the one recorded, the check fails until a review started since passes, so deleting Codex's newest comments cannot bring back an older clean result.
 
@@ -404,7 +404,7 @@ The checks posted are those the base branch's rules require. To post others as w
 gh variable set REVIEW_GATE_CHECKS --body 'review/codex/code review/codex/security'
 ```
 
-The workflow runs the gate with the repository, the pull request's number and the review app's slug, and the app's token in `GH_TOKEN`:
+The workflow runs the gate with the repository, the pull request's number and the review app's slug, and the app's token in `GH_TOKEN`, and on a push `REVIEW_GATE_BEFORE` holding the head pushed from:
 
 ```sh
 lib/shell-common/github/review-gate OWNER/REPO NUMBER APP

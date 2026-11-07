@@ -2039,6 +2039,96 @@ api pull "$(pull closed)"
 api open '[1]'
 want_err="review-gate: the open pull requests of o/p cannot be read"
 check closed-unreadable 1
+# A run again for a closed one runs no further, whatever REVIEW_GATE_BEFORE
+# gives, so the open one on that head is not run for.
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api open "$(open_pulls 5 "8:$old")"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_clean_both
+REVIEW_GATE_BEFORE=$old check closed-rerun-ignores-before 0
+
+# Run with REVIEW_GATE_BEFORE, the head a push moved the pull request from, the
+# gate posts the pull request's checks on its new head, $old here, then runs
+# again for each other open pull request into o/p still on the head it left.
+pushed() {
+    amend pull ".head.sha = \"$old\""
+    api pull-5 "$(pull)"
+    api pull-8 "$(pull)"
+}
+# Expects pull request 7's checks to wait for a review of $old.
+want_pushed() {
+    local was=$short head=$old short=${old:0:10}
+    want review/codex/code created waiting \
+        "Codex's last code review is of $was, not the head $short. $ask_code"
+    want review/codex/security created waiting \
+        "Codex's last security review is of $was, not the head $short. $ask_security"
+}
+left="review-gate: pull request #7 has left the head $short; running for"
+clean_run
+pushed
+api open "$(open_pulls "7:$old" 5 6::x/p "9:$head:o/p:closed")"
+want_pushed
+want_err+="$left #5, which has that head"$'\n'
+want_clean_both
+REVIEW_GATE_BEFORE=$head check pushed-reruns 0
+# Each other on that head runs once, the two still sharing it.
+clean_run
+pushed
+api open "$(open_pulls 8 "7:$old" 5)"
+want_pushed
+for other in 5 8; do
+    want_err+="$left #$other, which has that head"$'\n'
+    want_both shared "$(shared_summary "#5 and #8")" \
+        "$(shared_summary "#5 and #8")" "" ""
+done
+REVIEW_GATE_BEFORE=$head check pushed-reruns-shared 0
+# With no other open pull request into o/p on that head, nothing more runs.
+clean_run
+pushed
+api open "$(open_pulls "7:$old" 6::x/p "9:$head:o/p:closed")"
+want_pushed
+REVIEW_GATE_BEFORE=$head check pushed-alone 0
+# A REVIEW_GATE_BEFORE naming the head itself moves nothing.
+clean_run
+api open "$(open_pulls 7 5)"
+want_both shared "$shared_57" "$shared_57" "" ""
+REVIEW_GATE_BEFORE=$head check pushed-same-head 0
+# Where the base requires no review check, the others still run.
+pushed
+api rules "$(rules)"
+api open "$(open_pulls "7:$old" 5)"
+want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+=" names none"$'\n'"$left #5, which has that head"$'\n'
+want_err+="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+=" names none"
+REVIEW_GATE_BEFORE=$head check pushed-no-checks 0
+# A run again that fails ends the run with its status, once each other has run.
+clean_run
+pushed
+api pull-5 "$(pull closed)"
+api open "$(open_pulls "7:$old" 5 8)"
+want_pushed
+want_err+="$left #5, which has that head"$'\n'
+want_err+="review-gate: pull request #5, listed open beside #7, is closed"$'\n'
+want_err+="$left #8, which has that head"$'\n'
+want_both shared "$(shared_summary "#5 and #8")" \
+    "$(shared_summary "#5 and #8")" "" ""
+REVIEW_GATE_BEFORE=$head check pushed-rerun-fails 1
+# A REVIEW_GATE_BEFORE that is not a commit SHA fails before any call, and a
+# listing that cannot be read fails before any check is posted.
+for sha in x "${head^^}" "$short" "${head}0"; do
+    want_log=""
+    want_err="review-gate: REVIEW_GATE_BEFORE: $(printf %q "$sha") is not a"
+    want_err+=" commit SHA"$'\n'"$usage"
+    REVIEW_GATE_BEFORE=$sha check "pushed-before-$sha" 2
+done
+pushed
+api open "$(open_pulls "7:$old" 5)"$'\n''[1]'
+want_err="review-gate: the open pull requests of o/p cannot be read"
+REVIEW_GATE_BEFORE=$head check pushed-unreadable 1
 
 # A failing request ends the run with gh's own report and status.
 export FAKE_FAIL
