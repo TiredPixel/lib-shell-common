@@ -90,6 +90,8 @@ if [ -d .github ]; then
         \( -path '.github/workflows/*' -o -path '.github/workflows.new/*' \) \
         \( -name '*.yml' -o -name '*.yaml' \)
 fi
+# The review gate's workflow, which projects copy, linted as a live one is.
+workflow_files+=(github/review.yml)
 yaml_files=("${compose_files[@]}" .hadolint.yaml "${workflow_files[@]}")
 
 docker_files=(Dockerfile)

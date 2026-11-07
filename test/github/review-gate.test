@@ -1,0 +1,835 @@
+#!/usr/bin/env bash
+#
+# Tests github/review-gate with gh faked on PATH, so nothing reaches GitHub. The
+# fake answers each read from a file the case writes, and logs each check run
+# written. Each case starts from pull request 7 of o/p, a pull request on main
+# with head $head, whose rules require review/codex/code and
+# review/codex/security beside a check of another name, with a head commit
+# committed a day before comments are posted by default, with no comments and no
+# check runs, and checks the gate's status, that its stdout is empty, the check
+# runs it wrote and its stderr, exactly. Comments are built from the fixtures,
+# which keep the form of Codex's summary and receipts with synthetic SHAs.
+#
+# Run: test/github/review-gate.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+gate=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../github")/review-gate
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/github/review-gate")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/api"
+cp -p -- "$fixtures/gh" "$work/bin/"
+export PATH=$work/bin:$PATH
+export FAKE_DIR=$work/api FAKE_LOG=$work/log FAKE_WRITES=$work/writes
+codex='chatgpt-codex-connector[bot]'
+head=abcdef0123456789abcdef0123456789abcdef01
+old=fedcba9876543210fedcba9876543210fedcba98
+short=${head:0:10}
+# The head commit's committer date, and when comments are posted by default.
+pushed=2000-01-01T00:00:00Z
+posted=2000-01-02T00:00:00Z
+before=1999-12-31T00:00:00Z
+ask="Comment @codex review to start one."
+# The four endings Codex has written after its clean code receipt's sentence.
+endings=("Already looking forward to the next diff." "Keep it up!" "Bravo."
+    "Nice work!")
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Writes $2 to the answer the fake gives for $1.
+api() {
+    printf '%s\n' "$2" >"$FAKE_DIR/$1"
+}
+
+# Rules on main requiring each check named, beside a rule of another type.
+rules() {
+    jq -cn '[{type: "deletion"},
+        {type: "required_status_checks", parameters: {
+            required_status_checks: ([{context: "build"}]
+                + ($ARGS.positional | map({context: .})))}}]' --args "$@"
+}
+
+# A page of a pull request's commits, each argument SHA:DATE, a date of - giving
+# the commit no committer.
+commits() {
+    jq -cn '$ARGS.positional | map(index(":") as $i | .[$i + 1:] as $date
+        | {sha: .[:$i], commit: {committer: (if $date == "-" then null
+            else {date: $date} end)}})' --args "$@"
+}
+
+# The state between cases: the default answers, no comments, nothing logged and
+# nothing expected, and the calls to gh not checked.
+reset() {
+    unset want_log
+    api pull "{\"head\": {\"sha\": \"$head\"}, \"base\": {\"ref\": \"main\"}}"
+    api rules "$(rules review/codex/code review/codex/security)"
+    api commits "$(commits "$old:$before" "$head:$pushed")"
+    api comments "$empty_page"
+    api runs '{"total_count": 0, "check_runs": []}'
+    : >"$FAKE_LOG"
+    : >"$FAKE_WRITES"
+    id=0
+    want_writes=""
+    want_err=""
+}
+
+# A GraphQL page of no comments.
+empty_page='{"data": {"repository": {"pullRequest": {"comments": {"nodes": [],
+"pageInfo": {"hasNextPage": false, "endCursor": null}}}}}}'
+
+# The GraphQL actor for login $1, a Bot where it ends in [bot], or null for -.
+actor() {
+    jq -cn --arg l "$1" 'if $l == "-" then null
+        elif $l | endswith("[bot]")
+        then {__typename: "Bot", login: $l[:-5]}
+        else {__typename: "User", login: $l} end'
+}
+
+# Appends a comment by login $1 with body $2 to the comments, as comment $id,
+# last edited by login $3 where it is not -, or by an account GitHub no longer
+# names where it is ?, posted at $4 where given, else a day after the head
+# commit; a body of - is null.
+comment() {
+    local by=${3:--} edited=true
+    if [ "$by" = - ]; then
+        edited=false
+    elif [ "$by" = "?" ]; then
+        by=-
+    fi
+    id=$((id + 1))
+    jq -c --argjson id "$id" --argjson author "$(actor "$1")" \
+        --arg body "$2" --argjson editor "$(actor "$by")" \
+        --argjson edited "$edited" --arg created "${4-$posted}" '
+        .data.repository.pullRequest.comments.nodes += [{databaseId: $id,
+            author: $author,
+            body: (if $body == "-" then null else $body end),
+            createdAt: $created, editor: $editor,
+            lastEditedAt: (if $edited then $created else null end)}]
+        ' "$FAKE_DIR/comments" >"$work/comments"
+    mv -- "$work/comments" "$FAKE_DIR/comments"
+}
+
+# The codex-review-state:v1 JSON for a code review of commit $1, status $2 and
+# has_unresolved_findings $3, and a security review of $4, $5 and $6, where $4
+# is not -.
+state() {
+    jq -cn --arg cs "$1" --arg cst "$2" --argjson cf "$3" --arg ss "${4:--}" \
+        --arg sst "${5:-}" --argjson sf "${6:-null}" '
+        {code_review: {commit_sha: $cs, has_any_findings: false,
+            has_unresolved_findings: $cf, status: $cst}}
+        + if $ss == "-" then {} else {security_review: {commit_sha: $ss,
+            has_any_findings: null, has_unresolved_findings: $sf,
+            status: $sst}} end'
+}
+
+# The codex-security-review:v1 JSON for status $1 on commit $2.
+security() {
+    jq -cn --arg st "$1" --arg sha "$2" '{blockingSeverityThreshold: "P0",
+        headSha: $sha, mergeGateEnabled: false, pullRequestNumber: 7,
+        repository: "o/p", status: $st}'
+}
+
+# A summary comment's body with $1 for the state marker's JSON and $2 for the
+# security marker's, the security marker completed on the head by default.
+summary() {
+    local t
+    t=$(<"$fixtures/summary")
+    t=${t//@STATE@/"$1"}
+    printf '%s\n' "${t//@SECURITY@/"${2-$(security completed "$head")}"}"
+}
+
+# A clean code receipt's body for commit $1, ending $2.
+receipt_code() {
+    local t
+    t=$(<"$fixtures/receipt-code")
+    t=${t//@ENDING@/"${2:-Keep it up!}"}
+    printf '%s\n' "${t//@COMMIT@/"$1"}"
+}
+
+# A clean security receipt's body for commit $1.
+receipt_security() {
+    local t
+    t=$(<"$fixtures/receipt-security")
+    printf '%s\n' "${t//@COMMIT@/"$1"}"
+}
+
+# Adds Codex's summary with both reviews completed on the head with flags $1
+# and $2, false and null by default.
+codex_completed() {
+    comment "$codex" "$(summary "$(state "$head" completed "${1:-false}" \
+        "$head" completed "${2:-null}")")"
+}
+
+# Expects check $1 to be written as action $2 (created, updated ID, or
+# unchanged) in state $3 (waiting, reviewing, clean, failed, or
+# unknown-reviewer or unknown-review), with summary $4, and named on stderr.
+want() {
+    local name=$1 action=$2 kind=$3 summary=$4 status=completed conclusion=""
+    local title body
+    case $kind in
+    waiting) status=in_progress title="waiting for @codex review" ;;
+    reviewing) status=in_progress title="Codex reviewing" ;;
+    clean) conclusion=success title="Codex review clean" ;;
+    failed) conclusion=failure title="Codex review failed" ;;
+    unknown-reviewer) conclusion=failure title="unknown reviewer" ;;
+    unknown-review) conclusion=failure title="unknown review" ;;
+    esac
+    body=$(jq -cnS --arg s "$status" --arg c "$conclusion" --arg t "$title" \
+        --arg m "$summary" '{status: $s, output: {title: $t, summary: $m}}
+        + if $c == "" then {} else {conclusion: $c} end')
+    case $action in
+    created)
+        want_writes+="POST $(jq -cS --arg n "$name" --arg h "$head" \
+            '. + {name: $n, head_sha: $h}' <<<"$body")"$'\n'
+        ;;
+    updated*)
+        want_writes+="PATCH ${action#updated } $body"$'\n'
+        action=updated
+        ;;
+    esac
+    want_err+="review-gate: $name: ${conclusion:-$status} ($action): $summary"
+    want_err+=$'\n'
+}
+
+# Expects both Codex checks to be created in state $1, with summaries $2 for
+# code and $3 for security.
+want_both() {
+    want review/codex/code created "$1" "$2"
+    want review/codex/security created "$1" "$3"
+}
+
+# Runs the gate as case $1 with the arguments after $2, o/p 7 review-app where
+# none are given and none where the only one is "none", and checks it exits $2,
+# prints nothing on stdout, writes want_writes, prints want_err on stderr and,
+# where want_log is set, calls gh as it says; then resets.
+check() {
+    local name=$1 status=$2 rc=0
+    shift 2
+    if [ $# -eq 0 ]; then
+        set -- o/p 7 review-app
+    elif [ $# -eq 1 ] && [ "$1" = none ]; then
+        set --
+    fi
+    "$gate" "$@" >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$FAKE_WRITES")" != "${want_writes%$'\n'}" ]; then
+        fail "$name" "writes are: $(<"$FAKE_WRITES")"
+    elif [ "$(<"$work/err")" != "${want_err%$'\n'}" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    elif [ -v want_log ] && [ "$(<"$FAKE_LOG")" != "$want_log" ]; then
+        fail "$name" "gh was called as: $(<"$FAKE_LOG")"
+    fi
+    reset
+}
+
+usage="Usage: review-gate OWNER/REPO NUMBER APP"
+
+# Each argument is checked before gh is called.
+reset
+want_log=""
+want_err="review-gate: expected 3 arguments, got 0"$'\n'"$usage"
+check usage-none 2 none
+want_log=""
+want_err="review-gate: expected 3 arguments, got 4"$'\n'"$usage"
+check usage-four 2 o/p 7 review-app x
+want_log=""
+want_err="review-gate: expected 3 arguments, got 2"$'\n'"$usage"
+check usage-two 2 o/p 7
+for repo in o o/p/q "o p/q" ""; do
+    want_log=""
+    want_err="review-gate: $(printf %q "$repo") is not OWNER/REPO"$'\n'"$usage"
+    check "usage-repo-$repo" 2 "$repo" 7 review-app
+done
+for number in 0 07 x -1 ""; do
+    want_log=""
+    want_err="review-gate: $(printf %q "$number") is not a pull request"
+    want_err+=" number"$'\n'"$usage"
+    check "usage-number-$number" 2 o/p "$number" review-app
+done
+for app in Review -app "a b" ""; do
+    want_log=""
+    want_err="review-gate: $(printf %q "$app") is not an app slug"$'\n'"$usage"
+    check "usage-app-$app" 2 o/p 7 "$app"
+done
+for extra in review/codex review/codex/code/x other/codex/code "review/a b/c"; do
+    want_log=""
+    want_err="review-gate: REVIEW_GATE_CHECKS: $(printf %q "${extra%% *}") is"
+    want_err+=" not review/REVIEWER/KIND"$'\n'"$usage"
+    REVIEW_GATE_CHECKS="review/codex/code $extra" check "usage-extra-$extra" 2
+done
+
+# A number naming no pull request, such as a plain issue's, fails on the pull
+# request's 404 and reads nothing further.
+api pull 404
+want_log="api repos/o/p/pulls/7"
+want_err="gh: Not Found (HTTP 404)"
+check plain-issue 1
+
+# The head and base come from the pull request as the API gives it.
+api pull "{\"head\": {\"sha\": \"$short\"}, \"base\": {\"ref\": \"main\"}}"
+want_err="review-gate: pull request #7's head is not a commit SHA"
+check head-short 1
+api pull '{"base": {"ref": "main"}}'
+want_err="review-gate: pull request #7's head is not a commit SHA"
+check head-missing 1
+api pull "{\"head\": {\"sha\": \"${head^^}\"}, \"base\": {\"ref\": \"main\"}}"
+want_err="review-gate: pull request #7's head is not a commit SHA"
+check head-upper 1
+api pull "{\"head\": {\"sha\": \"$head\"}, \"base\": {\"ref\": \"\"}}"
+want_err="review-gate: pull request #7 has no base branch"
+check base-empty 1
+api pull "{\"head\": {\"sha\": \"$head\"}}"
+want_err="review-gate: pull request #7 has no base branch"
+check base-missing 1
+
+# The event's payload, naming another head, plays no part: the checks, and the
+# reads of check runs, go to the head the API gives, and the rules read are the
+# base branch's.
+printf '{"pull_request": {"head": {"sha": "%s"}}}\n' "$old" >"$work/event"
+api pull "{\"head\": {\"sha\": \"$head\"}, \"base\": {\"ref\": \"next\"}}"
+want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/rules/branches/next
+api --paginate repos/o/p/pulls/7/commits\\?per_page=100
+api graphql --paginate -f owner=o -f name=p -F number=7 -f query=...
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/code
+api -X POST repos/o/p/check-runs --input -
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/security
+api -X POST repos/o/p/check-runs --input -"
+want_both waiting "Codex has made no code review of $short yet. $ask" \
+    "Codex has made no security review of $short yet. $ask"
+GITHUB_EVENT_PATH=$work/event GITHUB_SHA=$old check head-from-api 0
+
+# Which checks are posted: those the rules require, across pages, and those
+# REVIEW_GATE_CHECKS names, each once, in order.
+api rules '[{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}]}}]'
+want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+=" names none"
+check none-required 0
+api rules '[]'
+want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+=" names none"
+REVIEW_GATE_CHECKS=" " check no-rules 0
+api rules '[]'
+want review/codex/code created waiting \
+    "Codex has made no code review of $short yet. $ask"
+REVIEW_GATE_CHECKS=review/codex/code check extra-only 0
+api rules "$(rules review/codex/security)"$'\n'"$(rules review/codex/code)"
+want_both waiting "Codex has made no code review of $short yet. $ask" \
+    "Codex has made no security review of $short yet. $ask"
+check rules-pages 0
+api rules "$(rules review/codex/security)"
+want_both waiting "Codex has made no code review of $short yet. $ask" \
+    "Codex has made no security review of $short yet. $ask"
+REVIEW_GATE_CHECKS=" review/codex/security  review/codex/code " \
+    check extra-and-required 0
+api rules "$(rules review/codex)"
+want_err="review-gate: main requires review/codex, which is not"
+want_err+=" review/REVIEWER/KIND"
+check required-malformed 1
+
+# A check naming a reviewer or kind the registry lacks fails.
+api rules "$(rules review/claude/code review/codex/style)"
+want review/claude/code created unknown-reviewer \
+    "review-gate knows no reviewer claude."
+want review/codex/style created unknown-review \
+    "review-gate knows no style review by codex."
+check unknown 0
+
+# No review yet, with only comments that are not Codex's summary, one of them
+# with no body.
+comment someone "@codex review"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" -
+want_both waiting "Codex has made no code review of $short yet. $ask" \
+    "Codex has made no security review of $short yet. $ask"
+check no-review 0
+
+# A summary with no security review yet.
+comment "$codex" "$(summary "$(state "$head" in_progress null)")"
+want review/codex/code created reviewing \
+    "Codex's code review of $short is in_progress."
+want review/codex/security created waiting \
+    "Codex has made no security review of $short yet. $ask"
+check security-absent 0
+
+comment "$codex" "$(summary "$(state "$head" in_progress null \
+    "$head" queued null)" "$(security in_progress "$head")")"
+want_both reviewing "Codex's code review of $short is in_progress." \
+    "Codex's security review of $short is queued."
+check running 0
+
+for status in canceled cancelled error errored failed failure skipped \
+    timed_out; do
+    comment "$codex" "$(summary "$(state "$head" "$status" null \
+        "$head" "$status" null)")"
+    want_both failed "Codex's code review of $short ended $status." \
+        "Codex's security review of $short ended $status."
+    check "ended-$status" 0
+done
+
+# Clean with each recorded code receipt, the security review's flag null, as
+# Codex gives it with no findings, and the code review's false.
+for ending in "${endings[@]}"; do
+    codex_completed
+    comment "$codex" "$(receipt_code "$short" "$ending")"
+    comment "$codex" "$(receipt_security "$short")"
+    want_both clean "Codex's code review of $short completed clean." \
+        "Codex's security review of $short completed clean."
+    check "clean-$ending" 0
+done
+
+# A null flag with a clean receipt passes the code review too.
+codex_completed null null
+comment "$codex" "$(receipt_security "$short")"
+comment "$codex" "$(receipt_code "$short")"
+want_both clean "Codex's code review of $short completed clean." \
+    "Codex's security review of $short completed clean."
+check null-clean 0
+
+# A false or null flag with no receipt fails.
+codex_completed false null
+want_both failed \
+    "Codex's code review of $short completed, but Codex posted no clean receipt for it." \
+    "Codex's security review of $short completed, but Codex posted no clean receipt for it."
+check no-receipt 0
+
+# The receipt of one kind does not pass the other.
+codex_completed
+comment "$codex" "$(receipt_security "$short")"
+want review/codex/code created failed \
+    "Codex's code review of $short completed, but Codex posted no clean receipt for it."
+want review/codex/security created clean \
+    "Codex's security review of $short completed clean."
+check security-receipt-only 0
+
+# Unresolved findings fail, a clean receipt for the commit notwithstanding.
+codex_completed true true
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want_both failed "Codex's code review of $short has unresolved findings." \
+    "Codex's security review of $short has unresolved findings."
+check findings 0
+
+# A receipt for the head in wording the gate does not recognise fails both,
+# clean receipts of both kinds beside it, before or after, notwithstanding.
+codex_completed
+comment "$codex" "$(receipt_code "$short" | sed "s/Didn't find any major/Found two/")"
+want_both failed \
+    "Codex's receipt comment 2 for $short reads as no clean review the gate recognises." \
+    "Codex's receipt comment 2 for $short reads as no clean review the gate recognises."
+check unrecognised 0
+codex_completed
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+comment "$codex" "$(receipt_security "$short" | sed 's/No security issues/Two issues/')"
+want_both failed \
+    "Codex's receipt comment 4 for $short reads as no clean review the gate recognises." \
+    "Codex's receipt comment 4 for $short reads as no clean review the gate recognises."
+check unrecognised-after-clean 0
+codex_completed
+comment "$codex" "$(receipt_code "$short" | sed "s/Didn't find any major/Found two/")"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want_both failed \
+    "Codex's receipt comment 2 for $short reads as no clean review the gate recognises." \
+    "Codex's receipt comment 2 for $short reads as no clean review the gate recognises."
+check unrecognised-before-clean 0
+# An unrecognised receipt for another commit plays no part.
+codex_completed
+comment "$codex" "$(receipt_code "${old:0:10}" | sed "s/Didn't find any major/Found two/")"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want_both clean "Codex's code review of $short completed clean." \
+    "Codex's security review of $short completed clean."
+check unrecognised-other-commit 0
+# The sentence must open its line, and the security sentence stand alone.
+codex_completed
+comment "$codex" "$(receipt_code "$short" | sed 's/^Codex Review/> Codex Review/')"
+comment "$codex" "$(receipt_security "$short" | sed 's/request\.$/request. Mostly./')"
+want_both failed \
+    "Codex's receipt comment 2 for $short reads as no clean review the gate recognises." \
+    "Codex's receipt comment 2 for $short reads as no clean review the gate recognises."
+check sentence-placement 0
+
+# A review of an older commit waits for a review of the head, a clean one
+# notwithstanding.
+comment "$codex" "$(summary "$(state "$old" completed false \
+    "$old" completed null)" "$(security completed "$old")")"
+comment "$codex" "$(receipt_code "${old:0:10}")"
+comment "$codex" "$(receipt_security "${old:0:10}")"
+want_both waiting \
+    "Codex's last code review is of ${old:0:10}, not the head $short. $ask" \
+    "Codex's last security review is of ${old:0:10}, not the head $short. $ask"
+check older-commit 0
+
+# A receipt for another commit does not count for the head.
+codex_completed
+comment "$codex" "$(receipt_code "${old:0:10}")"
+comment "$codex" "$(receipt_security "${old:0:10}")"
+want_both failed \
+    "Codex's code review of $short completed, but Codex posted no clean receipt for it." \
+    "Codex's security review of $short completed, but Codex posted no clean receipt for it."
+check receipt-other-commit 0
+
+# A receipt naming no single commit of ten hex digits fails both.
+for commit in "${short:0:7}" "$head" "${short^^}" "$short "; do
+    codex_completed
+    comment "$codex" "$(receipt_code "$commit")"
+    comment "$codex" "$(receipt_security "$short")"
+    want_both failed \
+        "Codex's receipt comment 2 names no single reviewed commit of ten hex digits." \
+        "Codex's receipt comment 2 names no single reviewed commit of ten hex digits."
+    check "receipt-commit-$commit" 0
+done
+codex_completed
+comment "$codex" "$(receipt_code "$short" | grep -v 'Reviewed commit')"
+comment "$codex" "$(receipt_security "$short")"
+want_both failed \
+    "Codex's receipt comment 2 names no single reviewed commit of ten hex digits." \
+    "Codex's receipt comment 2 names no single reviewed commit of ten hex digits."
+check receipt-commit-none 0
+codex_completed
+comment "$codex" "$(receipt_code "$short")"$'\n'"**Reviewed commit:** \`$short\`"
+comment "$codex" "$(receipt_security "$short")"
+want_both failed \
+    "Codex's receipt comment 2 names no single reviewed commit of ten hex digits." \
+    "Codex's receipt comment 2 names no single reviewed commit of ten hex digits."
+check receipt-commit-twice 0
+# One posted before the head commit belongs to an earlier commit and plays no
+# part, unless it names the head; one whose posting time is unreadable may be
+# recent, so fails both.
+codex_completed
+comment "$codex" "$(receipt_code "${short:0:7}")" - "$before"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want_both clean "Codex's code review of $short completed clean." \
+    "Codex's security review of $short completed clean."
+check receipt-commit-earlier 0
+for created in "" 2000-01-01 "${posted/Z/+00:00}"; do
+    codex_completed
+    comment "$codex" "$(receipt_code "${short:0:7}")" - "$created"
+    comment "$codex" "$(receipt_code "$short")"
+    comment "$codex" "$(receipt_security "$short")"
+    want_both failed \
+        "Codex's receipt comment 2 names no single reviewed commit of ten hex digits." \
+        "Codex's receipt comment 2 names no single reviewed commit of ten hex digits."
+    check "receipt-commit-created-$created" 0
+done
+codex_completed
+comment "$codex" "$(receipt_code "$short")" - "$pushed"
+comment "$codex" "$(receipt_security "$short" | grep -v 'Reviewed commit')" - \
+    "$pushed"
+want_both failed \
+    "Codex's receipt comment 3 names no single reviewed commit of ten hex digits." \
+    "Codex's receipt comment 3 names no single reviewed commit of ten hex digits."
+check receipt-commit-at-head 0
+
+# A state marker that is missing or unreadable fails both.
+for marker in "" "{" "[]" '"x"' "{\"code_review\": 1"; do
+    comment "$codex" "$(summary "$marker")"
+    want_both failed \
+        "Codex's summary comment 1 has no readable codex-review-state:v1 marker." \
+        "Codex's summary comment 1 has no readable codex-review-state:v1 marker."
+    check "state-marker-$marker" 0
+done
+comment "$codex" "$(summary "$(state "$head" completed false \
+    "$head" completed null)" | grep -v codex-review-state)"
+want_both failed \
+    "Codex's summary comment 1 has no readable codex-review-state:v1 marker." \
+    "Codex's summary comment 1 has no readable codex-review-state:v1 marker."
+check state-marker-absent 0
+
+# An entry in a form the gate does not recognise fails its own check alone.
+security_clean="Codex's security review of $short completed clean."
+clean_state=$(state "$head" completed false "$head" completed null)
+for entry in '1' '{"commit_sha": "x", "status": "completed",
+"has_unresolved_findings": false}' "{\"commit_sha\": \"${head^^}\",
+\"status\": \"completed\", \"has_unresolved_findings\": false}" \
+    "{\"status\": \"completed\", \"has_unresolved_findings\": false}" \
+    "{\"commit_sha\": \"$head\", \"status\": \"Completed\",
+\"has_unresolved_findings\": false}" \
+    "{\"commit_sha\": \"$head\", \"status\": 1,
+\"has_unresolved_findings\": false}" \
+    "{\"commit_sha\": \"$head\", \"status\": \"completed\",
+\"has_unresolved_findings\": \"no\"}" \
+    "{\"commit_sha\": \"$head\", \"status\": \"completed\"}"; do
+    comment "$codex" "$(summary "$(jq -c --argjson e "$entry" \
+        '.code_review = $e' <<<"$clean_state")")"
+    comment "$codex" "$(receipt_code "$short")"
+    comment "$codex" "$(receipt_security "$short")"
+    want review/codex/code created failed \
+        "Codex's summary comment 1 gives code_review in a form the gate does not recognise."
+    want review/codex/security created clean "$security_clean"
+    check "entry-$entry" 0
+done
+
+# The security marker must be readable and say completed on the head.
+for marker in "" "{" "{\"status\": \"completed\"}" \
+    "{\"headSha\": \"$head\", \"status\": \"Done!\"}" \
+    "{\"headSha\": \"$short\", \"status\": \"completed\"}"; do
+    comment "$codex" "$(summary "$(state "$head" completed false \
+        "$head" completed null)" "$marker")"
+    comment "$codex" "$(receipt_code "$short")"
+    comment "$codex" "$(receipt_security "$short")"
+    want review/codex/code created clean \
+        "Codex's code review of $short completed clean."
+    want review/codex/security created failed \
+        "Codex's summary comment 1 has no readable codex-security-review:v1 marker."
+    check "security-marker-$marker" 0
+done
+for marker in "in_progress:$head" "completed:$old"; do
+    status=${marker%%:*} sha=${marker#*:}
+    comment "$codex" "$(summary "$(state "$head" completed false \
+        "$head" completed null)" "$(security "$status" "$sha")")"
+    comment "$codex" "$(receipt_code "$short")"
+    comment "$codex" "$(receipt_security "$short")"
+    want review/codex/code created clean \
+        "Codex's code review of $short completed clean."
+    want review/codex/security created failed \
+        "Codex's codex-security-review:v1 marker says $status on ${sha:0:10}, not completed on the head $short."
+    check "security-marker-$status" 0
+done
+
+# Another app's or a person's copy of the summary and receipts is ignored.
+for login in "other-reviewer[bot]" someone chatgpt-codex-connector; do
+    comment "$login" "$(summary "$(state "$head" completed false \
+        "$head" completed null)")"
+    comment "$login" "$(receipt_code "$short")"
+    comment "$login" "$(receipt_security "$short")"
+    want_both waiting "Codex has made no code review of $short yet. $ask" \
+        "Codex has made no security review of $short yet. $ask"
+    check "copy-$login" 0
+    codex_completed
+    comment "$login" "$(receipt_code "$short")"
+    comment "$login" "$(receipt_security "$short")"
+    want_both failed \
+        "Codex's code review of $short completed, but Codex posted no clean receipt for it." \
+        "Codex's security review of $short completed, but Codex posted no clean receipt for it."
+    check "copy-receipts-$login" 0
+done
+
+# Codex's comments count only where they open with their marker.
+comment "$codex" "Quoting: $(summary "$(state "$head" completed false \
+    "$head" completed null)")"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want_both waiting "Codex has made no code review of $short yet. $ask" \
+    "Codex has made no security review of $short yet. $ask"
+check marker-inside-summary 0
+codex_completed
+comment "$codex" "Quoting: $(receipt_code "$short")"
+comment "$codex" "Quoting: $(receipt_security "$short")"
+want_both failed \
+    "Codex's code review of $short completed, but Codex posted no clean receipt for it." \
+    "Codex's security review of $short completed, but Codex posted no clean receipt for it."
+check marker-inside-receipts 0
+
+# A summary or receipt someone other than Codex last edited fails both; Codex's
+# own edits do not.
+for editor in someone "other-reviewer[bot]" chatgpt-codex-connector "?"; do
+    comment "$codex" "$(summary "$(state "$head" completed false \
+        "$head" completed null)")" "$editor"
+    comment "$codex" "$(receipt_code "$short")"
+    comment "$codex" "$(receipt_security "$short")"
+    by=$editor
+    if [ "$by" = "?" ]; then
+        by="an unknown account"
+    fi
+    want_both failed \
+        "Codex's summary comment 1 was last edited by $by, not Codex." \
+        "Codex's summary comment 1 was last edited by $by, not Codex."
+    check "edited-summary-$editor" 0
+    codex_completed
+    comment "$codex" "$(receipt_code "$short")" "$editor"
+    comment "$codex" "$(receipt_security "$short")"
+    want_both failed \
+        "Codex's receipt comment 2 was last edited by $by, not Codex." \
+        "Codex's receipt comment 2 was last edited by $by, not Codex."
+    check "edited-receipt-$editor" 0
+done
+comment "$codex" "$(summary "$(state "$head" completed false \
+    "$head" completed null)")" "$codex"
+comment "$codex" "$(receipt_code "$short")" "$codex"
+comment "$codex" "$(receipt_security "$short")"
+want_both clean "Codex's code review of $short completed clean." \
+    "Codex's security review of $short completed clean."
+check edited-by-codex 0
+# An edited receipt for another commit counts where it may be recent, as one
+# posted since the head commit may be, but not where it predates it.
+codex_completed
+comment "$codex" "$(receipt_code "${old:0:10}")" someone "$before"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want_both clean "Codex's code review of $short completed clean." \
+    "Codex's security review of $short completed clean."
+check edited-receipt-earlier 0
+codex_completed
+comment "$codex" "$(receipt_code "${old:0:10}")" someone
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want_both failed \
+    "Codex's receipt comment 2 was last edited by someone, not Codex." \
+    "Codex's receipt comment 2 was last edited by someone, not Codex."
+check edited-receipt-recent 0
+# One rewritten to name the head counts however old.
+codex_completed
+comment "$codex" "$(receipt_code "$short")" someone "$before"
+comment "$codex" "$(receipt_security "$short")"
+want_both failed \
+    "Codex's receipt comment 2 was last edited by someone, not Codex." \
+    "Codex's receipt comment 2 was last edited by someone, not Codex."
+check edited-receipt-head 0
+
+# Codex's last summary is the one read.
+codex_completed
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+comment "$codex" "$(summary "$(state "$head" in_progress null \
+    "$head" in_progress null)" "$(security in_progress "$head")")"
+want_both reviewing "Codex's code review of $short is in_progress." \
+    "Codex's security review of $short is in_progress."
+check last-summary 0
+
+# Comments are read across pages.
+codex_completed
+mv -- "$FAKE_DIR/comments" "$work/page1"
+api comments "$empty_page"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+api comments "$(<"$work/page1")"$'\n'"$(<"$FAKE_DIR/comments")"
+want_both clean "Codex's code review of $short completed clean." \
+    "Codex's security review of $short completed clean."
+check comments-pages 0
+
+# An existing check run of this app is updated, the latest where there are
+# several, and left alone where it already says the same; another app's run,
+# or a run of another name, is not reused.
+waiting_code="Codex has made no code review of $short yet. $ask"
+waiting_security="Codex has made no security review of $short yet. $ask"
+run() {
+    jq -cn --argjson id "$1" --arg name "$2" --arg app "$3" --arg s "$4" \
+        --arg c "$5" --arg t "$6" --arg m "$7" '{id: $id, name: $name,
+        app: {slug: $app}, status: $s,
+        conclusion: (if $c == "" then null else $c end),
+        output: {title: $t, summary: $m}}'
+}
+# A page of check runs, each argument a run as run prints it.
+page() {
+    jq -cn '{check_runs: [$ARGS.positional[] | fromjson]}' --args "$@"
+}
+failed_code=$(run 5 review/codex/code review-app completed failure \
+    "Codex review failed" x)
+running_code=$(run 6 review/codex/code review-app in_progress "" \
+    "Codex reviewing" y)
+other_app=$(run 9 review/codex/code other-app in_progress "" x x)
+other_name=$(run 7 build review-app in_progress "" x x)
+waiting=$(run 8 review/codex/security review-app in_progress "" \
+    "waiting for @codex review" "$waiting_security")
+api runs "$(page "$failed_code" "$running_code" "$other_app" "$waiting")"
+want review/codex/code "updated 6" waiting "$waiting_code"
+want review/codex/security unchanged waiting "$waiting_security"
+check runs-reused 0
+api runs "$(page "$other_app")"$'\n'"$(page "$other_name")"
+want_both waiting "$waiting_code" "$waiting_security"
+check runs-other 0
+# A finished run is updated to a new finished state, but never reopened: a
+# check going back to in_progress gets a new run.
+failed_code=$(run 6 review/codex/code review-app completed failure \
+    "Codex review failed" x)
+clean_security=$(run 8 review/codex/security review-app completed success \
+    "Codex review clean" x)
+api runs "$(page "$failed_code" "$clean_security")"
+codex_completed
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want review/codex/code "updated 6" clean \
+    "Codex's code review of $short completed clean."
+want review/codex/security "updated 8" clean \
+    "Codex's security review of $short completed clean."
+check runs-finished 0
+codex_completed
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(summary "$(state "$head" in_progress null \
+    "$head" completed null)")"
+comment "$codex" "$(receipt_security "$short")"
+want review/codex/code created reviewing \
+    "Codex's code review of $short is in_progress."
+want review/codex/security unchanged clean \
+    "Codex's security review of $short completed clean."
+api runs "$(page "$failed_code" "$(run 8 review/codex/security review-app \
+    completed success "Codex review clean" \
+    "Codex's security review of $short completed clean.")")"
+check runs-reopened 0
+api runs '{"check_runs": [{"id": "x", "name": "review/codex/code", "app": {"slug": "review-app"}, "status": "in_progress", "conclusion": null, "output": {}}]}'
+want_err="review-gate: check run review/codex/code on $short has no id"
+check runs-bad-id 1
+
+# The head commit's committer date is read from the pull request's commits,
+# across pages, from the head's own entry: a receipt naming no commit, posted
+# after the head commit but before a later-dated commit listed beside it, fails
+# both.
+api commits "$(commits "$old:$before")"$'\n'"$(commits "$head:$pushed" \
+    "${old:0:39}0:2000-01-03T00:00:00Z")"
+codex_completed
+comment "$codex" "$(receipt_code "${short:0:7}")"
+comment "$codex" "$(receipt_code "$short")"
+comment "$codex" "$(receipt_security "$short")"
+want_both failed \
+    "Codex's receipt comment 2 names no single reviewed commit of ten hex digits." \
+    "Codex's receipt comment 2 names no single reviewed commit of ten hex digits."
+check commits-head-entry 0
+# A head the commits do not list, as where a pull request has more than GitHub
+# lists, fails closed, as does a page that is no list of commits.
+for page in "$(commits "$old:$pushed")" "[]" '"x"' '[1, "x", null]' \
+    "$(commits "$short:$pushed")" "$(commits "${head^^}:$pushed")"; do
+    api commits "$page"
+    want_err="review-gate: pull request #7's commits do not list its head $short"
+    check "commits-no-head-$page" 1
+done
+# The head commit's committer date must be readable.
+for date in "" - 2000-01-01 "${pushed/Z/+00:00}"; do
+    api commits "$(commits "$head:$date")"
+    want_err="review-gate: commit $short has no committer date"
+    check "commit-date-$date" 1
+done
+for entry in "{\"sha\": \"$head\"}" "{\"sha\": \"$head\", \"commit\": {}}" \
+    "{\"sha\": \"$head\", \"commit\": \"x\"}" \
+    "{\"sha\": \"$head\", \"commit\": {\"committer\": {\"date\": 1}}}"; do
+    api commits "[$entry]"
+    want_err="review-gate: commit $short has no committer date"
+    check "commit-date-entry-$entry" 1
+done
+
+# A failing request ends the run with gh's own report and status.
+export FAKE_FAIL
+for FAKE_FAIL in "api repos/o/p/pulls/7" \
+    "api --paginate repos/o/p/rules/branches/main" \
+    "api --paginate repos/o/p/pulls/7/commits\\?per_page=100" \
+    "api graphql --paginate -f owner=o -f name=p -F number=7 -f query=..." \
+    "api -X POST repos/o/p/check-runs --input -"; do
+    want_err="gh: fake failure"
+    check "gh-fails-$FAKE_FAIL" 3
+done
+api runs "$(page "$running_code")"
+FAKE_FAIL="api -X PATCH repos/o/p/check-runs/6 --input -"
+want_err="gh: fake failure"
+check gh-patch-fails 3
+unset FAKE_FAIL
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi
