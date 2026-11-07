@@ -61,6 +61,7 @@ name: Review
   issue_comment:
     types:
       - created
+      - deleted
       - edited
   pull_request_target:
     types:
