@@ -3,10 +3,11 @@
 # Fakes the gh api calls github/review-gate makes on repository o/p. Logs each
 # call's arguments, shell-quoted, to FAKE_LOG, a GraphQL query logged as
 # query=...; answers each read from the file of its name in FAKE_DIR, failing
-# where the file is missing; and logs each write to FAKE_WRITES, as POST or
-# PATCH ID then the body read on stdin with its keys sorted. Fails with status
-# 3, as a broken request would but with a status of its own, on the call whose
-# logged line FAKE_FAIL holds whole.
+# where the file is missing, pull request NUMBER's from pull-NUMBER where there
+# is one, else from pull; and logs each write to FAKE_WRITES, as POST or PATCH
+# ID then the body read on stdin with its keys sorted. Fails with status 3, as a
+# broken request would but with a status of its own, on the call whose logged
+# line FAKE_FAIL holds whole.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -39,7 +40,14 @@ answer() {
 case $* in
 "api --paginate repos/o/p/pulls/"*"/commits?per_page=100") answer commits ;;
 "api --paginate repos/o/p/pulls/"*"/reviews?per_page=100") answer reviews ;;
-"api repos/o/p/pulls/"*) answer pull ;;
+"api --paginate repos/o/p/pulls?state=open&per_page=100") answer open ;;
+"api repos/o/p/pulls/"*)
+    if [ -e "$FAKE_DIR/pull-${2##*/}" ]; then
+        answer "pull-${2##*/}"
+    else
+        answer pull
+    fi
+    ;;
 "api --paginate repos/o/p/rules/branches/"*) answer rules ;;
 "api graphql --paginate -f owner=o -f name=p -F number="*" -f query="*)
     answer comments

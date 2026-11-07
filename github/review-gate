@@ -3,24 +3,24 @@
 # Posts the review checks of pull request NUMBER in repository OWNER/REPO, each
 # a check run named review/REVIEWER/KIND on the pull request's head commit, from
 # what the reviewer has posted on the pull request. Run in a GitHub Actions job
-# on pull_request_target and issue_comment, from the default branch's code, with
-# GH_TOKEN holding a token of the review app whose slug is APP, allowed to write
-# checks and read pull requests and metadata. A check run counts towards a
-# required check only from the app the rule names, which an Actions job's own
-# token is not.
+# on pull_request_target, closed included, and issue_comment, from the default
+# branch's code, with GH_TOKEN holding a token of the review app whose slug is
+# APP, allowed to write checks and read pull requests and metadata. A check run
+# counts towards a required check only from the app the rule names, which an
+# Actions job's own token is not.
 #
 # Usage: review-gate OWNER/REPO NUMBER APP
 #
 # Each REST call is one GitHub's "Permissions required for GitHub Apps" lists
 # for an app with only Checks write, Pull requests read and Metadata read: the
-# pull request, its commits and reviews under Pull requests, the branch's rules
-# under Metadata, and listing, creating and updating check runs under Checks.
-# So the head commit's committer date comes from the pull request's commits,
-# not the commit itself, which needs Contents. GitHub documents no permissions
-# for GraphQL, saying an app's queries are to be tested ("Choosing permissions
-# for a GitHub App"), so the trial pull request must confirm the review app's
-# token can read the comments, base-change and edit-history queries below;
-# where it cannot, gh fails and so does the run.
+# pull request, the repository's open ones, its commits and reviews under Pull
+# requests, the branch's rules under Metadata, and listing, creating and
+# updating check runs under Checks. So the head commit's committer date comes
+# from the pull request's commits, not the commit itself, which needs Contents.
+# GitHub documents no permissions for GraphQL, saying an app's queries are to be
+# tested ("Choosing permissions for a GitHub App"), so the trial pull request
+# must confirm the review app's token can read the comments, base-change and
+# edit-history queries below; where it cannot, gh fails and so does the run.
 #
 # The head commit and base branch are read from the API, never from the event,
 # so a run started by an older event still checks the latest commit. The checks
@@ -108,17 +108,36 @@
 # A record the gate cannot read, as a change of its format would leave, says
 # nothing of what it rested on, so the check fails on that commit for good.
 #
-# The gate cannot close two gaps. Check runs belong to a commit, not a pull
-# request, so pull requests sharing a head commit share its checks, each run of
-# the gate posting the state of the pull request it was run for. A change of
-# base leaves the head's checks as they were until the gate's run for it posts
-# them, so a merge into the new base in that window goes unchecked.
+# Check runs belong to a commit, not a pull request, so pull requests sharing a
+# head commit share its checks, and a clean review of one could pass another.
+# While another open pull request into the repository has the same head, a
+# check that would pass waits instead, keeping the latest run's record, its
+# summary naming them all and saying to close all but one. The repository's
+# open pull requests are listed whole, since GitHub lists a commit's own pull
+# requests only as the merged one once the commit is on the default branch. Run
+# for a closed pull request, the gate posts nothing for it, but runs again for
+# each open one with its head, so closing one of two lets the other pass. That
+# run again leaves out the closed one, should the listing still give it open,
+# and fails where it finds its own pull request closed too.
+#
+# The gate cannot close three gaps, each lasting until a later run posts the
+# current state. A pull request opened or reopened on a head that already
+# passes carries that pass until the gate's run for it posts the wait, and a
+# run that listed the open pull requests before then can post a pass after it.
+# A change of base leaves the head's checks as they were until the gate's run
+# for it posts them, so a merge into the new base in that window goes
+# unchecked. A run again after a close runs beside the other pull request's own
+# runs, not after them, so can post a state read just before theirs.
 #
 # Each check posted is named on stderr with its state. A failing request ends
 # the run with gh's status; a pull request whose head is not a commit SHA, or
-# with no base branch, or whose commits do not list the head, or a head commit
-# with no committer date, ends it with 1. GitHub lists at most 250 commits of a
-# pull request, so a head beyond them fails closed.
+# with no base branch, or neither open nor closed, or whose commits do not list
+# the head, a listing of open pull requests that cannot be read or leaves out
+# the open one run for, or a head commit with no committer date, ends it with 1.
+# A run again for another pull request that fails ends the run with its status,
+# once each other has run.
+# GitHub lists at most 250 commits of a pull request, so a head beyond them
+# fails closed.
 # Needs gh and jq.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -179,7 +198,79 @@ fi
 if [ -z "$base" ]; then
     die "pull request #$number has no base branch"
 fi
+pr_state=$(jq -r '.state | strings' <<<"$pull")
+if [ "$pr_state" != open ] && [ "$pr_state" != closed ]; then
+    die "pull request #$number is neither open nor closed"
+fi
 short=${head:0:10}
+
+# The numbers of the repository's open pull requests with the head, which
+# share its checks, as $1 says: this one, if listed, or the others. A run again
+# leaves out the pull request it runs again from, which the run before read
+# closed, since the listing can lag behind; reopening it runs the gate for it.
+gh api --paginate "repos/$repo/pulls?state=open&per_page=100" >"$work/open"
+if ! jq -se '
+    def at(f): try f catch null;
+    all(.[]; type == "array") and all(.[][]; type == "object"
+        and (at(.number) | type == "number" and . >= 1 and . == floor)
+        and (at(.state) | type) == "string"
+        and (at(.head.sha) | type) == "string"
+        and (at(.base.repo.full_name) | type) == "string")' \
+    "$work/open" >/dev/null; then
+    die "the open pull requests of $repo cannot be read"
+fi
+sharing() {
+    jq -rs --arg repo "$repo" --arg head "$head" --argjson n "$number" \
+        --arg which "$1" --arg from "${_REVIEW_GATE_FROM-}" '
+        [.[][] | select(.state == "open" and .head.sha == $head
+            and (.base.repo.full_name | ascii_downcase)
+                == ($repo | ascii_downcase))
+         | .number | select((. == $n) == ($which == "self"))
+         | select(tostring != $from)] | unique[]' \
+        "$work/open"
+}
+lines=$(sharing others)
+others=()
+if [ -n "$lines" ]; then
+    mapfile -t others <<<"$lines"
+fi
+
+# A run again for another pull request, which _REVIEW_GATE_FROM names, runs no
+# further, so a listing out of date cannot send runs round in a loop.
+if [ "$pr_state" = closed ] && [ -n "${_REVIEW_GATE_FROM-}" ]; then
+    die "pull request #$number, listed open beside #$_REVIEW_GATE_FROM, is" \
+        "closed"
+elif [ "$pr_state" = closed ]; then
+    if [ ${#others[@]} -eq 0 ]; then
+        echo "$prog: pull request #$number is closed, and no open one has its" \
+            "head $short" >&2
+    fi
+    # Each runs however the ones before it ended, so one failing leaves no other
+    # waiting; the first failure's status ends the run.
+    status=0
+    for other in "${others[@]}"; do
+        echo "$prog: pull request #$number is closed; running for #$other," \
+            "which has its head $short" >&2
+        rc=0
+        _REVIEW_GATE_FROM=$number "${BASH_SOURCE[0]}" "$repo" "$other" \
+            "$app" || rc=$?
+        if [ "$status" -eq 0 ]; then
+            status=$rc
+        fi
+    done
+    exit "$status"
+fi
+self=$(sharing self)
+if [ -z "$self" ]; then
+    die "the open pull requests of $repo leave out #$number"
+fi
+if [ ${#others[@]} -gt 0 ]; then
+    # shellcheck disable=SC2016 # jq's own $variables, not the shell's
+    shared=$(jq -rn --arg short "$short" '$ARGS.positional | map(tonumber)
+        | sort | map("#\(.)") | (.[:-1] | join(", ")) + " and " + .[-1]
+        | "Pull requests \(.) are open on the head \($short), so share its checks. Close all but one for this check to pass."' \
+        --args "$number" "${others[@]}")
+fi
 
 # Each page of a listing is an array of its own, so the pages are joined. Lines
 # are read from a command substitution rather than a process substitution,
@@ -713,6 +804,14 @@ for name in "${checks[@]}"; do
             "review-gate knows no $kind review by $reviewer.")
     else
         state=$("review_$reviewer" "$kind" "$record")
+    fi
+    if [ ${#others[@]} -gt 0 ] &&
+        jq -e '.conclusion == "success"' <<<"$state" >/dev/null; then
+        state=$(jq -c --arg summary "$shared" --arg record "$record" '
+            {status: "in_progress", conclusion: null,
+             title: "waiting on a shared head", summary: $summary}
+            + if has("record") then {record: $record} else {} end' \
+            <<<"$state")
     fi
 
     body=$(jq -cn --argjson s "$state" '

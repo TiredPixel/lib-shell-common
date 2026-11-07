@@ -2,9 +2,9 @@
 #
 # Tests github/review-gate with gh faked on PATH, so nothing reaches GitHub. The
 # fake answers each read from a file the case writes, and logs each check run
-# written. Each case starts from pull request 7 of o/p, a pull request on main
-# with head $head, whose rules require review/codex/code and
-# review/codex/security beside a check of another name, with a head commit
+# written. Each case starts from pull request 7 of o/p, an open pull request on
+# main with head $head, the only open one, whose rules require review/codex/code
+# and review/codex/security beside a check of another name, with a head commit
 # committed before any comment, with no change of base, no comments, reviews or
 # check runs, and checks the gate's status, that its stdout is empty, the check
 # runs it wrote and its stderr, exactly. Comments and reviews are built from the
@@ -73,6 +73,24 @@ amend() {
     mv -- "$work/amended" "$FAKE_DIR/$1"
 }
 
+# A pull request on main with head $head in state $1, open by default.
+pull() {
+    jq -cn --arg head "$head" --arg state "${1:-open}" \
+        '{state: $state, head: {sha: $head}, base: {ref: "main"}}'
+}
+
+# A page of open pull requests, each argument NUMBER[:SHA[:BASE[:STATE]]], a
+# pull request into BASE, o/p by default, with head SHA, $head by default, in
+# STATE, open by default.
+open_pulls() {
+    jq -cn --arg head "$head" '
+        def given($d): if . == null or . == "" then $d else . end;
+        $ARGS.positional | map(split(":") as [$n, $sha, $base, $state]
+            | {number: ($n | tonumber), state: ($state | given("open")),
+               head: {sha: ($sha | given($head))},
+               base: {repo: {full_name: ($base | given("o/p"))}}})' --args "$@"
+}
+
 # Rules on main requiring each check named, beside a rule of another type.
 rules() {
     jq -cn '[{type: "deletion"},
@@ -111,7 +129,9 @@ edits_page='{"data": {"node": {"id": "C1", "userContentEdits": {"nodes": [],
 # calls to gh not checked.
 reset() {
     unset want_log secline
-    api pull "{\"head\": {\"sha\": \"$head\"}, \"base\": {\"ref\": \"main\"}}"
+    find "$FAKE_DIR" -maxdepth 1 -name 'pull-*' -delete
+    api pull "$(pull)"
+    api open "$(open_pulls 7)"
     api rules "$(rules review/codex/code review/codex/security)"
     api commits "$(commits "$old:$before" "$head:$pushed")"
     api comments "$empty_page"
@@ -326,7 +346,7 @@ clean_run() {
 }
 
 # Expects check $1 to be written as action $2 (created, updated ID, or
-# unchanged) in state $3 (waiting, reviewing, clean, failed, or
+# unchanged) in state $3 (waiting, reviewing, shared, clean, failed, or
 # unknown-reviewer or unknown-review), with summary $4, and external_id $5,
 # $rec by default, or none for -, and named on stderr.
 want() {
@@ -335,6 +355,7 @@ want() {
     case $kind in
     waiting) status=in_progress title="waiting for Codex" ;;
     reviewing) status=in_progress title="Codex reviewing" ;;
+    shared) status=in_progress title="waiting on a shared head" ;;
     clean) conclusion=success title="Codex review clean" ;;
     failed) conclusion=failure title="Codex review failed" ;;
     unknown-reviewer) conclusion=failure title="unknown reviewer" ;;
@@ -488,13 +509,20 @@ check base-empty 1
 api pull "{\"head\": {\"sha\": \"$head\"}}"
 want_err="review-gate: pull request #7 has no base branch"
 check base-missing 1
+for state in '""' '"merged"' '"OPEN"' null 1; do
+    amend pull ".state = $state"
+    want_log="api repos/o/p/pulls/7"
+    want_err="review-gate: pull request #7 is neither open nor closed"
+    check "state-$state" 1
+done
 
 # The event's payload, naming another head, plays no part: the checks, and the
 # reads of check runs, go to the head the API gives, and the rules read are the
 # base branch's. With no summary, no edit history is read.
 printf '{"pull_request": {"head": {"sha": "%s"}}}\n' "$old" >"$work/event"
-api pull "{\"head\": {\"sha\": \"$head\"}, \"base\": {\"ref\": \"next\"}}"
+amend pull '.base.ref = "next"'
 want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
 api --paginate repos/o/p/rules/branches/next
 api --paginate repos/o/p/pulls/7/commits\\?per_page=100
 api graphql --paginate -f owner=o -f name=p -F number=7 -f query=...
@@ -1285,6 +1313,7 @@ comment "$codex" "$(summary_body "completed@$old" "completed@$old")"
 versions "$after,running,running" "$ended,completed,completed"
 receipts
 want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
 api --paginate repos/o/p/rules/branches/main
 api --paginate repos/o/p/pulls/7/commits\\?per_page=100
 api graphql --paginate -f owner=o -f name=p -F number=7 -f query=...
@@ -1830,9 +1859,191 @@ for entry in "{\"sha\": \"$head\"}" "{\"sha\": \"$head\", \"commit\": {}}" \
     check "commit-date-entry-$entry" 1
 done
 
+# The summary of a check waiting while pull requests $1 share the head.
+shared_summary() {
+    echo "Pull requests $1 are open on the head $short, so share its checks." \
+        "Close all but one for this check to pass."
+}
+shared_57=$(shared_summary "#5 and #7")
+
+# Another open pull request into o/p with the head shares its checks, so a
+# check that would pass waits, naming each, across pages and in order, and
+# keeping the latest run's record, none where there is no run.
+clean_run
+api open "$(open_pulls 7 5)"
+want_both shared "$shared_57" "$shared_57" "" ""
+check shared-waits 0
+clean_run
+api open "$(open_pulls 9 7)"$'\n'"$(open_pulls 5 9)"
+want_both shared "$(shared_summary "#5, #7 and #9")" \
+    "$(shared_summary "#5, #7 and #9")" "" ""
+check shared-pages 0
+clean_run
+api runs "$(page "$(run 6 review/codex/code review-app completed success \
+    "Codex review clean" x "$rec$code_receipt")")"
+api open "$(open_pulls 7 5)"
+want review/codex/code created shared "$shared_57" "$rec$code_receipt"
+want review/codex/security created shared "$shared_57" ""
+check shared-keeps-record 0
+# The base repository's name is matched as GitHub matches it, without case, and
+# a pull request from a fork into o/p counts.
+clean_run
+api open "$(open_pulls 7 5::O/P)"
+want_both shared "$shared_57" "$shared_57" "" ""
+check shared-base-case 0
+clean_run
+api open "$(open_pulls 7 5)"
+amend open '.[1].head.repo = {full_name: "fork/p"}'
+want_both shared "$shared_57" "$shared_57" "" ""
+check shared-from-fork 0
+# A check that would not pass is posted as it is.
+api open "$(open_pulls 7 5)"
+want_both waiting "$waiting_code" "$waiting_security"
+check shared-not-clean 0
+api open "$(open_pulls 7 5)"
+api rules "$(rules review/claude/code)"
+want review/claude/code created unknown-reviewer \
+    "review-gate knows no reviewer claude." -
+check shared-failure 0
+# A pull request closed, on another head, or into another repository, a fork
+# of o/p included, shares nothing.
+for entry in "5:$head:o/p:closed" "5:$old" 5::x/p 5::fork/p; do
+    clean_run
+    api open "$(open_pulls 7 "$entry")"
+    want_clean_both
+    check "shared-not-$entry" 0
+done
+
+# A listing of open pull requests that leaves out the one run for, or that
+# cannot be read, fails closed, posting nothing.
+for entries in 5 "7:$old 5" "7::x/p" "7:::closed"; do
+    read -r -a list <<<"$entries"
+    api open "$(open_pulls "${list[@]}")"
+    want_err="review-gate: the open pull requests of o/p leave out #7"
+    check "open-without-self-$entries" 1
+done
+for page in '"x"' '{}' '[1]' '[null]' "$(open_pulls 7)"$'\n'"{}"; do
+    api open "$page"
+    want_err="review-gate: the open pull requests of o/p cannot be read"
+    check "open-unreadable-$page" 1
+done
+for filter in 'del(.number)' '.number = "5"' '.number = 0' '.number = 5.5' \
+    '.state = null' '.head = "x"' '.head.sha = null' '.base.repo = null' \
+    'del(.base)'; do
+    api open "$(open_pulls 7 5)"
+    amend open ".[1] |= ($filter)"
+    want_err="review-gate: the open pull requests of o/p cannot be read"
+    check "open-entry-$filter" 1
+done
+
+# Run for a closed pull request, the gate posts nothing for it, but runs again
+# for each open pull request with its head, which posts that one's checks.
+api pull "$(pull closed)"
+api open "$(open_pulls "5:$old" 6::x/p)"
+want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100"
+want_err="review-gate: pull request #7 is closed, and no open one has its head"
+want_err+=" $short"
+check closed-alone 0
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api open "$(open_pulls 5)"
+want_log="api repos/o/p/pulls/7
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
+api repos/o/p/pulls/5
+api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
+api --paginate repos/o/p/rules/branches/main
+api --paginate repos/o/p/pulls/5/commits\\?per_page=100
+api graphql --paginate -f owner=o -f name=p -F number=5 -f query=...
+api graphql -f owner=o -f name=p -F number=5 -f query=...
+api --paginate repos/o/p/pulls/5/reviews\\?per_page=100
+api graphql --paginate -f id=C1 -f query=...
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/code
+api -X POST repos/o/p/check-runs --input -
+api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/security
+api -X POST repos/o/p/check-runs --input -"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_clean_both
+check closed-reruns 0
+# Each open one in turn, each still sharing the head with the others but not
+# with the closed one, though the listing lags and still gives it open.
+for entries in "8 5" "7 8 5"; do
+    clean_run
+    api pull "$(pull closed)"
+    api pull-5 "$(pull)"
+    api pull-8 "$(pull)"
+    read -r -a list <<<"$entries"
+    api open "$(open_pulls "${list[@]}")"
+    for other in 5 8; do
+        want_err+="review-gate: pull request #7 is closed; running for"
+        want_err+=" #$other, which has its head $short"$'\n'
+        want_both shared "$(shared_summary "#5 and #8")" \
+            "$(shared_summary "#5 and #8")" "" ""
+    done
+    check "closed-reruns-shared-$entries" 0
+done
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api open "$(open_pulls 7 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_clean_both
+check closed-listed-open 0
+# A run again that finds its own pull request closed too fails rather than run
+# again in turn, and a failing run again ends the run with its status.
+api pull "$(pull closed)"
+api pull-5 "$(pull closed)"
+api open "$(open_pulls 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_err+="review-gate: pull request #5, listed open beside #7, is closed"
+check closed-rerun-closed 1
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api open "$(open_pulls 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'"gh: fake failure"
+FAKE_FAIL="api repos/o/p/pulls/5" check closed-rerun-fails 3
+# One failing leaves the others to run, the first failure's status ending it.
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull closed)"
+api pull-8 "$(pull)"
+api open "$(open_pulls 8 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_err+="review-gate: pull request #5, listed open beside #7, is closed"$'\n'
+want_err+="review-gate: pull request #7 is closed; running for #8, which has its"
+want_err+=" head $short"$'\n'
+want_both shared "$(shared_summary "#5 and #8")" \
+    "$(shared_summary "#5 and #8")" "" ""
+check closed-rerun-closed-then-open 1
+clean_run
+api pull "$(pull closed)"
+api pull-5 "$(pull)"
+api pull-8 "$(pull closed)"
+api open "$(open_pulls 8 5)"
+want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err+=" head $short"$'\n'
+want_both shared "$(shared_summary "#5 and #8")" \
+    "$(shared_summary "#5 and #8")" "" ""
+want_err+="review-gate: pull request #7 is closed; running for #8, which has its"
+want_err+=" head $short"$'\n'
+want_err+="review-gate: pull request #8, listed open beside #7, is closed"
+check closed-rerun-open-then-closed 1
+# A closed pull request's listing must be readable too.
+api pull "$(pull closed)"
+api open '[1]'
+want_err="review-gate: the open pull requests of o/p cannot be read"
+check closed-unreadable 1
+
 # A failing request ends the run with gh's own report and status.
 export FAKE_FAIL
 for FAKE_FAIL in "api repos/o/p/pulls/7" \
+    "api --paginate repos/o/p/pulls\\?state=open\\&per_page=100" \
     "api --paginate repos/o/p/rules/branches/main" \
     "api --paginate repos/o/p/pulls/7/commits\\?per_page=100" \
     "api graphql --paginate -f owner=o -f name=p -F number=7 -f query=..." \
