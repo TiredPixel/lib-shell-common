@@ -65,6 +65,9 @@ name: Review
       - edited
   pull_request_target:
     types:
+      # A change of base raises edited, and a review of the diff against the old
+      # base no longer counts.
+      - edited
       - opened
       - ready_for_review
       - reopened

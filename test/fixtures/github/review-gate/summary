@@ -1,6 +1,6 @@
 <!-- codex-pull-request-review-summary -->
 <!-- codex-review-state:v1 @STATE@ -->
-<!-- codex-security-review:v1 @SECURITY@ -->
+@SECURITY@
 <details>
 <summary><strong>Codex Review Summary</strong>: ✅ Completed</summary>
 
@@ -8,10 +8,9 @@ This comment shows the latest Codex review activity on this pull request.
 
 | Review | Status | Commit | Review trigger |
 | --- | --- | --- | --- |
-| 📝 **Code Review** | ✅ **Completed** <relative-time datetime="2000-01-01T00:00:00.000000Z">2000-01-01T00:00:00.000000Z</relative-time> | `0000000` | Manual request |
-| 🔒 **Security Review** | ✅ **Completed** <relative-time datetime="2000-01-01T00:00:00.000000Z">2000-01-01T00:00:00.000000Z</relative-time> | `0000000` | Manual request |
+@ROWS@
 
-
+@FINDINGS@
 
 <details> <summary>ℹ️ About Codex in GitHub</summary>
 <br/>

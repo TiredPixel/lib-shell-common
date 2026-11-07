@@ -38,11 +38,14 @@ answer() {
 
 case $* in
 "api --paginate repos/o/p/pulls/"*"/commits?per_page=100") answer commits ;;
+"api --paginate repos/o/p/pulls/"*"/reviews?per_page=100") answer reviews ;;
 "api repos/o/p/pulls/"*) answer pull ;;
 "api --paginate repos/o/p/rules/branches/"*) answer rules ;;
 "api graphql --paginate -f owner=o -f name=p -F number="*" -f query="*)
     answer comments
     ;;
+"api graphql -f owner=o -f name=p -F number="*" -f query="*) answer bases ;;
+"api graphql --paginate -f id="*" -f query="*) answer edits ;;
 "api --paginate repos/o/p/commits/"*"/check-runs?check_name="*) answer runs ;;
 "api -X POST repos/o/p/check-runs --input -")
     echo "POST $(jq -cS .)" >>"$FAKE_WRITES"
