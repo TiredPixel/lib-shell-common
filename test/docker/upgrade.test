@@ -20,17 +20,17 @@
 # PyPI /pypi/NAME/VERSION/json with the file pypi/NAME/VERSION.json under
 # FAKE_FILES, every npm /latest lookup with FAKE_NPM and every
 # https://dl.test/PATH with the file PATH under FAKE_FILES, or a 404 where there
-# is none. The fake git answers ls-remote, run under timeout with no prompt,
-# with FAKE_LS_REMOTE where it is set, and otherwise with the file
-# OWNER/REPO/TAG under FAKE_TAGS, or nothing where there is none; the status of
-# one literal path, and a directory's top level, it passes to the real git,
-# which a --record run asks for. FAKE_PULL=fail, FAKE_RUN=fail, FAKE_PIP=fail,
-# FAKE_CURL=fail and FAKE_GIT=fail make each fail as the real one would, and
-# FAKE_GIT=timeout exits silently with timeout's 124. A fake mktemp fails for
-# the template FAKE_MKTEMP_FAIL names, and otherwise runs the real one. Where
-# FAKE_GREP=fail, a fake grep fails as the real one would on an unreadable file,
-# given exactly the search upgrade makes for FREEZE lines, and otherwise runs
-# the real one.
+# is none. The fake git answers ls-remote of a tag and a branch of one NAME, run
+# under timeout with no prompt, with FAKE_LS_REMOTE where it is set, and
+# otherwise with the file OWNER/REPO/NAME under FAKE_TAGS, holding the tag's
+# lines, or nothing where there is none; the status of one literal path, and a
+# directory's top level, it passes to the real git, which a --record run asks
+# for. FAKE_PULL=fail, FAKE_RUN=fail, FAKE_PIP=fail, FAKE_CURL=fail and
+# FAKE_GIT=fail make each fail as the real one would, and FAKE_GIT=timeout exits
+# silently with timeout's 124. A fake mktemp fails for the template
+# FAKE_MKTEMP_FAIL names, and otherwise runs the real one. Where FAKE_GREP=fail,
+# a fake grep fails as the real one would on an unreadable file, given exactly
+# the search upgrade makes for FREEZE lines, and otherwise runs the real one.
 #
 # upgrade runs where it is, so coverage measures it, with DOCKERFILE_LOCKS_LINT
 # naming a fake lint/dockerfile-locks, which names on stderr the file it checks
@@ -392,21 +392,23 @@ elif [ $# = 4 ] && [ "$1" = -C ] && [ "$3 $4" = "rev-parse --show-toplevel" ]; t
     exec "$REAL_GIT" "$@"
 fi
 echo "fake git: $*" >&2
-if [ $# != 5 ] || [ "$1" != ls-remote ] || [ "$2" != --tags ] ||
-    [[ "$3" != https://github.com/*/* ]] || [[ "$4" != refs/tags/* ]] ||
-    [ "$5" != "$4^{}" ] || [ "${GIT_TERMINAL_PROMPT:-}" != 0 ] ||
+if [ $# != 7 ] || [ "$1" != ls-remote ] || [ "$2" != --heads ] ||
+    [ "$3" != --tags ] || [[ "$4" != https://github.com/*/* ]] ||
+    [[ "$5" != refs/tags/* ]] || [ "$6" != "$5^{}" ] ||
+    [ "$7" != "refs/heads/${5#refs/tags/}" ] ||
+    [ "${GIT_TERMINAL_PROMPT:-}" != 0 ] ||
     [ "$(</proc/$PPID/comm)" != timeout ]; then
     echo "fake git: unexpected arguments or environment" >&2
     exit 2
 fi
 case ${FAKE_GIT:-} in
 fail)
-    echo "fatal: unable to access '$3/': Could not resolve host: github.com" >&2
+    echo "fatal: unable to access '$4/': Could not resolve host: github.com" >&2
     exit 128
     ;;
 timeout) exit 124 ;;
 esac
-tagged=$FAKE_TAGS/${3#https://github.com/}/${4#refs/tags/}
+tagged=$FAKE_TAGS/${4#https://github.com/}/${5#refs/tags/}
 if [ -n "${FAKE_LS_REMOTE+set}" ]; then
     printf '%s' "$FAKE_LS_REMOTE"
 elif [ -f "$tagged" ]; then
@@ -962,7 +964,7 @@ wfafter=$(printf '%s\n' "# TRACK USES actions/checkout@v7" "steps:" \
     "    uses: o/r@$c3" "  - uses: o/r@$c3" "  # v9.0.0" "  - uses: u/x@v9" \
     "  - uses: u/x@$c1 # v9.0.0" "  - uses: ./local" "  - uses: docker://alpine:3" \
     "  # uses: o/r@v0" "# TRACK USES o/r@v1")
-flow wf-repins "$df" "$wf" 0 'fake git: ls-remote --tags https://github.com/o/r refs/tags/v1 refs/tags/v1^{}' \
+flow wf-repins "$df" "$wf" 0 'fake git: ls-remote --heads --tags https://github.com/o/r refs/tags/v1 refs/tags/v1^{} refs/heads/v1' \
     "$dfafter" "$wfafter" "fake curl: https://github.com/o/r/"
 if [ "$(grep -c 'fake git: .* https://github.com/o/r ' "$work/err")" != 1 ]; then
     fail wf-repins "o/r not looked up once: $(<"$work/err")"
@@ -1005,14 +1007,14 @@ rc=0
 "$upgrade" "$work/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/2.yml" \
     >/dev/null 2>"$work/err" || rc=$?
 if [ "$rc" != 1 ] ||
-    ! grep -qF "upgrade: $m/workflows/2.yml: TRACK USES o/r@v9: o/r has no tag v9" "$work/err"; then
+    ! grep -qF "upgrade: $m/workflows/2.yml: TRACK USES o/r@v9: o/r has no tag or branch v9" "$work/err"; then
     fail wf-multi-fails "exit $rc, not refused naming it: $(<"$work/err")"
 elif [ "$(<"$work/multi.Dockerfile")" != "$df" ] || [ -e "$m/workflows.new" ]; then
     fail wf-multi-fails "a file was written"
 fi
 
-# One OWNER/REPO@TAG named in two files is looked up once, and each file takes
-# its own TAG's commit. A workflow nothing moves in gets no proposal, and the
+# One OWNER/REPO@NAME named in two files is looked up once, and each file takes
+# its own NAME's commit. A workflow nothing moves in gets no proposal, and the
 # workflows.new already there keeps what it holds.
 printf '%s\n' "$first" >"$m/workflows/2.yml"
 printf '%s\n' $'# TRACK USES o/a@v2\n  - uses: o/a@v0' >"$m/workflows/3.yml"
@@ -1078,11 +1080,34 @@ for wfile in "$work/loose/w.yml" "$work/loose/workflows/w.yml" "$work/loose/x/.g
 done
 
 pinned=$'# TRACK USES o/r@v1\n  - uses: o/r@v0\n'
-FAKE_LS_REMOTE=$c2$'\trefs/tags/v1^{}\n' flow wf-only-peeled "$df" "$pinned" 1 \
-    "TRACK USES o/r@v1: o/r has no tag v1" "$df" "${pinned%$'\n'}"
 
-flow wf-no-tag "$df" $'# TRACK USES o/r@v9\n  - uses: o/r@v0\n' 1 \
-    "TRACK USES o/r@v9: o/r has no tag v9" "$df" $'# TRACK USES o/r@v9\n  - uses: o/r@v0'
+# With no tag of the name, the branch of the name is followed.
+FAKE_LS_REMOTE=$c2$'\trefs/heads/v1\n' flow wf-branch "$df" "$pinned" 0 \
+    "upgrade: o/r's commit for branch v1 is $c2" "$dfafter" \
+    $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c2"
+
+# A tag wins over a branch of the same name, whichever is listed first, and an
+# annotated one is still peeled.
+FAKE_LS_REMOTE=$c1$'\trefs/heads/v1\n'$c3$'\trefs/tags/v1\n' flow wf-tag-over-branch \
+    "$df" "$pinned" 0 "upgrade: o/r's commit for tag v1 is $c3" "$dfafter" \
+    $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" "for branch"
+FAKE_LS_REMOTE=$c1$'\trefs/tags/v1\n'$c2$'\trefs/tags/v1^{}\n'$c3$'\trefs/heads/v1\n' \
+    flow wf-annotated-over-branch "$df" "$pinned" 0 \
+    "upgrade: o/r's commit for tag v1 is $c2" "$dfafter" \
+    $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c2" "for branch"
+
+# A peeled tag listed alone is refused, even beside a branch of the name.
+FAKE_LS_REMOTE=$c2$'\trefs/tags/v1^{}\n' flow wf-only-peeled "$df" "$pinned" 1 \
+    "TRACK USES o/r@v1: git ls-remote gave refs/tags/v1^{} without refs/tags/v1" \
+    "$df" "${pinned%$'\n'}"
+FAKE_LS_REMOTE=$c2$'\trefs/tags/v1^{}\n'$c3$'\trefs/heads/v1\n' \
+    flow wf-only-peeled-branch "$df" "$pinned" 1 \
+    "TRACK USES o/r@v1: git ls-remote gave refs/tags/v1^{} without refs/tags/v1" \
+    "$df" "${pinned%$'\n'}"
+
+flow wf-no-tag-or-branch "$df" $'# TRACK USES o/r@v9\n  - uses: o/r@v0\n' 1 \
+    "TRACK USES o/r@v9: o/r has no tag or branch v9" "$df" \
+    $'# TRACK USES o/r@v9\n  - uses: o/r@v0'
 
 FAKE_LS_REMOTE=$c2$'\trefs/tags/v10\n' flow wf-other-tag "$df" "$pinned" 1 \
     "TRACK USES o/r@v1: git ls-remote gave $c2 refs/tags/v10" "$df" "${pinned%$'\n'}"
@@ -1158,7 +1183,7 @@ for typo in "  # TRACK USES o/r@v1" "#TRACK USES o/r@v1" "#  TRACK USES o/r@v1" 
     "# TRACK-USES o/r@v1" "# track_uses o/r@v1" "# TRACK USESS o/r@v1"; do
     n=$((n + 1))
     wf=$(printf '%s\n' "  - uses: o/r@v0" "$typo")
-    flow "wf-typo-$n" "$df" "$wf" 1 "@W@:2: not # TRACK USES OWNER/REPO@TAG" \
+    flow "wf-typo-$n" "$df" "$wf" 1 "@W@:2: not # TRACK USES OWNER/REPO@NAME" \
         "$df" "$wf" "fake curl:"
 done
 n=0
@@ -1180,7 +1205,7 @@ n=0
 for data in o/r o@v1 'o/r@v1*' o/r@ 'o/r@v1 v2' 'o/r/p@v1' ' o/r@v1'; do
     n=$((n + 1))
     wf=$(printf '%s\n' "# TRACK USES $data" "  - uses: o/r@v0")
-    flow "wf-bad-trackuses-$n" "$df" "$wf" 1 "@W@:1: TRACK USES $data is not OWNER/REPO@TAG" \
+    flow "wf-bad-trackuses-$n" "$df" "$wf" 1 "@W@:1: TRACK USES $data is not OWNER/REPO@NAME" \
         "$df" "$wf" "fake curl:"
 done
 
@@ -1647,7 +1672,7 @@ said=$(printf '%s\n' "upgrade: pulling r/x:1" "upgrade: r/x:1 is $new" \
     "upgrade: resolving TRACK LOCK m in r/x@$new" "upgrade: TRACK LOCK m resolved 2 package(s)" \
     "upgrade: n-d's latest version on npm is 3.4.5" \
     "upgrade: resolving TRACK LOCK n in r/x@$new" "upgrade: TRACK LOCK n resolved 2 package(s)" \
-    "upgrade: o/a's commit for v2 is $c2" "upgrade: wrote $real/progress/Dockerfile" \
+    "upgrade: o/a's commit for tag v2 is $c2" "upgrade: wrote $real/progress/Dockerfile" \
     "upgrade: wrote $real/progress/Dockerfile.lock/m/requirements.txt" \
     "upgrade: wrote $real/progress/Dockerfile.lock/n/package.json" \
     "upgrade: wrote $real/progress/Dockerfile.lock/n/package-lock.json" \

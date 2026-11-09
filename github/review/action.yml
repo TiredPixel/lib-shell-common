@@ -1,9 +1,11 @@
 ---
 description: Posts a pull request's review checks with github/review-gate.
 # The caller mints the review app's token in its own workflow, where the key
-# stays: this action runs from whatever commit the submodule is pinned to, which
-# an ordinary commit can move, so it takes only the short-lived token, never the
-# key, and reads no secrets or vars itself.
+# stays. A copy of github/review.yml calls this action pinned by full SHA, so
+# only a workflow approval moves the code holding the token; this repository's
+# own workflow runs it from its default branch, where a change to it shows in
+# the diff. It takes only the short-lived token, never the key, and reads no
+# secrets or vars itself.
 inputs:
   app:
     description: The review app's slug, as the token step gives it.

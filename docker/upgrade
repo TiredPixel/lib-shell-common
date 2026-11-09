@@ -84,10 +84,11 @@
 # In each workflow or action, one kind of comment line, read wherever it falls
 # in the file, though kept at the top by convention:
 #
-#   # TRACK USES OWNER/REPO@TAG
+#   # TRACK USES OWNER/REPO@NAME
 #       every uses: OWNER/REPO[/PATH]@REF line, a step's or a job's, whatever
-#       REF it holds, is pinned to the commit TAG names now, peeled through an
-#       annotated tag
+#       REF it holds, is pinned to the commit the tag NAME names now, peeled
+#       through an annotated tag, or where OWNER/REPO has no such tag, to the
+#       commit at the head of its branch NAME now; with neither, the run fails
 #
 # OWNER/REPO is matched in any case, as GitHub reads it. A uses: that no
 # TRACK USES covers is left alone, as are ./PATH and docker://. A covered uses:
@@ -154,8 +155,8 @@
 # each file written, one to a line, then a blank line, then a line for each
 # value a pin moved from, as SUBJECT OLD -> NEW, SUBJECT as its TRACK line
 # writes it: NAME for a TRACK ARG, REPO:TAG for a TRACK FROM, OLD a digest or
-# REPO:TAG, and OWNER/REPO@TAG for a TRACK USES, with a digest or hash cut to 12
-# hex digits and a commit to 7. A TRACK LOCK's lines are
+# REPO:TAG, and OWNER/REPO@NAME for a TRACK USES, with a digest or hash cut to
+# 12 hex digits and a commit to 7. A TRACK LOCK's lines are
 # LOCK NAME PACKAGE OLD -> NEW for each package it names, or an npm lock's root
 # depended on, that moved, OLD none where the lock lacked it and NEW none where
 # it now does; then LOCK NAME: N dependencies moved, 1 dependency where N is 1,
@@ -900,7 +901,7 @@ done
 # names them. Each workflow's covered uses: lines, by the index of the workflow
 # in w_of and of the line in i_of, with what the line keeps before the reference
 # in head_of, the action named, without its REF, in action_of, the REF in ref_of
-# and the OWNER/REPO@TAG it follows in pin_of. pins lists each OWNER/REPO@TAG
+# and the OWNER/REPO@NAME it follows in pin_of. pins lists each OWNER/REPO@NAME
 # once, in the order first named, and pin_file the workflow that first names it.
 w_of=()
 i_of=()
@@ -911,15 +912,15 @@ pin_of=()
 pins=()
 declare -A pin_file=()
 
-# The current workflow's TRACK USES tags and OWNER/REPO as written, keyed by the
-# lowercased OWNER/REPO, since GitHub reads either in any case, and whether each
-# covers a uses: line; order lists each key in the order pinned.
+# The current workflow's TRACK USES names and OWNER/REPO as written, keyed by
+# the lowercased OWNER/REPO, since GitHub reads either in any case, and whether
+# each covers a uses: line; order lists each key in the order pinned.
 declare -A follows=()
 declare -A named=()
 declare -A covers=()
 
-# A tag is refused unless it is plain, since ls-remote would read * ? [ in it as
-# a pattern.
+# A NAME is refused unless it is plain, since ls-remote would read * ? [ in it
+# as a pattern.
 trackuses='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([A-Za-z0-9._+-]+)$'
 uses='^([[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+)([^[:space:]#][^[:space:]]*)'
 uses+='([[:space:]]+#.*)?[[:space:]]*$'
@@ -940,7 +941,7 @@ for w in "${!workflows[@]}"; do
             kind=${BASH_REMATCH[1]^^}
             if [ "$kind" = USES ]; then
                 refuse_at "$workflow" $((i + 1)) "not # TRACK USES" \
-                    "OWNER/REPO@TAG"
+                    "OWNER/REPO@NAME"
             fi
             refuse_at "$workflow" $((i + 1)) "TRACK $kind belongs in a" \
                 "Dockerfile, not ${kind_of[$w]}"
@@ -948,7 +949,7 @@ for w in "${!workflows[@]}"; do
         data=${line#"# TRACK USES "}
         [[ "$data" =~ $trackuses ]] ||
             refuse_at "$workflow" $((i + 1)) \
-                "TRACK USES $data is not OWNER/REPO@TAG"
+                "TRACK USES $data is not OWNER/REPO@NAME"
         repo=${BASH_REMATCH[1]}
         [ -z "${follows[${repo,,}]+set}" ] ||
             refuse "$workflow" "TRACK USES $repo is pinned twice"
@@ -1342,37 +1343,47 @@ for name in "${lock_names[@]}"; do
     say "TRACK LOCK $name resolved ${#versions[@]} package(s)"
 done
 
-# Each OWNER/REPO@TAG's commit.
+# Each OWNER/REPO@NAME's commit: the tag NAME's, else the branch NAME's.
 declare -A commits=()
 for pin in "${pins[@]}"; do
     workflow=${pin_file[$pin]}
     repo=${pin%@*}
-    tag=${pin##*@}
+    name=${pin##*@}
 
     # No prompt, so a repository that is missing or private fails rather than
     # waiting on a password until the timeout. Refused by name, as timeout and
-    # the git it stops both exit silently.
-    listed=$(GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote --tags \
-        "https://github.com/$repo" "refs/tags/$tag" "refs/tags/$tag^{}") ||
+    # the git it stops both exit silently. The tag and the branch are asked for
+    # in one listing, so a tag and a branch of the same name are both seen.
+    listed=$(GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote --heads --tags \
+        "https://github.com/$repo" "refs/tags/$name" "refs/tags/$name^{}" \
+        "refs/heads/$name") ||
         refuse "$workflow" "TRACK USES $pin: git ls-remote failed or timed out"
     [ -n "$listed" ] ||
-        refuse "$workflow" "TRACK USES $pin: $repo has no tag $tag"
+        refuse "$workflow" "TRACK USES $pin: $repo has no tag or branch $name"
     # An annotated tag is listed twice, the second time peeled to its commit.
-    commit=""
+    tagged=""
     peeled=""
+    head=""
     while IFS=$'\t' read -r sha ref <&3; do
         [[ "$sha" =~ ^[0-9a-f]{40}$ ]] ||
             refuse "$workflow" "TRACK USES $pin: git ls-remote gave $sha $ref"
         case $ref in
-        "refs/tags/$tag") commit=$sha ;;
-        "refs/tags/$tag^{}") peeled=$sha ;;
+        "refs/tags/$name") tagged=$sha ;;
+        "refs/tags/$name^{}") peeled=$sha ;;
+        "refs/heads/$name") head=$sha ;;
         *) refuse "$workflow" "TRACK USES $pin: git ls-remote gave $sha $ref" ;;
         esac
     done 3<<<"$listed"
-    [ -n "$commit" ] ||
-        refuse "$workflow" "TRACK USES $pin: $repo has no tag $tag"
-    commits[$pin]=${peeled:-$commit}
-    say "$repo's commit for $tag is ${commits[$pin]}"
+    if [ -n "$tagged" ]; then
+        commits[$pin]=${peeled:-$tagged}
+        say "$repo's commit for tag $name is ${commits[$pin]}"
+    elif [ -n "$peeled" ]; then
+        refuse "$workflow" "TRACK USES $pin: git ls-remote gave" \
+            "refs/tags/$name^{} without refs/tags/$name"
+    else
+        commits[$pin]=$head
+        say "$repo's commit for branch $name is ${commits[$pin]}"
+    fi
 done
 
 # What moved, a line for each value a pin moved from, each such value in was.
@@ -1560,7 +1571,7 @@ for name in "${lock_names[@]}"; do
     moves+=("${lock_moves[@]}")
 done
 
-# What each OWNER/REPO@TAG's lines held where they move, one to a line.
+# What each OWNER/REPO@NAME's lines held where they move, one to a line.
 declare -A uses_was=()
 for w in "${!workflows[@]}"; do
     mapfile -t old <"${workflows[$w]}"

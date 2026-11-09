@@ -2,7 +2,7 @@
 
 Shell scripts a repository takes as a submodule to pin and upgrade its Dockerfile and workflows, build and push its images, lint its Dockerfiles, shell, YAML and release version, approve proposed workflows, gate merges on reviews, work across and release several projects together, check its Ansible, and plan and apply its Terraform. The sections up to and including *Planning and applying Terraform* are for such a repository; *Working on this repository* covers working on this one.
 
-The review gate is the one part a repository copies rather than calls: an upgrade moves the submodule and re-pins the workflows already there, but neither adds the gate's `review.yml` nor refreshes a copy, so a repository copies `github/review.yml` when it adopts the gate (*Setting a repository up*) and again only when the template's triggers, job settings or token step change; the gate's own steps arrive with the submodule.
+The review gate is the one part a repository copies rather than calls: an upgrade moves the submodule and re-pins the workflows already there, but neither adds the gate's `review.yml` nor refreshes a copy from the template, so a repository copies `github/review.yml` when it adopts the gate (*Setting a repository up*) and again only when the template changes other than in the pins an upgrade moves; the gate's own steps arrive through the copy's pin of them, which an upgrade moves as it moves any action's, so each move needs a workflow approval.
 
 ## Requirements
 
@@ -60,7 +60,7 @@ The repository's `.gitignore` names `/tmp/`, where `upgrade-pre` writes the reco
 
 `docker/upgrade` takes the `Dockerfile` to re-pin, `Dockerfile` by default, then the GitHub Actions workflows, and any action of the repository's own, to re-pin with it; only workflows and actions named are touched, so a repository with none names only the `Dockerfile`.
 
-An upgrade re-pins the workflows a repository already has and adds none, so it never adds the review gate's workflow or refreshes a copy of it: a repository copies `github/review.yml` when it adopts the gate (*Setting a repository up*), and again only when the template's triggers or job settings change. The gate's own steps sit in the composite action `github/review/action.yml`, which the copy runs from the submodule, so they move with each upgrade of the library; the step minting the review app's token stays in the copy, since it holds the key.
+An upgrade re-pins the workflows a repository already has and adds none, so it never adds the review gate's workflow or refreshes a copy of it: a repository copies `github/review.yml` when it adopts the gate (*Setting a repository up*), and again only when the template changes other than in the pins an upgrade moves. The gate's own steps sit in the composite action `github/review/action.yml`, which the copy runs pinned by full SHA under `# TRACK USES TiredPixel/lib-shell-common@latest`, so each upgrade proposes the copy re-pinned to the library's latest commit, to be approved as any proposed workflow is; the step minting the review app's token stays in the copy, since it holds the key.
 
 A repository whose `Dockerfile` is not its own to re-pin, such as one linking `Dockerfile` and `Dockerfile.lock` to a submodule's, names its workflows after `--workflows` instead, and no `Dockerfile` is read, linted or checked against git:
 
@@ -68,7 +68,7 @@ A repository whose `Dockerfile` is not its own to re-pin, such as one linking `D
 	lib/shell-common/docker/upgrade --record tmp/upgrade.record --workflows .github/workflows/*.yml
 ```
 
-A named workflow or action names the tag each action it uses follows on a comment line at its top, as in `# TRACK USES actions/checkout@v7`, and every `uses:` of that action in the file, whatever it is pinned to, moves to the commit the tag names now. A `uses:` that no `TRACK USES` line covers is left alone, as is any other line that names no covered action. A covered `uses:` with a comment at its end, or a version comment such as `# v7.0.1` above it, fails the run, since the `TRACK USES` line already says what it follows.
+A named workflow or action names the tag or branch each action it uses follows on a comment line at its top, as in `# TRACK USES actions/checkout@v7`, and every `uses:` of that action in the file, whatever it is pinned to, moves to the commit the tag of that name names now, or, where the action's repository has no such tag, the commit its branch of that name holds now; a tag wins where both exist, and a name that is neither fails the run. A `uses:` that no `TRACK USES` line covers is left alone, as is any other line that names no covered action. A covered `uses:` with a comment at its end, or a version comment such as `# v7.0.1` above it, fails the run, since the `TRACK USES` line already says what it follows.
 
 `docker/upgrade` never writes a live workflow: each one that moves is proposed as `.github/workflows.new/<name>`, to be approved with `make workflows-approve` once the upgrade is committed (*Approving workflows*), and the run is refused while a proposal for a named workflow is still pending. An action, a file named `action.yml` or `action.yaml` outside `.github/workflows/`, is written in place, as the `Dockerfile` is.
 
@@ -270,10 +270,10 @@ Otherwise it is the hash of the asset itself:
 curl -fsSL https://github.com/rhysd/actionlint/releases/download/vVERSION/actionlint_VERSION_linux_arm64.tar.gz | sha256sum
 ```
 
-A `# TRACK USES` action takes the commit its tag names now. `git ls-remote` lists an annotated tag twice, the line ending `^{}` peeled to its commit, which is the one to take, and a lightweight tag once, on the commit itself:
+A `# TRACK USES` action takes the commit its tag names now, or, where there is no tag of that name, the commit its branch of that name holds. `git ls-remote` lists an annotated tag twice, the line ending `^{}` peeled to its commit, which is the one to take, a lightweight tag once, on the commit itself, and a branch once, on its head:
 
 ```sh
-git ls-remote https://github.com/actions/checkout refs/tags/v7 'refs/tags/v7^{}'
+git ls-remote --heads --tags https://github.com/actions/checkout refs/tags/v7 'refs/tags/v7^{}' refs/heads/v7
 ```
 
 A hand edit to a tracked lock lasts until the next upgrade, which rebuilds the lock whole from its `# TRACK LOCK` line (*Holding a pin back*). A package in a Python lock is its line in `requirements.txt`, as `name==version` with `--hash=sha256:` for every wheel PyPI lists for that version, which PyPI's JSON gives:
@@ -423,12 +423,12 @@ The checks posted are those the base branch's rules require. To post others as w
 gh variable set REVIEW_GATE_CHECKS --body 'review/codex/code review/codex/security'
 ```
 
-The workflow is copied rather than shared because GitHub reads workflows only from the repository's own tree, where a submodule is only a commit id, so neither a symbolic link into `lib/shell-common` nor a workflow inside it can serve. The copy holds only what must be there and changes rarely: the triggers, concurrency, permissions, the checkout of the default branch, the submodule's fetch and the step minting the review app's token. That step stays in the copy, by an action pinned by full SHA, because the copy is a workflow, which only a person may change, while the submodule's pin moves with an ordinary commit: the private key reaches no code in the submodule, which gets only the token, valid for an hour, for this repository and the gate's two permissions. The copy's last step runs the composite action `github/review/action.yml` from the submodule, which runs the gate, so its steps upgrade with each move of the submodule, while a change to the template's triggers, job settings or token step reaches a repository only when it copies the template again. The copy's `# TRACK USES` lines let `docker/upgrade` re-pin its checkout and token action with the repository's other workflows (*Upgrading the library*).
+The workflow is copied rather than shared because GitHub reads workflows only from the repository's own tree, where a submodule is only a commit id, so neither a symbolic link into `lib/shell-common` nor a workflow inside it can serve. The copy holds only what must be there and changes rarely: the triggers, concurrency, permissions, the step minting the review app's token and the step running the gate. The copy is a workflow, which only a person may change, while the submodule's pin and `.gitmodules` change with an ordinary commit, so neither step runs code from the submodule. The token step mints the token by an action pinned by full SHA, so the private key never leaves the workflow. The last step runs the composite action `github/review/action.yml`, which runs the gate, from this library pinned by full SHA, never from the submodule: it holds the token, valid for an hour, for this repository and the gate's two permissions, enough to post passing review checks on any open pull request, so a change to the gate's code reaches a repository only through a workflow approval. The cost is that each move of the gate's pin needs one: the copy's `# TRACK USES` lines let `docker/upgrade` re-pin its token action and the gate with the repository's other workflows (*Upgrading the library*), proposing the copy for approval, while any other change to the template, to its triggers, job settings or either step's inputs, reaches a repository only when it copies the template again.
 
-The action takes the app's token and slug, as the token step gives them, and the further checks to post, as the inputs `token`, `app` and `checks`, since an action reads neither secrets nor variables itself. It runs the gate with the repository, the pull request's number and the review app's slug, the app's token in `GH_TOKEN`, `checks` in `REVIEW_GATE_CHECKS`, and on a push `REVIEW_GATE_BEFORE` holding the head pushed from:
+The action takes the app's token and slug, as the token step gives them, and the further checks to post, as the inputs `token`, `app` and `checks`, since an action reads neither secrets nor variables itself. It runs the gate from the copy of this library its pin fetches, never the submodule's, with the repository, the pull request's number and the review app's slug, the app's token in `GH_TOKEN`, `checks` in `REVIEW_GATE_CHECKS`, and on a push `REVIEW_GATE_BEFORE` holding the head pushed from, as, from that copy's root:
 
 ```sh
-lib/shell-common/github/review-gate OWNER/REPO NUMBER APP
+github/review-gate OWNER/REPO NUMBER APP
 ```
 
 ## Checking out private submodules in CI
