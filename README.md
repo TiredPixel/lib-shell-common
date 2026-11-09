@@ -431,6 +431,50 @@ The action takes the app's token and slug, as the token step gives them, and the
 lib/shell-common/github/review-gate OWNER/REPO NUMBER APP
 ```
 
+## Checking out private submodules in CI
+
+A workflow's own token reads only its own repository, so a repository whose submodules include private repositories checks them out with a token of a GitHub App that can read them. A token covers one installation, so the private submodules, nested ones included, belong to one account or organisation.
+
+Create a GitHub App, owned by that account or organisation, with only the repository permissions Contents: Read-only and Metadata: Read-only, and no webhook, its Active box cleared. Install it on only the private submodules' repositories, and on the repository itself where it is private too, since the checkout fetches the repository with the same token.
+
+Generate a private key for the app, and store it as the Actions secret `SUBMODULES_APP_PRIVATE_KEY`, and the client id its settings page shows as the Actions variable `SUBMODULES_APP_CLIENT_ID`. Each may be the repository's own, as here, or an organisation's that reaches the repository:
+
+```sh
+gh secret set SUBMODULES_APP_PRIVATE_KEY < PRIVATE_KEY.pem
+gh variable set SUBMODULES_APP_CLIENT_ID --body CLIENT_ID
+```
+
+In each workflow that checks out the submodules, a step mints the token before the checkout, with `owner` naming the account owning the submodules and `repositories` listing the private repositories the checkout reads, the repository's own included where it is private; `permission-contents: read` limits the token to reading, whatever the app is later granted. The checkout takes the token and `submodules: recursive`, and with `persist-credentials: false` keeps no credential in the job once it has fetched, so no later step can use it:
+
+```yaml
+- id: submodules-token
+  uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+  with:
+    client-id: ${{ vars.SUBMODULES_APP_CLIENT_ID }}
+    owner: OWNER
+    permission-contents: read
+    private-key: ${{ secrets.SUBMODULES_APP_PRIVATE_KEY }}
+    repositories: |
+      SUBMODULE_REPO
+      NESTED_SUBMODULE_REPO
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+  with:
+    persist-credentials: false
+    submodules: recursive
+    token: ${{ steps.submodules-token.outputs.token }}
+```
+
+The checkout fetches a submodule whose URL in `.gitmodules` begins `git@github.com:` over HTTPS, so the token serves whichever form the URL takes. The token is valid for an hour and revoked when the job ends.
+
+The step stays in each workflow, by an action pinned by full SHA, and never moves into an action in a submodule, for the reason the review app's token step stays in the gate's copy (*Setting a repository up*): a pull request's workflow runs the pull request's own submodule pin, which an ordinary commit can move to any commit, so code there would receive the key, while the workflow itself only a person may change.
+
+The workflow names the tag each action follows on comment lines at its top, so `docker/upgrade` re-pins the token step and the checkout with the repository's other workflows (*Upgrading the library*):
+
+```yaml
+# TRACK USES actions/checkout@v7
+# TRACK USES actions/create-github-app-token@v3
+```
+
 ## Building and pushing images
 
 The `docker/` scripts that build or push tagged images, or log in, such as `docker/build-dev-latest` and `docker/login`, read the image repository, such as `ghcr.io/OWNER/NAME`, from a `.dockerrepo` file at the calling repository's root.
