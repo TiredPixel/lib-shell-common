@@ -21,7 +21,8 @@ lint:
 test:
 	docker compose --profile test run --rm --build shell_test test $(TESTS)
 upgrade-pre:
-	docker/upgrade --record tmp/upgrade.record Dockerfile .github/workflows/*.yml
+	docker/upgrade --record tmp/upgrade.record Dockerfile .github/workflows/*.yml \
+		github/review/action.yml
 # One step at a time even under -j, since each needs the one before it done.
 upgrade:
 	$(MAKE) upgrade-pre

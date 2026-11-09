@@ -780,7 +780,7 @@ for typo in "#TRACK FROM r/x:1" "  # TRACK FROM r/x:1" "# track from r/x:1" "# T
         "# TRACK ARG V github:o/p"$'\n'"$typo"$'\nARG V=1' "fake curl:"
 done
 check track-uses-in-dockerfile $'# TRACK ARG V github:o/p\n#  TRACK USES o/r@v1\nARG V=1\n' 1 \
-    "@F@:2: TRACK USES belongs in a workflow, not a Dockerfile" \
+    "@F@:2: TRACK USES belongs in a workflow or action, not a Dockerfile" \
     $'# TRACK ARG V github:o/p\n#  TRACK USES o/r@v1\nARG V=1' "fake curl:"
 
 # Words that only begin like a TRACK kind are no mistyped pin.
@@ -1450,8 +1450,8 @@ elif [ "$(cat -- "$work/recfail/tmp/sub/record" 2>&1)" != "$said" ]; then
     fail record-dirs-relative "the record is: $(cat -- "$work/recfail/tmp/sub/record" 2>&1)"
 fi
 
-usage=$(printf '%s\n' "Usage: upgrade [--record FILE] [DOCKERFILE [WORKFLOW...]]" \
-    "       upgrade [--record FILE] --workflows WORKFLOW...")
+usage=$(printf '%s\n' "Usage: upgrade [--record FILE] [DOCKERFILE [WORKFLOW|ACTION...]]" \
+    "       upgrade [--record FILE] --workflows WORKFLOW|ACTION...")
 for empty in "" x; do
     rc=0
     if [ -n "$empty" ]; then
@@ -1543,6 +1543,88 @@ if [ "$rc" != 0 ]; then
 elif [ "$(<"$v/rec")" != "$said" ] ||
     [ "$(<"$v/.github/workflows.new/w.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" ]; then
     fail relative "the record or proposal is wrong: $(<"$v/rec")"
+fi
+
+# An action, named action.yml or action.yaml outside .github/workflows, is
+# re-pinned in place, keeping its mode, through a symbolic link, which stays a
+# link; no proposal is made for it. One nothing moves in is not written. An
+# action.yml inside .github/workflows is a workflow, so proposed.
+a=$work/action
+mkdir -p "$a/x" "$a/y" "$a/real" "$a/.github/workflows"
+printf '%s\n' "# TRACK USES o/a@v2" "    - uses: o/a@v1" "    - uses: ./z" >"$a/x/action.yml"
+chmod 0600 "$a/x/action.yml"
+printf '%s\n' "# TRACK USES o/r@v1" "    - uses: o/r@v0" >"$a/real/action.yaml"
+ln -s ../real/action.yaml "$a/y/action.yaml"
+printf '%s\n' "# TRACK USES o/a@v2" "    - uses: o/a@$c2" >"$a/action.yml"
+printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" >"$a/.github/workflows/action.yml"
+rc=0
+"$upgrade" --workflows "$a/x/action.yml" "$a/y/action.yaml" "$a/action.yml" \
+    "$a/.github/workflows/action.yml" >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 0 ]; then
+    fail action "exit $rc, not 0: $(<"$work/err")"
+elif [ "$(<"$a/x/action.yml")" != $'# TRACK USES o/a@v2\n    - uses: o/a@'"$c2"$'\n    - uses: ./z' ]; then
+    fail action "x/action.yml is: $(<"$a/x/action.yml")"
+elif [ "$(stat -c %a "$a/x/action.yml")" != 600 ]; then
+    fail action "x/action.yml's mode is $(stat -c %a "$a/x/action.yml")"
+elif ! [ -L "$a/y/action.yaml" ] ||
+    [ "$(<"$a/real/action.yaml")" != $'# TRACK USES o/r@v1\n    - uses: o/r@'"$c3" ]; then
+    fail action "the link was replaced or its target not written"
+elif grep -qF "wrote $real/action/action.yml" "$work/err"; then
+    fail action "action.yml, which nothing moved, was written"
+elif [ "$(<"$a/.github/workflows/action.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@v0' ] ||
+    [ "$(cat -- "$a/.github/workflows.new/action.yml" 2>&1)" != $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" ]; then
+    fail action "the workflow named action.yml was written or not proposed"
+elif [ -e "$a/x/workflows.new" ] || [ -e "$a/workflows.new" ] || [ -s "$work/out" ]; then
+    fail action "something else was written: $(<"$work/out")"
+fi
+
+# An action holds TRACK USES alone, a refusal naming it as an action.
+printf '%s\n' "# TRACK ARG V github:o/p" "    - uses: o/r@v0" >"$a/x/action.yml"
+rc=0
+"$upgrade" --workflows "$a/x/action.yml" >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 1 ] ||
+    [ "$(<"$work/err")" != "$a/x/action.yml:1: TRACK ARG belongs in a Dockerfile, not an action" ]; then
+    fail action-track-arg "exit $rc: $(<"$work/err")"
+fi
+
+# With --record, an action written is listed with its moves; one with changes
+# not committed, or linking into another repository, is refused before any
+# lookup, with or without --workflows.
+k=$work/actrec
+mkdir -p "$k/g"
+printf '%s' "$df" >"$k/Dockerfile"
+printf '%s\n' "# TRACK USES o/a@v2" "    - uses: o/a@v1" >"$k/g/action.yml"
+commit_all "$k"
+# Made after the commit, so the outer repository holds no copy of it.
+mkdir "$k/lib"
+printf '%s\n' "# TRACK USES o/a@v2" "    - uses: o/a@v1" >"$k/lib/action.yml"
+commit_all "$k/lib"
+ln -s lib/action.yml "$k/action.yml"
+rc=0
+"$upgrade" --record "$k/rec" "$k/Dockerfile" "$k/g/action.yml" >/dev/null 2>"$work/err" || rc=$?
+said=$(printf '%s\n' "$real/actrec/Dockerfile" "$real/actrec/g/action.yml" "" \
+    "V 1 -> 1.2.3" "o/a@v2 v1 -> 2222222")
+if [ "$rc" != 0 ]; then
+    fail action-record "exit $rc, not 0: $(<"$work/err")"
+elif [ "$(cat -- "$k/rec" 2>&1)" != "$said" ]; then
+    fail action-record "the record is: $(cat -- "$k/rec" 2>&1)"
+fi
+rm -f -- "$k/rec"
+"$REAL_GIT" -C "$k" commit -q -a -m upgraded
+printf '# edit\n' >>"$k/g/action.yml"
+for given in "$k/Dockerfile" --workflows; do
+    rc=0
+    "$upgrade" --record "$k/rec" "$given" "$k/g/action.yml" >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != 1 ] || [ -s "$work/out" ] || [ -e "$k/rec" ] || [ "$(<"$work/err")" != \
+        "upgrade: $real/actrec/g/action.yml: has changes not committed; commit or stash them first" ]; then
+        fail action-record-dirty "$given: exit $rc: $(<"$work/err")"
+    fi
+done
+rc=0
+"$upgrade" --record "$k/rec" --workflows "$k/action.yml" >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 1 ] || [ -s "$work/out" ] || [ -e "$k/rec" ] ||
+    [ "$(<"$work/err")" != "upgrade: $k/action.yml: links to $real/actrec/lib/action.yml, in the repository $real/actrec/lib, not $real/actrec, so docker/upgrade-commit could not commit it; re-pin it in its own repository, or without --record" ]; then
+    fail action-record-link "exit $rc: $(<"$work/err")"
 fi
 
 # Progress goes to stderr, a line naming what each pin resolved to and each file

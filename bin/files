@@ -92,7 +92,11 @@ if [ -d .github ]; then
 fi
 # The review gate's workflow, which projects copy, linted as a live one is.
 workflow_files+=(github/review.yml)
-yaml_files=("${compose_files[@]}" .hadolint.yaml "${workflow_files[@]}")
+# The review gate's action, not a workflow, so linted as YAML alone; actionlint
+# reads it only where a workflow uses it.
+action_files=(github/review/action.yml)
+yaml_files=("${compose_files[@]}" .hadolint.yaml "${workflow_files[@]}"
+    "${action_files[@]}")
 
 docker_files=(Dockerfile)
 markdown_files=(README.md)
