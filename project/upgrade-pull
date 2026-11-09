@@ -14,29 +14,24 @@ prog=${0##*/}
 
 f_projects=.projects
 
-# --ff-only here and below, whatever the caller's pull.rebase or pull.ff: a
-# diverged branch stops the sweep, where a merge or a rebase would succeed,
-# unseen, and a release would go on to push it.
-git pull --ff-only --no-recurse-submodules
-
-# foreach visits only submodules that are checked out, so one added upstream
-# would be skipped without a word, and a URL changed in .gitmodules would never
-# reach .git/config, leaving every later fetch on the old remote. Each level
-# therefore brings its own submodules in line with the .gitmodules it has just
-# pulled -- this one here, each submodule inside the sweep below, before foreach
-# lists and descends into its children. It is not recursive, since the recursion
-# is foreach's; exported, so the sweep's sh can reach it.
-export PROJECT_SUBMODULE_INIT=$dir/submodule-init
-"$PROJECT_SUBMODULE_INIT"
-
 # Run from a branch other than the repository's default, as a sweep for a pull
 # request is, each listed project takes the upgrade on a branch of the same
 # name, since its default branch may take changes only through a pull request.
-# Only listed projects commit an upgrade, so no other submodule is branched.
-# HEAD is a branch here, since the pull above refuses a detached one. A
-# repository made with git init and pushed has no origin/HEAD, so origin is
-# asked where it is missing.
-branch=$(git symbolic-ref --short HEAD)
+# Only listed projects commit an upgrade, so no other submodule is branched. A
+# detached HEAD has no branch to name or to pull into; symbolic-ref exits 1 for
+# one, and any other failure, such as no repository, is left to git's own
+# message. A repository made with git init and pushed has no origin/HEAD, so
+# origin is asked where it is missing.
+detached=0
+branch=$(git symbolic-ref -q --short HEAD) || detached=$?
+case $detached in
+0) ;;
+1)
+    echo "$prog: HEAD is detached; check out a branch" >&2
+    exit 1
+    ;;
+*) exit "$detached" ;;
+esac
 if ref=$(git symbolic-ref -q --short refs/remotes/origin/HEAD); then
     default=${ref#origin/}
 else
@@ -57,6 +52,42 @@ else
         exit 1
     fi
 fi
+
+# --ff-only here and below, whatever the caller's pull.rebase or pull.ff: a
+# diverged branch stops the sweep, where a merge or a rebase would succeed,
+# unseen, and a release would go on to push it. A branch with no upstream, as
+# one made for the sweep has, or whose upstream its remote no longer holds, as
+# once a merged pull request's branch is deleted, has nothing of its own to
+# pull, so takes origin's default branch instead. One holding a commit that
+# branch lacks, as after a squash or rebase merge, has diverged from it and
+# stops. ls-remote exits 2 for a ref the remote lacks; any other failure stops
+# the sweep.
+upstream=0
+if remote=$(git config "branch.$branch.remote") &&
+    merge=$(git config "branch.$branch.merge"); then
+    git ls-remote -q --exit-code "$remote" "$merge" >/dev/null || upstream=$?
+    case $upstream in
+    0 | 2) ;;
+    *) exit "$upstream" ;;
+    esac
+else
+    upstream=2
+fi
+if [ "$upstream" -eq 0 ]; then
+    git pull --ff-only --no-recurse-submodules
+else
+    git pull --ff-only --no-recurse-submodules origin "$default"
+fi
+
+# foreach visits only submodules that are checked out, so one added upstream
+# would be skipped without a word, and a URL changed in .gitmodules would never
+# reach .git/config, leaving every later fetch on the old remote. Each level
+# therefore brings its own submodules in line with the .gitmodules it has just
+# pulled -- this one here, each submodule inside the sweep below, before foreach
+# lists and descends into its children. It is not recursive, since the recursion
+# is foreach's; exported, so the sweep's sh can reach it.
+export PROJECT_SUBMODULE_INIT=$dir/submodule-init
+"$PROJECT_SUBMODULE_INIT"
 
 unset PROJECT_BRANCH
 if [ "$branch" != "$default" ] && [ -f "$f_projects" ]; then
