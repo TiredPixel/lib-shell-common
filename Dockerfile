@@ -77,9 +77,9 @@ ENV PATH=/home/x/r/bin:$PATH
 
 # mikefarah's yq, which bin/format and lint/yaml-keys need: Debian 13's yq is
 # the Python wrapper.
-ARG YQ_VERSION=4.54.1
-ARG YQ_SHA256_AMD64=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
-ARG YQ_SHA256_ARM64=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b
+ARG YQ_VERSION=4.54.3
+ARG YQ_SHA256_AMD64=129534601871538efe0ba4c5e62a34fb1d5f469bcb975c4fddeb467d82974973
+ARG YQ_SHA256_ARM64=89f69310b61b68d1245065a1241d1fc843f7a36cd6103ffd77ad987613bd1b67
 RUN case $(dpkg --print-architecture) in \
     amd64) arch=amd64 sha256=${YQ_SHA256_AMD64} ;; \
     arm64) arch=arm64 sha256=${YQ_SHA256_ARM64} ;; \
@@ -126,9 +126,9 @@ RUN case $(dpkg --print-architecture) in \
 # package it. It publishes only an MD5 beside each asset (its release page,
 # github.com/reteps/dockerfmt/releases, checked 2026-11), so the hashes are
 # taken from the downloads themselves.
-ARG DOCKERFMT_VERSION=0.5.4
-ARG DOCKERFMT_SHA256_AMD64=0a0f5eafd81a76c8a5d04be8d9b5a5fc00c0054a0ea5cc0512377c13c86859bc
-ARG DOCKERFMT_SHA256_ARM64=f8b37047f35a24fe09df7c7341b826acd7f25917f5757fd72c3e8eef17b66e5d
+ARG DOCKERFMT_VERSION=0.6.0
+ARG DOCKERFMT_SHA256_AMD64=c77c7fe6c068de8d2132cbc00b3d17e53e8bcd0ae2bb14f0dadf42c8f6206247
+ARG DOCKERFMT_SHA256_ARM64=801c1a9583a91144c57ff65fc1ddf71bfe446220a1a0f423d3e1444fc8faa767
 RUN case $(dpkg --print-architecture) in \
     amd64) arch=amd64 sha256=${DOCKERFMT_SHA256_AMD64} ;; \
     arm64) arch=arm64 sha256=${DOCKERFMT_SHA256_ARM64} ;; \
