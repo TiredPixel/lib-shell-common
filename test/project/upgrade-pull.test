@@ -385,14 +385,112 @@ expect dirty-ahead "lib's commit" "$(head_of "$w/app/lib")" \
     "$(git -C "$w/lib.git" rev-parse release/x)"
 expect dirty-ahead "lib's file" "$(<"$w/app/lib/file")" local
 
-# A parent branch with no upstream fails before any submodule moves.
+# A parent branch with no upstream, as one made for the sweep, has nothing to
+# fast-forward and goes on to move the submodules.
 fixture
 git -C "$w/app" checkout -q -b local
 upcommit lib lib2
-before=$(head_of "$w/app/lib")
 run no-upstream
-expect_failure no-upstream
-expect no-upstream "lib's commit" "$(head_of "$w/app/lib")" "$before"
+expect no-upstream status "$rc" 0
+expect no-upstream "app's branch" "$(branch_of "$w/app")" local
+expect no-upstream "app's commit" "$(head_of "$w/app")" \
+    "$(git -C "$w/app.git" rev-parse main)"
+expect no-upstream "lib's commit" "$(head_of "$w/app/lib")" \
+    "$(git -C "$w/lib.git" rev-parse release/x)"
+
+# A parent branch with no upstream behind origin's default branch is
+# fast-forwarded to it.
+fixture
+git -C "$w/app" checkout -q -b local
+upcommit app app2
+run no-upstream-behind
+expect no-upstream-behind status "$rc" 0
+expect no-upstream-behind "app's branch" "$(branch_of "$w/app")" local
+expect no-upstream-behind "app's commit" "$(head_of "$w/app")" \
+    "$(git -C "$w/app.git" rev-parse main)"
+
+# A parent branch whose upstream origin no longer holds, as once a merged pull
+# request's branch is deleted, is fast-forwarded to origin's default branch,
+# though its remote-tracking ref is still present.
+fixture
+topic
+git -C "$w/app.up" checkout -q main
+git -C "$w/app.up" push -q origin --delete topic
+upcommit app app2
+run upstream-deleted
+expect upstream-deleted status "$rc" 0
+expect upstream-deleted "app's branch" "$(branch_of "$w/app")" topic
+expect upstream-deleted "app's commit" "$(head_of "$w/app")" \
+    "$(git -C "$w/app.git" rev-parse main)"
+
+# A parent branch with commits of its own whose upstream origin no longer holds,
+# as once a pull request merged by squash or rebase has its branch deleted, has
+# diverged from origin's default branch and fails before any submodule moves.
+fixture
+topic
+git -C "$w/app" commit -q --allow-empty -m own
+git -C "$w/app" push -q
+git -C "$w/app.up" checkout -q main
+git -C "$w/app.up" push -q origin --delete topic
+upcommit app squashed
+upcommit lib lib2
+before=$(head_of "$w/app/lib")
+run upstream-deleted-squashed
+expect_failure upstream-deleted-squashed
+expect upstream-deleted-squashed "lib's commit" "$(head_of "$w/app/lib")" \
+    "$before"
+
+# A parent branch whose upstream's remote cannot be reached fails before any
+# submodule moves, rather than being taken for one with no upstream.
+fixture
+git -C "$w/app" remote add gone "$w/gone.git"
+git -C "$w/app" checkout -q -b local
+git -C "$w/app" config branch.local.remote gone
+git -C "$w/app" config branch.local.merge refs/heads/main
+upcommit lib lib2
+before=$(head_of "$w/app/lib")
+run upstream-unreachable
+expect_failure upstream-unreachable
+expect upstream-unreachable "lib's commit" "$(head_of "$w/app/lib")" "$before"
+
+# A parent branch with no upstream diverged from origin's default branch fails
+# before any submodule moves.
+fixture
+git -C "$w/app" checkout -q -b local
+git -C "$w/app" commit -q --allow-empty -m local
+upcommit app app2
+upcommit lib lib2
+before=$(head_of "$w/app/lib")
+run no-upstream-diverged
+expect_failure no-upstream-diverged
+expect no-upstream-diverged "lib's commit" "$(head_of "$w/app/lib")" "$before"
+
+# A detached HEAD is refused before any submodule moves, with its own message.
+# The refusal is the script's own line, so the case runs it apart from run.
+fixture
+git -C "$w/app" checkout -q --detach
+upcommit lib lib2
+before=$(head_of "$w/app/lib")
+rc=0
+(cd "$w/app" && "$pull") >"$w/out" 2>"$w/err" || rc=$?
+expect_failure detached
+expect detached "lib's commit" "$(head_of "$w/app/lib")" "$before"
+if ! grep -qxF "upgrade-pull: HEAD is detached; check out a branch" \
+    "$w/err"; then
+    fail detached "stderr lacks the refusal: $(output)"
+fi
+
+# Outside any repository, git's own message stands alone, with no claim of a
+# detached HEAD.
+fixture
+mkdir "$w/none"
+rc=0
+(cd "$w/none" && GIT_CEILING_DIRECTORIES=$w "$pull") >"$w/out" 2>"$w/err" ||
+    rc=$?
+expect_failure no-repo
+if grep -q "^upgrade-pull:" "$w/err"; then
+    fail no-repo "stderr has a line of its own: $(output)"
+fi
 
 # A parent diverged from its upstream fails before any submodule moves.
 fixture
