@@ -1,0 +1,36 @@
+---
+description: Posts a pull request's review checks with github/review-gate.
+# The caller mints the review app's token in its own workflow, where the key
+# stays: this action runs from whatever commit the submodule is pinned to, which
+# an ordinary commit can move, so it takes only the short-lived token, never the
+# key, and reads no secrets or vars itself.
+inputs:
+  app:
+    description: The review app's slug, as the token step gives it.
+    required: true
+  checks:
+    default: ""
+    description: Checks to post beside those the rules require, space-separated.
+    required: false
+  token:
+    description: An installation token of the review app.
+    required: true
+name: Review gate
+runs:
+  steps:
+    - env:
+        APP: ${{ inputs.app }}
+        GH_TOKEN: ${{ inputs.token }}
+        NUMBER: ${{ github.event.number || github.event.issue.number }}
+        REPO: ${{ github.repository }}
+        # The head a push moved the pull request from, so the gate runs again
+        # for any other pull request left on it; only synchronize gives one.
+        REVIEW_GATE_BEFORE: ${{ github.event.before }}
+        REVIEW_GATE_CHECKS: ${{ inputs.checks }}
+      name: Post review checks
+      run: |
+        "$GITHUB_ACTION_PATH/../review-gate" "$REPO" "$NUMBER" "$APP"
+      # Strict as the gate is, which GitHub's default shell is not; a composite
+      # action's run step takes no default, so names its own.
+      shell: bash -Eeuo pipefail -O inherit_errexit -O failglob {0}
+  using: composite

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# Usage: docker/upgrade [--record FILE] [DOCKERFILE [WORKFLOW...]]
-#        docker/upgrade [--record FILE] --workflows WORKFLOW...
+# Usage: docker/upgrade [--record FILE] [DOCKERFILE [WORKFLOW|ACTION...]]
+#        docker/upgrade [--record FILE] --workflows WORKFLOW|ACTION...
 #
 # Re-pin a Dockerfile (default ./Dockerfile), and each GitHub Actions workflow
-# named after it, to what its pins name today, so an upgrade moves everything
-# forward and the tests that follow it catch what broke. With --workflows, only
-# the workflows named are re-pinned and no Dockerfile is read, linted or
-# written, for a repository whose Dockerfile is not its own to re-pin, such as
-# a link to a submodule's. In the Dockerfile,
+# or action named after it, to what its pins name today, so an upgrade moves
+# everything forward and the tests that follow it catch what broke. With
+# --workflows, only the workflows and actions named are re-pinned and no
+# Dockerfile is read, linted or written, for a repository whose Dockerfile is
+# not its own to re-pin, such as a link to a submodule's. In the Dockerfile,
 # three kinds of comment line, read wherever they fall in the file, though kept
 # at the top by convention:
 #
@@ -81,8 +81,8 @@
 # held back the same way, its TRACK LOCK line removed and a comment beside its
 # install saying why: nothing here reads or writes a lock no TRACK LOCK names.
 #
-# In each workflow, one kind of comment line, read wherever it falls in the
-# file, though kept at the top by convention:
+# In each workflow or action, one kind of comment line, read wherever it falls
+# in the file, though kept at the top by convention:
 #
 #   # TRACK USES OWNER/REPO@TAG
 #       every uses: OWNER/REPO[/PATH]@REF line, a step's or a job's, whatever
@@ -97,15 +97,18 @@
 # stale. Lines are read as text, not parsed as YAML, so a uses: line inside a
 # block scalar, such as a run: body, is re-pinned too, and any other line
 # holding uses:, a comment line aside, that names a covered OWNER/REPO fails
-# rather than being passed over. Workflows are re-pinned only when named, as by
-# Makefile's upgrade-pre.
+# rather than being passed over. Workflows and actions are re-pinned only when
+# named, as by Makefile's upgrade-pre.
 #
 # A workflow is never written, since what may change one is not always what runs
 # this. Each must sit in a .github/workflows directory, and what it becomes,
 # where anything in it moves, is proposed as the file of its name in the
 # workflows.new directory beside that one, made where it is missing, to be
 # reviewed and moved into place. A proposal already there for a named workflow
-# fails the run.
+# fails the run. An action is a file named action.yml or action.yaml outside a
+# .github/workflows directory, the names GitHub reads an action's metadata
+# from, and is written in place, through any symbolic link, as the Dockerfile
+# is, since nothing guards it as workflows are guarded.
 #
 # A comment line that reads as a mistyped TRACK line fails, as does a TRACK line
 # of a kind its file does not hold. Before anything else is read, # FROMFREEZE,
@@ -165,14 +168,15 @@
 # record that is not empty, or where the Dockerfile, followed through any
 # symbolic link, or its BASENAME.lock directory differs from what git has
 # committed, or where the Dockerfile is a symbolic link into another repository,
-# such as a submodule, where the commit cannot add it; with --workflows, only
-# the earlier record is checked.
+# such as a submodule, where the commit cannot add it; each action named is
+# checked as the Dockerfile is, with or without --workflows, where only the
+# earlier record and the actions are checked.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 usage() {
-    echo "Usage: ${0##*/} [--record FILE] [DOCKERFILE [WORKFLOW...]]" >&2
-    echo "       ${0##*/} [--record FILE] --workflows WORKFLOW..." >&2
+    echo "Usage: ${0##*/} [--record FILE] [DOCKERFILE [WORKFLOW|ACTION...]]" >&2
+    echo "       ${0##*/} [--record FILE] --workflows WORKFLOW|ACTION..." >&2
     exit 2
 }
 
@@ -263,15 +267,24 @@ retire '^[[:space:]]*#[[:space:]]*track[-_[:space:]]*args?[[:space:]]+[^[:space:
     "pypi: and npm: pins are now TRACK LOCK"
 [ -z "$retired" ] || exit 1
 
-# Where each workflow's proposal goes, by the index of the workflow.
+# Where each workflow's proposal goes, or an action is written, by the index of
+# the workflow or action in workflows; kind_of says which each is.
 proposals=()
+kind_of=()
 for w in "${!workflows[@]}"; do
     workflow=${workflows[$w]}
     dir=$(readlink -f -- "$(dirname -- "$workflow")")
     if [ "${dir##*/}" != workflows ] ||
         [ "$(basename -- "${dir%/*}")" != .github ]; then
-        refuse "$workflow" "is not in a .github/workflows directory"
+        case ${workflow##*/} in
+        action.yml | action.yaml) ;;
+        *) refuse "$workflow" "is not in a .github/workflows directory" ;;
+        esac
+        kind_of[w]="an action"
+        proposals[w]=$(readlink -f -- "$workflow")
+        continue
     fi
+    kind_of[w]="a workflow"
     proposals[w]=${dir%/*}/workflows.new/${workflow##*/}
     if [ -e "${proposals[$w]}" ] || [ -L "${proposals[$w]}" ]; then
         refuse "${proposals[$w]}" "is a proposal for $workflow already" \
@@ -288,31 +301,43 @@ if [ -n "$dockerfile" ]; then
 fi
 
 # The commit takes the record's paths whole, so a record still there would be
-# lost, and an edit already in the Dockerfile or its locks would be committed
-# with the pins.
+# lost, and an edit already in the Dockerfile, its locks or an action would be
+# committed with the pins.
 if [ -n "$record" ]; then
     if [ -s "$record" ]; then
         refuse "$record" "is an earlier upgrade's record still pending;" \
             "commit it with docker/upgrade-commit or remove it first"
     fi
 fi
-if [ -n "$record" ] && [ -n "$dockerfile" ]; then
-    # The commit is made in the repository holding the Dockerfile as named,
-    # where git adds no file of a submodule or another repository.
-    top=$(git -C "$(dirname -- "$dockerfile")" rev-parse --show-toplevel)
-    there=$(git -C "$(dirname -- "$target")" rev-parse --show-toplevel)
+# Refuses file $1, written in place at $2, the file it names through any
+# symbolic link, where git holds changes to $2 or $2 is in another repository
+# than $1: the commit is made in the repository holding the file as named, where
+# git adds no file of a submodule or another repository.
+committed() {
+    local top there dirty
+    top=$(git -C "$(dirname -- "$1")" rev-parse --show-toplevel)
+    there=$(git -C "$(dirname -- "$2")" rev-parse --show-toplevel)
     [ "$top" = "$there" ] ||
-        refuse "$dockerfile" "links to $target, in the repository $there," \
+        refuse "$1" "links to $2, in the repository $there," \
             "not $top, so docker/upgrade-commit could not commit it; re-pin" \
             "it in its own repository, or without --record"
-    dirty=$(git -C "$(dirname -- "$target")" status --porcelain \
-        -- ":(literal)$(basename -- "$target")")
+    dirty=$(git -C "$(dirname -- "$2")" status --porcelain \
+        -- ":(literal)$(basename -- "$2")")
     [ -z "$dirty" ] ||
-        refuse "$target" "has changes not committed; commit or stash them first"
+        refuse "$2" "has changes not committed; commit or stash them first"
+}
+if [ -n "$record" ] && [ -n "$dockerfile" ]; then
+    committed "$dockerfile" "$target"
     dirty=$(git -C "$(dirname -- "$dockerfile")" status --porcelain \
         -- ":(literal)$(basename -- "$lockdir")")
     [ -z "$dirty" ] ||
         refuse "$lockdir" "has changes not committed; commit or stash them first"
+fi
+if [ -n "$record" ]; then
+    for w in "${!workflows[@]}"; do
+        [ "${kind_of[$w]}" = "a workflow" ] ||
+            committed "${workflows[$w]}" "${proposals[$w]}"
+    done
 fi
 
 # A comment line naming a TRACK kind, with or without a trailing s, in any case,
@@ -389,7 +414,7 @@ for i in "${!comments[@]}"; do
             ;;
         uses)
             refuse_at "$dockerfile" $((i + 1)) "TRACK USES belongs in a" \
-                "workflow, not a Dockerfile"
+                "workflow or action, not a Dockerfile"
             ;;
         esac
         ;;
@@ -871,11 +896,12 @@ for name in "${lock_names[@]}"; do
     done
 done
 
-# Each workflow's covered uses: lines, by the index of the workflow in w_of and
-# of the line in i_of, with what the line keeps before the reference in head_of,
-# the action named, without its REF, in action_of, the REF in ref_of and the
-# OWNER/REPO@TAG it follows in pin_of. pins lists each OWNER/REPO@TAG once, in
-# the order first named, and pin_file the workflow that first names it.
+# Here and below, a workflow is a workflow or an action alike, as workflows
+# names them. Each workflow's covered uses: lines, by the index of the workflow
+# in w_of and of the line in i_of, with what the line keeps before the reference
+# in head_of, the action named, without its REF, in action_of, the REF in ref_of
+# and the OWNER/REPO@TAG it follows in pin_of. pins lists each OWNER/REPO@TAG
+# once, in the order first named, and pin_file the workflow that first names it.
 w_of=()
 i_of=()
 head_of=()
@@ -917,7 +943,7 @@ for w in "${!workflows[@]}"; do
                     "OWNER/REPO@TAG"
             fi
             refuse_at "$workflow" $((i + 1)) "TRACK $kind belongs in a" \
-                "Dockerfile, not a workflow"
+                "Dockerfile, not ${kind_of[$w]}"
         fi
         data=${line#"# TRACK USES "}
         [[ "$data" =~ $trackuses ]] ||

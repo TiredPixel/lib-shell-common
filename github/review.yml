@@ -37,6 +37,9 @@ jobs:
       - name: Fetch shell-common
         run: |
           git submodule update --init lib/shell-common
+      # Minted here, in the workflow only a person may change, by an action
+      # pinned by full SHA, so the key never reaches the submodule's code, which
+      # an ordinary commit can move.
       - id: token
         # The action's name and a full commit SHA leave no way to break the
         # line.
@@ -47,18 +50,13 @@ jobs:
           permission-checks: write
           permission-pull-requests: read
           private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
-      - env:
-          APP: ${{ steps.token.outputs.app-slug }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          NUMBER: ${{ github.event.number || github.event.issue.number }}
-          REPO: ${{ github.repository }}
-          # The head a push moved the pull request from, so the gate runs again
-          # for any other pull request left on it; only synchronize gives one.
-          REVIEW_GATE_BEFORE: ${{ github.event.before }}
-          REVIEW_GATE_CHECKS: ${{ vars.REVIEW_GATE_CHECKS }}
-        name: Post review checks
-        run: |
-          lib/shell-common/github/review-gate "$REPO" "$NUMBER" "$APP"
+      # The gate's own steps, in the submodule, so they upgrade with it.
+      - name: Post review checks
+        uses: ./lib/shell-common/github/review
+        with:
+          app: ${{ steps.token.outputs.app-slug }}
+          checks: ${{ vars.REVIEW_GATE_CHECKS }}
+          token: ${{ steps.token.outputs.token }}
     # The gate's own run, which takes seconds, bounded so a hung one stops well
     # before GitHub's default timeout; a Codex review takes as long as it takes,
     # the check waiting meanwhile.
