@@ -2,7 +2,7 @@
 
 Shell scripts a repository takes as a submodule to pin and upgrade its Dockerfile and workflows, build and push its images, lint its Dockerfiles, shell, YAML and release version, approve proposed workflows, gate merges on reviews, work across and release several projects together, check its Ansible, and plan and apply its Terraform. The sections up to and including *Planning and applying Terraform* are for such a repository; *Working on this repository* covers working on this one.
 
-The review gate is the one part a repository copies rather than calls: an upgrade moves the submodule and re-pins the workflows already there, but neither adds the gate's `review.yml` nor refreshes a copy, so a repository copies `github/review.yml` when it adopts the gate (*Setting a repository up*) and again only when the template's triggers or job settings change; the gate's steps arrive with the submodule.
+The review gate is the one part a repository copies rather than calls: an upgrade moves the submodule and re-pins the workflows already there, but neither adds the gate's `review.yml` nor refreshes a copy, so a repository copies `github/review.yml` when it adopts the gate (*Setting a repository up*) and again only when the template's triggers, job settings or token step change; the gate's own steps arrive with the submodule.
 
 ## Requirements
 
@@ -60,7 +60,7 @@ The repository's `.gitignore` names `/tmp/`, where `upgrade-pre` writes the reco
 
 `docker/upgrade` takes the `Dockerfile` to re-pin, `Dockerfile` by default, then the GitHub Actions workflows, and any action of the repository's own, to re-pin with it; only workflows and actions named are touched, so a repository with none names only the `Dockerfile`.
 
-An upgrade re-pins the workflows a repository already has and adds none, so it never adds the review gate's workflow or refreshes a copy of it: a repository copies `github/review.yml` when it adopts the gate (*Setting a repository up*), and again only when the template's triggers or job settings change. The gate's steps sit in the composite action `github/review/action.yml`, which the copy runs from the submodule, so they move with each upgrade of the library.
+An upgrade re-pins the workflows a repository already has and adds none, so it never adds the review gate's workflow or refreshes a copy of it: a repository copies `github/review.yml` when it adopts the gate (*Setting a repository up*), and again only when the template's triggers or job settings change. The gate's own steps sit in the composite action `github/review/action.yml`, which the copy runs from the submodule, so they move with each upgrade of the library; the step minting the review app's token stays in the copy, since it holds the key.
 
 A repository whose `Dockerfile` is not its own to re-pin, such as one linking `Dockerfile` and `Dockerfile.lock` to a submodule's, names its workflows after `--workflows` instead, and no `Dockerfile` is read, linted or checked against git:
 
@@ -423,9 +423,9 @@ The checks posted are those the base branch's rules require. To post others as w
 gh variable set REVIEW_GATE_CHECKS --body 'review/codex/code review/codex/security'
 ```
 
-The workflow is copied rather than shared because GitHub reads workflows only from the repository's own tree, where a submodule is only a commit id, so neither a symbolic link into `lib/shell-common` nor a workflow inside it can serve. The copy holds only what must be there and changes rarely: the triggers, concurrency, permissions, the checkout of the default branch and the submodule's fetch. Its one other step runs the composite action `github/review/action.yml` from the submodule, which mints the review app's token and runs the gate, so those steps upgrade with each move of the submodule, while a change to the template's triggers or job settings reaches a repository only when it copies the template again. The copy's `# TRACK USES` line lets `docker/upgrade` re-pin its checkout with the repository's other workflows (*Upgrading the library*).
+The workflow is copied rather than shared because GitHub reads workflows only from the repository's own tree, where a submodule is only a commit id, so neither a symbolic link into `lib/shell-common` nor a workflow inside it can serve. The copy holds only what must be there and changes rarely: the triggers, concurrency, permissions, the checkout of the default branch, the submodule's fetch and the step minting the review app's token. That step stays in the copy, by an action pinned by full SHA, because the copy is a workflow, which only a person may change, while the submodule's pin moves with an ordinary commit: the private key reaches no code in the submodule, which gets only the token, valid for an hour, for this repository and the gate's two permissions. The copy's last step runs the composite action `github/review/action.yml` from the submodule, which runs the gate, so its steps upgrade with each move of the submodule, while a change to the template's triggers, job settings or token step reaches a repository only when it copies the template again. The copy's `# TRACK USES` lines let `docker/upgrade` re-pin its checkout and token action with the repository's other workflows (*Upgrading the library*).
 
-The action takes the app's client id and private key, and the further checks to post, as the inputs `client-id`, `private-key` and `checks`, since an action reads neither secrets nor variables itself. It runs the gate with the repository, the pull request's number and the review app's slug, the app's token in `GH_TOKEN`, `checks` in `REVIEW_GATE_CHECKS`, and on a push `REVIEW_GATE_BEFORE` holding the head pushed from:
+The action takes the app's token and slug, as the token step gives them, and the further checks to post, as the inputs `token`, `app` and `checks`, since an action reads neither secrets nor variables itself. It runs the gate with the repository, the pull request's number and the review app's slug, the app's token in `GH_TOKEN`, `checks` in `REVIEW_GATE_CHECKS`, and on a push `REVIEW_GATE_BEFORE` holding the head pushed from:
 
 ```sh
 lib/shell-common/github/review-gate OWNER/REPO NUMBER APP
@@ -660,15 +660,15 @@ make build
 
 ### Upgrading this repository's pins
 
-Base images are pinned by digest, tools downloaded from GitHub by `ARG` and checked against a SHA-256 pinned beside each, mdformat and its plugins by the hashed lock in `Dockerfile.lock/mdformat/`, and the actions the workflows and the review gate's action use by commit SHA.
+Base images are pinned by digest, tools downloaded from GitHub by `ARG` and checked against a SHA-256 pinned beside each, mdformat and its plugins by the hashed lock in `Dockerfile.lock/mdformat/`, and the workflows' actions by commit SHA.
 
-`make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` or `github/review/action.yml` names on a `# TRACK USES` line, and to resolve anew the lock the `Dockerfile` names on its `# TRACK LOCK` line, proposing re-pinned workflows in `.github/workflows.new/` and writing the action in place, then builds, tests and commits the result as `Upgrade pins`, with the body a list holding an item for each move, so a bump that breaks the repository shows before it is committed. It never pushes.
+`make upgrade` runs `docker/upgrade` to re-pin each pin the `Dockerfile` names on a `# TRACK FROM` or `# TRACK ARG` line, and each action a workflow in `.github/workflows/` names on a `# TRACK USES` line, and to resolve anew the lock the `Dockerfile` names on its `# TRACK LOCK` line, proposing re-pinned workflows in `.github/workflows.new/`, then builds, tests and commits the result as `Upgrade pins`, with the body a list holding an item for each move, so a bump that breaks the repository shows before it is committed. It never pushes.
 
 ```sh
 make upgrade
 ```
 
-`docker/upgrade` re-pins a workflow only in a `.github/workflows` directory, so the checkout `github/review.yml` pins is moved by hand (*Updating a pin by hand*); each repository's copy of it is re-pinned with that repository's own workflows.
+`docker/upgrade` re-pins a workflow only in a `.github/workflows` directory, so the actions `github/review.yml` pins are moved by hand (*Updating a pin by hand*); each repository's copy of it is re-pinned with that repository's own workflows.
 
 Where the build or tests fail, fix them, then finish the upgrade:
 

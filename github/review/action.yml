@@ -1,36 +1,26 @@
 ---
-# TRACK USES actions/create-github-app-token@v3
 description: Posts a pull request's review checks with github/review-gate.
-# A composite action reads neither secrets nor vars, so the caller passes each.
+# The caller mints the review app's token in its own workflow, where the key
+# stays: this action runs from whatever commit the submodule is pinned to, which
+# an ordinary commit can move, so it takes only the short-lived token, never the
+# key, and reads no secrets or vars itself.
 inputs:
+  app:
+    description: The review app's slug, as the token step gives it.
+    required: true
   checks:
     default: ""
     description: Checks to post beside those the rules require, space-separated.
     required: false
-  client-id:
-    description: The review app's client id.
-    required: true
-  private-key:
-    description: The review app's private key.
+  token:
+    description: An installation token of the review app.
     required: true
 name: Review gate
 runs:
   steps:
-    # The review app's token, since GitHub counts a check run towards a
-    # required check only from the app the rule names, which the job's own
-    # token is not.
-    - id: token
-      # The action's name and a full commit SHA leave no way to break the line.
-      # yamllint disable-line rule:line-length
-      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
-      with:
-        client-id: ${{ inputs.client-id }}
-        permission-checks: write
-        permission-pull-requests: read
-        private-key: ${{ inputs.private-key }}
     - env:
-        APP: ${{ steps.token.outputs.app-slug }}
-        GH_TOKEN: ${{ steps.token.outputs.token }}
+        APP: ${{ inputs.app }}
+        GH_TOKEN: ${{ inputs.token }}
         NUMBER: ${{ github.event.number || github.event.issue.number }}
         REPO: ${{ github.repository }}
         # The head a push moved the pull request from, so the gate runs again
