@@ -639,11 +639,16 @@ Working on this repository needs:
 
 ### Setting up a working copy
 
-Clone the repository, and copy `.env.example` to `.env`, which sets local options for Compose:
+Clone the repository; it works as cloned, with no `.env`:
 
 ```sh
 git clone https://github.com/TiredPixel/lib-shell-common.git
 cd lib-shell-common
+```
+
+`.env.example` lists each setting `docker-compose.yml` reads, commented out at its default. Copy it to `.env` only to change a default:
+
+```sh
 cp .env.example .env
 ```
 
