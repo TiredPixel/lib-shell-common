@@ -97,6 +97,8 @@ Where the build or tests fail, fix them, then finish:
 make upgrade-post
 ```
 
+A repository that also sweeps projects with `project/upgrade` orders these steps differently, and finishes a stopped sweep before its own `upgrade-post` (*Working across projects*).
+
 ## Locking Python and npm tools
 
 A tool installed from PyPI or npm brings dependencies of its own, which a pin on the tool alone leaves to resolve afresh at every uncached build, and pipx also downloads pip into its shared venv. A Dockerfile therefore installs such a tool from a hashed lock committed beside it, so a plain `docker build` installs exactly what the lock holds.
@@ -571,6 +573,25 @@ Where the project that stopped the sweep is the last one listed, there is no nex
 ```sh
 lib/shell-common/project/upgrade --skip-upgrade
 ```
+
+A repository that sweeps projects and also pins a `Dockerfile` and workflows of its own (*Upgrading the library*) re-pins them after the sweep, in a target of its own, rather than in `upgrade-pre`. `project/upgrade` pulls the repository first, and a proposed workflow is the whole file, built from the live one as checked out, so one built before the pull would lack origin's newer edits to it and undo them once approved; the pull would also be refused where it brings a change to a file the re-pinning has just written.
+
+```make
+upgrade-pre:
+	git submodule sync lib/shell-common
+	git submodule update --init --checkout lib/shell-common
+	lib/shell-common/github/workflows-pending
+	cd lib/shell-common && git checkout latest && git pull --ff-only
+upgrade-pin:
+	lib/shell-common/docker/upgrade --record tmp/upgrade.record Dockerfile .github/workflows/*.yml
+upgrade:
+	$(MAKE) upgrade-pre
+	lib/shell-common/project/upgrade
+	$(MAKE) upgrade-pin
+	$(MAKE) upgrade-post
+```
+
+The sweep's start and stop then run the repository's own services on the old pins; `upgrade-post`, as *Upgrading the library* gives it, builds and tests the new ones. Where a listed project's upgrade stops the sweep, the repository's own `make upgrade-pin` and `make upgrade-post` run last, after the resumed sweep completes: the resumed sweep's pull can move the library's submodule again, and `docker/upgrade-commit` removes the record once it has used it, so an `upgrade-post` run before the resume would leave any such move with no record to commit it by.
 
 ## Releasing
 
