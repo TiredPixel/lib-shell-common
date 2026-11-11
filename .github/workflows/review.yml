@@ -24,7 +24,8 @@ jobs:
     steps:
       # The default branch's code, never the pull request's, whose author could
       # otherwise run code holding the review app's token.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           ref: ${{ github.event.repository.default_branch }}
@@ -32,6 +33,7 @@ jobs:
       # pinned by full SHA, so the key never reaches the gate's own code, which
       # an ordinary commit can move.
       - id: token
+        name: Mint review app token
         # The action's name and a full commit SHA leave no way to break the
         # line.
         # yamllint disable-line rule:line-length
