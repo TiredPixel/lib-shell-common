@@ -77,6 +77,24 @@ check stale-init-fails stale init 1 "$removing"$'\n'"fake terraform: init failed
 check init-fails "" init 1 "fake terraform: init failed" init ""
 check plan-fails "" plan 1 "fake terraform: plan failed" init$'\n'"$plan" ""
 
+# Any argument is a usage error, refused before the earlier plan is removed or
+# terraform runs, so -target=x never plans everything.
+rm -rf -- "$work/project"
+mkdir "$work/project"
+echo stale >"$work/project/.terraform.plan"
+: >"$FAKE_LOG"
+rc=0
+(cd "$work/project" && "$script" -target=x) >"$work/out" 2>"$work/err" ||
+    rc=$?
+if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "Usage: plan-cli" ]; then
+    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
+elif [ -s "$FAKE_LOG" ]; then
+    fail argument "terraform was called as: $(<"$FAKE_LOG")"
+elif [ "$(<"$work/project/.terraform.plan")" != stale ]; then
+    fail argument "the earlier plan was replaced"
+fi
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

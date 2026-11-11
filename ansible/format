@@ -2,6 +2,11 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+if [ $# -ne 0 ]; then
+    echo "Usage: ${0##*/}" >&2
+    exit 2
+fi
+
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 source "$dir/lint-args"

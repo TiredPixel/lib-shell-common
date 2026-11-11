@@ -61,6 +61,9 @@ check fmt-fails fmt 1 "fake terraform: fmt failed" "$fmt"
 check init-fails init 1 "fake terraform: init failed" "$fmt"$'\n'"$init"
 check plan-fails plan 1 "fake terraform: plan failed" "$all"
 
+# Any argument is a usage error, refused before terraform runs.
+check argument "" 2 "Usage: test-cloud" "" x
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

@@ -15,6 +15,11 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+if [ $# -ne 0 ]; then
+    echo "Usage: ${0##*/}" >&2
+    exit 2
+fi
+
 # A pipeline rather than a process substitution, so pipefail sees git's status,
 # and lastpipe so the loop below runs in this shell and keeps what it reads, for
 # the reasons project/release-assert gives.

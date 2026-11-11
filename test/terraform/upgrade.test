@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# Tests terraform/upgrade in a scratch project with terraform faked on PATH, so
+# nothing is initialised. The fake terraform logs each call's arguments and
+# fails where its first argument is FAKE_FAIL.
+#
+# Run: test/terraform/upgrade.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+script=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../terraform")/upgrade
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/terraform/upgrade")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/project"
+cp -p -- "$fixtures/terraform" "$work/bin/"
+
+export FAKE_LOG=$work/log
+export PATH=$work/bin:$PATH
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Runs upgrade with the arguments after $5 and the fake failing at $2, or
+# nowhere where that is empty, and checks it exits $3, prints nothing on stdout
+# and $4 on stderr, and calls terraform as $5.
+check() {
+    local name=$1 rc=0
+    : >"$FAKE_LOG"
+    (cd "$work/project" && FAKE_FAIL=$2 "$script" "${@:6}") >"$work/out" \
+        2>"$work/err" || rc=$?
+    if [ "$rc" -ne "$3" ]; then
+        fail "$name" "exit $rc, not $3: $(<"$work/err")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$4" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    elif [ "$(<"$FAKE_LOG")" != "$5" ]; then
+        fail "$name" "terraform was called as: $(<"$FAKE_LOG")"
+    fi
+}
+
+# The upgrade is the one script that may write the lock file, so its init is
+# not read-only.
+check upgrades "" 0 "" "init -upgrade"
+check init-fails init 1 "fake terraform: init failed" "init -upgrade"
+
+# Any argument is a usage error, refused before terraform runs.
+check argument "" 2 "Usage: upgrade" "" x
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

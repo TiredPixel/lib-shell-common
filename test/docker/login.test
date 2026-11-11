@@ -96,6 +96,19 @@ for var in DOCKER_USERNAME DOCKER_PASSWORD; do
     check "empty-$var" 1 ghcr.io/o/n "" "$var="
 done
 
+# Any argument is a usage error, refused before docker is called.
+echo ghcr.io/o/n >"$work/project/.dockerrepo"
+: >"$FAKE_LOG"
+rc=0
+(cd "$work/project" && "$dir/login" --help) >"$work/out" 2>"$work/err" ||
+    rc=$?
+if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "Usage: login" ]; then
+    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
+elif [ -s "$FAKE_LOG" ]; then
+    fail argument "docker was called as: $(<"$FAKE_LOG")"
+fi
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

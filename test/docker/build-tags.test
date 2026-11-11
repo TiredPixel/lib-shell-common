@@ -140,6 +140,18 @@ check build-fails 3 a/b 1.2 1.2 "$build" FAKE_BUILD=3
 want_out+=$'\n'"fake docker: pushed r/x:a-b"
 check push-fails 4 a/b 1.2 1.2 "$build"$'\n'"push r/x:a-b" FAKE_PUSH=4
 
+# Any argument is a usage error, refused before docker is called.
+: >"$FAKE_LOG"
+rc=0
+PATH="$work/bin:$PATH" FAKE_BRANCH=a/b FAKE_DESCRIBE=1.2 FAKE_RELEASE=1.2 \
+    "$dir/build-tags" --help >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "Usage: build-tags" ]; then
+    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
+elif [ -s "$FAKE_LOG" ]; then
+    fail argument "docker was called as: $(<"$FAKE_LOG")"
+fi
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

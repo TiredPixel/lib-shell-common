@@ -209,6 +209,15 @@ expect_exact not-a-repository 1 \
     "$p: git reads its pointer as unchanged, so a release would record the \
 commit already held rather than what is in the tree"
 
+# Any argument is a usage error, refused before the tree is checked.
+fixture
+rc=0
+(cd "$w/app" && "$assert" x) >"$w/out" 2>"$w/err" || rc=$?
+if [ -s "$w/out" ]; then
+    fail argument "stdout carries: $(<"$w/out")"
+fi
+expect_exact argument 2 "Usage: $p"
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

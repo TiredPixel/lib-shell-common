@@ -66,6 +66,21 @@ check no-plan "" "" 1 \
 check apply-fails plan apply 1 "fake terraform: apply failed" \
     "apply .terraform.plan"$'\n'"plan present"
 
+# Any argument is a usage error, refused before terraform runs, so --help with a
+# saved plan present applies nothing.
+rm -rf -- "$work/project"
+mkdir "$work/project"
+echo plan >"$work/project/.terraform.plan"
+: >"$FAKE_LOG"
+rc=0
+(cd "$work/project" && "$script" --help) >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "Usage: deploy-cli" ]; then
+    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
+elif [ -s "$FAKE_LOG" ]; then
+    fail argument "terraform was called as: $(<"$FAKE_LOG")"
+fi
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi
