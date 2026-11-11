@@ -566,6 +566,12 @@ Where one project's upgrade stops the sweep, that project is finished with its o
 lib/shell-common/project/upgrade --from app-c
 ```
 
+Where the project that stopped the sweep is the last one listed, there is no next project to name, so once it is finished the sweep is resumed with `--skip-upgrade` instead: the pull runs again, no project's upgrade runs, and the rebuild, start and stop cover every project.
+
+```sh
+lib/shell-common/project/upgrade --skip-upgrade
+```
+
 ## Releasing
 
 `project/release-create-latest TAG` releases onto `latest`, and `project/release-create-stable TAG` releases onto `testing` before fast-forwarding `stable` to the tag. Both must be called from the repository's top level, and refuse a tree carrying anything but submodule pointers. Neither pulls: each moves the release branch in every listed project to the commit checked out there, and checks it out in the repository itself, and a branch there or on origin holding a commit the release lacks stops it before anything moves, since only `project/upgrade` brings new commits in. Each commits the pointers the tree has moved as `Release TAG`, with a line for each pointer move as the body, as `PATH OLD..NEW (direction)`, then signs the tag with `git tag -s` in every project, so a signing key must be available before either runs.
