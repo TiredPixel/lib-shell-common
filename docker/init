@@ -2,7 +2,8 @@
 #
 # Sourced by the docker/ scripts that build or push $REPO:$TAG images to export
 # REPO, from .dockerrepo through docker/repo, TAG, from the branch, and
-# DOCKER_BUILDKIT=1. Sets no shell options, since it runs under its caller's.
+# DOCKER_BUILDKIT=1. Sets no shell options, since it runs under its caller's,
+# and unsets init_detached, which a caller may set as below.
 
 export DOCKER_BUILDKIT=1
 
@@ -19,7 +20,17 @@ TAG=$(git rev-parse --abbrev-ref HEAD)
 
 if [ "$TAG" = HEAD ]; then
     TAG=${CIRCLE_BRANCH:-${CIRCLE_TAG:-${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}}}
+
+    # A caller that pushes nothing sets init_detached=commit before sourcing,
+    # and its image is then named by the commit, so a build mid-bisect or
+    # mid-rebase, as a project's tests run one, needs no branch. A caller that
+    # pushes sets nothing and is refused below, so no registry collects an image
+    # for every commit built.
+    if [ -z "$TAG" ] && [ "${init_detached:-}" = commit ]; then
+        TAG=$(git rev-parse --short HEAD)
+    fi
 fi
+unset init_detached
 
 # Empty rather than unset is the risk here: a CI that exports its branch or tag
 # variable holding nothing satisfies set -u and leaves the tag empty, which

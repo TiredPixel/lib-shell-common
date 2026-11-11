@@ -6,7 +6,9 @@ if [ "$SHELLOPTS:$BASHOPTS" != "$before" ]; then
     echo "options: sourcing changed the shell's options" >&2
     exit 1
 fi
-if [ -n "${init_tag+set}" ]; then
-    echo "options: sourcing left init_tag set" >&2
-    exit 1
-fi
+for name in init_tag init_detached; do
+    if [ -n "${!name+set}" ]; then
+        echo "options: sourcing left $name set" >&2
+        exit 1
+    fi
+done
