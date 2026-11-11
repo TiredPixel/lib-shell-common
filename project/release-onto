@@ -10,36 +10,58 @@
 # sets it.
 
 # Readies branch $2 in every project, through project/release-branch-ready in
-# directory $1, for this project's to reach commit $3 where one is given.
+# directory $1, moving it to HEAD.
 release_checkout() {
     local dir=$1
 
-    "$dir/release-branch-ready" "${@:2}" || return
+    "$dir/release-branch-ready" "$2" || return
 }
 
-# Pushes branch $2 in every project, through project/each in directory $1.
-# Remote and refspec named, whatever the caller's push.default,
-# remote.pushDefault or push.followTags.
+# Pushes branch $2 in every project, through project/each in directory $1, with
+# tag $3 where one is given. Remote and refspecs named, whatever the caller's
+# push.default, remote.pushDefault or push.followTags; refs/tags/ so a branch of
+# the same name cannot make the tag's refspec ambiguous. --atomic so an origin
+# that refuses either ref takes neither, and never holds a tag no branch
+# contains; a project swept before the one refused stays pushed.
 release_push() {
-    local dir=$1 branch=$2
+    local dir=$1 branch=$2 refs
 
-    "$dir/each" git push --no-follow-tags --recurse-submodules=check origin \
-        "$branch:$branch" || return
+    refs=("$branch:$branch")
+    if [ $# -gt 2 ]; then
+        refs+=("refs/tags/$3")
+    fi
+
+    "$dir/each" git push --atomic --no-follow-tags \
+        --recurse-submodules=check origin "${refs[@]}" || return
 }
 
 # Releases tag $3 from branch $2 in every project, through the project/ scripts
-# in directory $1: refuses a tree in no state to release, readies each project's
-# $2, commits the submodule pointers, tags, and pushes $2.
+# in directory $1: refuses a tree in no state to release, a tag that already
+# exists and a branch not ready, then readies each project's $2, commits the
+# submodule pointers, tags, and pushes $2 with the tag. Each branch after $3 is
+# one the caller moves to the tag afterwards, checked here so that one not ready
+# stops the release before anything moves, rather than once it is half
+# published.
 release_onto() {
-    local dir=$1 branch=$2 tag=$3
+    local dir=$1 branch=$2 tag=$3 later
 
     "$dir/release-assert" || return
+
+    # Before the commit, which names the tag, so a tag refused leaves no
+    # "Release TAG" commit behind for a rerun with another tag to build on.
+    "$dir/tag-create" --check "$tag" || return
+
+    for later in "${@:4}"; do
+        "$dir/release-branch-ready" --check "$later" || return
+    done
 
     release_checkout "$dir" "$branch" || return
 
     "$dir/release-commit-submodules" "$tag" || return
 
-    "$dir/tag-create" "$tag" || return
+    # Signed everywhere first, so a signing failure publishes nothing, then
+    # pushed with the branch.
+    "$dir/tag-create" --no-push "$tag" || return
 
-    release_push "$dir" "$branch" || return
+    release_push "$dir" "$branch" "$tag" || return
 }

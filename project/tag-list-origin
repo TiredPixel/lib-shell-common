@@ -7,8 +7,8 @@
 # timeout because a remote that hangs would hold the release forever.
 # --foreground because timeout otherwise runs git in a background process
 # group, where an ssh or credential prompt is stopped by SIGTTIN and the run
-# stalls until expiry; tag-create runs after the release commit, so a prompt
-# answered at the pull must be answerable here too. On expiry it signals git
+# stalls until expiry; tag-create's check is a release's first contact with any
+# origin, so such a prompt must be answerable here. On expiry it signals git
 # alone, which ends the query.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob

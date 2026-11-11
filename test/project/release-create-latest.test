@@ -162,18 +162,100 @@ for r in app lib; do
             echo none)" none
 done
 
-# A tag that cannot be created stops the release after the commit and before
-# latest is pushed.
+# Each project's latest and tag go to its origin in one atomic push: app's
+# origin, whose update hook refuses latest alone, takes neither latest nor 1.2,
+# while lib, swept before it, holds both.
+fixture
+upgraded
+cat >"$w/app.git/hooks/update" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+[ "$1" != refs/heads/latest ]
+EOF
+chmod +x "$w/app.git/hooks/update"
+run 1.2
+[ "$rc" -ne 0 ] || fail push-refused "exit 0, not a failure: $(<"$w/err")"
+expect push-refused "app's origin's latest" "$(commit_of "$w/app.git" latest)" \
+    "$init"
+expect push-refused "app's origin's 1.2" \
+    "$(git -C "$w/app.git" rev-parse -q --verify refs/tags/1.2 || echo none)" \
+    none
+expect push-refused "lib's origin's 1.2" \
+    "$(git -C "$w/lib.git" rev-parse -q --verify refs/tags/1.2 || echo none)" \
+    "$(git -C "$w/app/lib" rev-parse refs/tags/1.2)"
+expect push-refused "lib's origin's latest" "$(commit_of "$w/lib.git" latest)" \
+    "$two"
+
+# A tag that already exists stops the release before any project moves, so no
+# "Release 1.2" commit is left for a rerun with another tag to build on.
 fixture
 upgraded
 git -C "$w/app/lib" tag 1.2 "$one"
 run 1.2
 expect tag-fails status "$rc" 1
-expect tag-fails "app's message" \
-    "$(git -C "$w/app" log --no-show-signature -1 --format=%s)" "Release 1.2"
+expect tag-fails stderr "$(grep -F -- 1.2 "$w/err")" \
+    "tag-create: 1.2: already exists"
+expect tag-fails "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$init"
 expect tag-fails "app's 1.2" "$(commit_of "$w/app" 1.2)" none
 expect tag-fails "app's origin's latest" "$(commit_of "$w/app.git" latest)" \
     "$init"
+if git -C "$w/app/lib" symbolic-ref -q HEAD >/dev/null; then
+    fail tag-fails "lib was checked out on a branch"
+fi
+
+# A release run from another branch, topic, carrying a commit tested there,
+# releases that commit: app's latest moves to topic's HEAD, as each listed
+# project's does, and the release commit is made on it.
+fixture
+upgraded
+git -C "$w/app" checkout -q -b topic
+git -C "$w/app" commit -q --allow-empty -m tested
+tested=$(git -C "$w/app" rev-parse HEAD)
+run 1.2
+expect topic-ahead status "$rc" 0
+expect topic-ahead "app's 1.2 parent" "$(commit_of "$w/app" 1.2~)" "$tested"
+expect topic-ahead "app's branch" \
+    "$(git -C "$w/app" symbolic-ref --short HEAD)" latest
+expect topic-ahead "app's topic" "$(commit_of "$w/app" refs/heads/topic)" \
+    "$tested"
+for r in app app/lib; do
+    expect topic-ahead "$r's origin's latest" \
+        "$(commit_of "$w/${r##*/}.git" latest)" "$(commit_of "$w/$r" 1.2)"
+done
+
+# A HEAD that app's latest has commits beyond, behind latest or diverged from
+# it, is refused before any project moves, since moving latest there would drop
+# them: case topic-behind leaves topic at init with latest a commit further on,
+# and topic-diverged also gives topic a commit of its own.
+for topic in topic-behind topic-diverged; do
+    fixture
+    upgraded
+    git -C "$w/app" commit -q --allow-empty -m later
+    later=$(git -C "$w/app" rev-parse HEAD)
+    git -C "$w/app" checkout -q -b topic "$init"
+    if [ "$topic" = topic-diverged ]; then
+        git -C "$w/app" commit -q --allow-empty -m tested
+    fi
+    head=$(git -C "$w/app" rev-parse HEAD)
+    run 1.2
+    expect "$topic" status "$rc" 1
+    expect "$topic" stderr \
+        "$(grep -F -- "$w/app: refs/heads/latest" "$w/err")" \
+        "release-branch-ready: $w/app: refs/heads/latest has commits HEAD lacks, and a release pulls nothing in; upgrade to take them"
+    expect "$topic" "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
+    expect "$topic" "app's branch" \
+        "$(git -C "$w/app" symbolic-ref --short HEAD)" topic
+    expect "$topic" "app's latest" "$(commit_of "$w/app" refs/heads/latest)" \
+        "$later"
+    expect "$topic" "lib's HEAD" "$(git -C "$w/app/lib" rev-parse HEAD)" "$two"
+    if git -C "$w/app/lib" symbolic-ref -q HEAD >/dev/null; then
+        fail "$topic" "lib was checked out on a branch"
+    fi
+    for r in app app/lib; do
+        expect "$topic" "$r's 1.2" "$(commit_of "$w/$r" 1.2)" none
+    done
+done
 
 # Nothing is pulled in: a commit on origin's latest that the tree lacks stops
 # the release before any project moves, so it is neither committed nor tagged.
@@ -185,7 +267,6 @@ for ahead in origin-ahead local-ahead parent-behind; do
     case $ahead in
     origin-ahead)
         ref=refs/remotes/origin/latest
-        rev=HEAD
         ;;
     local-ahead)
         upgraded
@@ -193,14 +274,12 @@ for ahead in origin-ahead local-ahead parent-behind; do
         git -C "$w/app/lib" commit -q --allow-empty -m three
         git -C "$w/app/lib" checkout -q --detach "$two"
         ref=refs/heads/latest
-        rev=HEAD
         ;;
     parent-behind)
         upgraded
         git -C "$w/app.up" commit -q --allow-empty -m app2
         git -C "$w/app.up" push -q origin latest
         ref=refs/remotes/origin/latest
-        rev=refs/heads/latest
         ;;
     esac
     lib=$(git -C "$w/app/lib" rev-parse HEAD)
@@ -211,7 +290,7 @@ for ahead in origin-ahead local-ahead parent-behind; do
     *) where=$w/app/lib ;;
     esac
     expect "$ahead" stderr "$(grep -F -- "$where: $ref" "$w/err")" \
-        "release-branch-ready: $where: $ref has commits $rev lacks, and a release pulls nothing in; upgrade to take them"
+        "release-branch-ready: $where: $ref has commits HEAD lacks, and a release pulls nothing in; upgrade to take them"
     expect "$ahead" "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$init"
     expect "$ahead" "lib's HEAD" "$(git -C "$w/app/lib" rev-parse HEAD)" "$lib"
     if git -C "$w/app/lib" symbolic-ref -q HEAD >/dev/null; then

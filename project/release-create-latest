@@ -5,7 +5,7 @@ shopt -s inherit_errexit failglob
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 # Checked here as well as in project/tag-create, because tag-create runs only
-# after the sweep has run and the release commit has been made.
+# after project/release-assert has checked the tree.
 if [ $# -ne 1 ] || [ -z "$1" ]; then
     echo "Usage: ${0##*/} TAG" >&2
     exit 2

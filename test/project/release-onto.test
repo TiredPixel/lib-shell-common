@@ -31,7 +31,8 @@ done
 export FAKE_LOG=$work/log
 
 # plain sets no options; strict calls release_onto where errexit applies, and
-# strict-if and strict-or where bash ignores it, under if and before ||.
+# strict-if and strict-or where bash ignores it, under if and before ||; push
+# calls release_push alone, under strict.
 cat >"$work/release" <<'EOF'
 if [ "$1" != plain ]; then
     set -Eeuo pipefail
@@ -40,14 +41,15 @@ fi
 source "$2"
 case $1 in
 strict-if)
-    if release_onto "$3" "$4" "$5"; then
+    if release_onto "${@:3}"; then
         exit 0
     else
         exit
     fi
     ;;
-strict-or) release_onto "$3" "$4" "$5" || exit ;;
-*) release_onto "$3" "$4" "$5" ;;
+strict-or) release_onto "${@:3}" || exit ;;
+push) release_push "${@:3}" ;;
+*) release_onto "${@:3}" ;;
 esac
 EOF
 cat >"$work/options" <<'EOF'
@@ -68,24 +70,34 @@ fail() {
     failures=$((failures + 1))
 }
 
-# The calls a whole release of tag $2 onto branch $1 makes, in order.
+# The calls a whole release of tag $2 onto branch $1 makes, in order, each
+# branch after $2 checked before $1 is readied, and the tag signed without
+# pushing, then pushed with $1 in one atomic push.
 calls() {
+    local later
     printf '%s\n' \
         release-assert \
+        "tag-create --check $2"
+    for later in "${@:3}"; do
+        echo "release-branch-ready --check $later"
+    done
+    printf '%s\n' \
         "release-branch-ready $1" \
         "release-commit-submodules $2" \
-        "tag-create $2" \
-        "each git push --no-follow-tags --recurse-submodules=check origin $1:$1"
+        "tag-create --no-push $2" \
+        "each git push --atomic --no-follow-tags --recurse-submodules=check origin $1:$1 refs/tags/$2"
 }
 
 # Runs release_onto $3 $4 in the mode $2 names, and checks its status is $5 and
-# the calls made are $6. The fakes write nothing, so any output, a failure's
+# the calls made are $6; any further arguments are the branches release_onto
+# checks for later. The fakes write nothing, so any output, a failure's
 # included, is release_onto's own, and it has none to give.
 check() {
     local name=$1 mode=$2 branch=$3 tag=$4 status=$5 want=$6 rc=0
     : >"$FAKE_LOG"
     bash --norc --noprofile "$work/release" "$mode" "$helper" \
-        "$work/project" "$branch" "$tag" >"$work/out" 2>"$work/err" || rc=$?
+        "$work/project" "$branch" "$tag" "${@:7}" >"$work/out" 2>"$work/err" ||
+        rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$FAKE_LOG")" != "$want" ]; then
@@ -101,12 +113,34 @@ for mode in plain strict strict-if strict-or; do
     check "$mode-release" "$mode" testing 1.2 0 "$(calls testing 1.2)"
 
     # A failing step ends the release there, with its status, in every mode.
-    for n in 1 2 3 4 5; do
+    for n in 1 2 3 4 5 6; do
         FAKE_FAIL=$(calls latest 3.4 | sed -n "${n}p") \
             check "$mode-step-$n-fails" "$mode" latest 3.4 3 \
             "$(calls latest 3.4 | head -n "$n")"
     done
+
+    # Each branch for later is checked, in order, before anything moves, and a
+    # failing check ends the release there.
+    check "$mode-later" "$mode" testing 1.2 0 \
+        "$(calls testing 1.2 stable other)" stable other
+    for n in 3 4; do
+        FAKE_FAIL=$(calls testing 1.2 stable other | sed -n "${n}p") \
+            check "$mode-later-$n-fails" "$mode" testing 1.2 3 \
+            "$(calls testing 1.2 stable other | head -n "$n")" stable other
+    done
 done
+
+# release_push given no tag pushes the branch alone, as release-create-stable
+# pushes stable once the release is out.
+: >"$FAKE_LOG"
+rc=0
+bash --norc --noprofile "$work/release" push "$helper" "$work/project" stable \
+    >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 0 ]; then
+    fail push-branch "exit $rc, not 0: $(<"$work/err")"
+elif [ "$(<"$FAKE_LOG")" != "each git push --atomic --no-follow-tags --recurse-submodules=check origin stable:stable" ]; then
+    fail push-branch "the calls were: $(<"$FAKE_LOG")"
+fi
 
 # Sourcing changes none of the shell's options.
 bash --norc --noprofile "$work/options" "$helper" ||

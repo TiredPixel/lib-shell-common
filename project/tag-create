@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
+#
+# Signs tag $1 in every project and pushes it to every origin, refusing one that
+# already exists in any project or on any origin. --check refuses the same way
+# and creates nothing, so a release can learn before its commit, which names
+# the tag, that the tag is free. --no-push signs the tag everywhere and pushes
+# it nowhere, so a release can push each project's tag in one atomic push with
+# its branch.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 prog=${0##*/}
 
-if [ $# -ne 1 ] || [ -z "$1" ]; then
-    echo "Usage: $prog TAG" >&2
+mode=
+case ${1:-} in
+--check | --no-push)
+    mode=$1
+    shift
+    ;;
+esac
+
+# A TAG beginning with - is refused, since git creates no such tag, so that the
+# other mode given as well, as in --check --no-push, is never taken for one.
+if [ $# -ne 1 ] || [ -z "$1" ] || [[ $1 == -* ]]; then
+    echo "Usage: $prog [--check | --no-push] TAG" >&2
     exit 2
 fi
 tag=$1
@@ -42,7 +59,15 @@ if grep -qFx -- "refs/tags/$tag" <<<"$remote"; then
     exit 1
 fi
 
+if [ "$mode" = --check ]; then
+    exit 0
+fi
+
 "$dir/each" git tag -s "$tag" -m "$tag"
+
+if [ "$mode" = --no-push ]; then
+    exit 0
+fi
 
 # refs/tags/ so a branch of the same name cannot make the refspec ambiguous, and
 # --no-follow-tags so push.followTags sends no other tag with it.
