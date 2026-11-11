@@ -631,13 +631,13 @@ lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.co
 lib/shell-common/terraform/format
 ```
 
-`terraform/test-cli` checks the configuration without reading any state: it fails on any unformatted file, showing the diff, then initialises with no backend and the dependency lock file, `.terraform.lock.hcl`, read-only, validates and runs `terraform test`. Initialising fails where the committed lock would change, such as where a version constraint no longer admits the provider version locked, or no lock is committed for a provider the configuration needs, since only `terraform/upgrade` moves a provider. It saves no plan, and first removes any `.terraform.plan` it finds in the directory it runs from, saying so, so that `terraform/deploy-cli` cannot apply a plan left by an earlier run. `terraform test` runs what the repository's test files declare, which can create real infrastructure where a `run` block applies without mocked providers.
+`terraform/test-cli` checks the configuration without reading any state: it fails on any unformatted file, showing the diff, then initialises with no backend and the dependency lock file, `.terraform.lock.hcl`, read-only, validates and runs `terraform test`. Initialising fails where the committed lock would change, such as where a version constraint no longer admits the provider version locked, or no lock is committed for a provider the configuration needs, since only `terraform/upgrade` moves a provider; a plain `terraform init`, run by hand and its lock file committed, adds an entry that is missing and moves none. It saves no plan, and first removes any `.terraform.plan` it finds in the directory it runs from, saying so, so that `terraform/deploy-cli` cannot apply a plan left by an earlier run. `terraform test` runs what the repository's test files declare, which can create real infrastructure where a `run` block applies without mocked providers.
 
 ```sh
 lib/shell-common/terraform/test-cli
 ```
 
-`terraform/plan-cli` removes any earlier `.terraform.plan`, initialises and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. A failed run leaves no earlier plan behind. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
+`terraform/plan-cli` removes any earlier `.terraform.plan`, initialises with the lock file read-only, failing as `terraform/test-cli` does where the committed lock would change, so that `terraform/deploy-cli` applies no provider version that was never committed, and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. A failed run leaves no earlier plan behind. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
 
 ```sh
 lib/shell-common/terraform/plan-cli

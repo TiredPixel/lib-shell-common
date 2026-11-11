@@ -32,6 +32,7 @@ fail() {
     failures=$((failures + 1))
 }
 
+init='init -lockfile=readonly'
 plan='plan -out .terraform.plan'
 removing='plan-cli: .terraform.plan: removing an earlier plan'
 
@@ -67,15 +68,17 @@ check() {
     fi
 }
 
-check plans "" "" 0 "" init$'\n'"$plan" plan
+# The lock file is read-only, so the plan cannot take a provider version nobody
+# committed.
+check plans "" "" 0 "" "$init"$'\n'"$plan" plan
 
 # The earlier plan is removed, and said so, before terraform first runs.
-check stale stale "" 0 "$removing" init$'\n'"$plan" plan
+check stale stale "" 0 "$removing" "$init"$'\n'"$plan" plan
 check stale-init-fails stale init 1 "$removing"$'\n'"fake terraform: init failed" \
-    init ""
+    "$init" ""
 
-check init-fails "" init 1 "fake terraform: init failed" init ""
-check plan-fails "" plan 1 "fake terraform: plan failed" init$'\n'"$plan" ""
+check init-fails "" init 1 "fake terraform: init failed" "$init" ""
+check plan-fails "" plan 1 "fake terraform: plan failed" "$init"$'\n'"$plan" ""
 
 # Any argument is a usage error, refused before the earlier plan is removed or
 # terraform runs, so -target=x never plans everything.

@@ -16,7 +16,11 @@ if [ -e $f_plan ]; then
     rm -- $f_plan
 fi
 
-terraform init
+# The lock file read-only, so no provider version reaches the plan, and through
+# terraform/deploy-cli the infrastructure, that nobody reviewed or committed:
+# init fails where it would change .terraform.lock.hcl. A plain terraform init,
+# run by hand and its lock committed, adds an entry that is missing.
+terraform init -lockfile=readonly
 
 # Saved for terraform/deploy-cli, run later in the same directory, so the change
 # applied is the one this run showed rather than a fresh plan.
