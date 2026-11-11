@@ -237,16 +237,30 @@ check from-unlisted 1 "" --from lib3
 expect_err from-unlisted "upgrade: lib3: not listed in $w/app/.projects, so \
 the sweep cannot resume from it"
 
+# --skip-upgrade runs no project's upgrade and announces no upgrade stage, while
+# the pull, rebuild, start and stop cover every project.
+fixture
+check skip-upgrade 0 "$(printf '%s\n' "pull app" "build lib1 notty" \
+    "build lib2 notty" "images app" "start app" "stop app")" --skip-upgrade
+want=$(printf '%s\n' pull rebuild start stop completed)
+if [ "$(stages)" != "$want" ]; then
+    fail skip-upgrade "the stages are: $(stages)"
+fi
+
 # Any other arguments print the usage and run nothing.
 usage_case() {
     fixture
     check "usage $*" 2 "" "$@"
-    expect_err "usage $*" "Usage: upgrade [--from PROJECT]"
+    expect_err "usage $*" "Usage: upgrade [--from PROJECT | --skip-upgrade]"
 }
 usage_case --from
 usage_case --from ""
 usage_case --to lib1
+usage_case --skip
 usage_case --from lib1 extra
+usage_case --skip-upgrade extra
+usage_case --skip-upgrade --from lib1
+usage_case --from lib1 --skip-upgrade
 
 if [ "$failures" -gt 0 ]; then
     exit 1

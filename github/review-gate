@@ -128,7 +128,7 @@
 # it with this one; a REVIEW_GATE_BEFORE that is not a commit SHA fails the run
 # before any call.
 #
-# The gate cannot close three gaps, each lasting until a later run posts the
+# The gate cannot close four gaps, each lasting until a later run posts the
 # current state. A pull request opened or reopened on a head that already
 # passes carries that pass until the gate's run for it posts the wait, and a
 # run that listed the open pull requests before then can post a pass after it.
@@ -136,7 +136,10 @@
 # for it posts them, so a merge into the new base in that window goes
 # unchecked. A run again after a close or a push runs beside the other pull
 # request's own runs, not after them, so can post a state read just before
-# theirs.
+# theirs. The workflow runs on comments and pull request events, not on a
+# review's submission, so a review with findings Codex submits on the head,
+# with no edit to its summary after it, is read only at the next such event,
+# and a check already posted as success stays so until then.
 #
 # Each check posted is named on stderr with its state. A failing request ends
 # the run with gh's status; a pull request whose head is not a commit SHA, or

@@ -141,6 +141,17 @@ check config-fails 1 "lib compose config --services" \
 fixture
 FAKE_STOP_RC=1 check stop-fails 1 "$(down lib)" "$lib"
 
+# Any argument is a usage error, refused before docker is called.
+fixture
+rc=0
+(cd "$w/app" && "$stop" x) >"$w/out" 2>"$w/err" || rc=$?
+if [ "$rc" != 2 ] || [ -s "$w/out" ] ||
+    [ "$(<"$w/err")" != "Usage: stop" ]; then
+    fail argument "exit $rc: $(<"$w/out")$(<"$w/err")"
+elif [ -s "$FAKE_LOG" ]; then
+    fail argument "docker was called as: $(<"$FAKE_LOG")"
+fi
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

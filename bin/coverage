@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 #
 # Runs bin/test under kcov, with any test names it is given, covering only the
-# repository's own files, and writes the report to tmp/coverage/, replacing the
-# last one, since kcov otherwise merges into whatever is there. Runs from the
-# root of the repository.
+# repository's own scripts, not test/, whose lines say nothing of what the tests
+# reach, and writes the report to tmp/coverage/, replacing the last one, since
+# kcov otherwise merges into whatever is there. Runs from the root of the
+# repository.
+#
+# kcov names a script by the path bash ran, so a script is measured only where
+# its test runs it where it is, never as a copy in a scratch tree.
 #
 # With --tar, the report is made in a scratch directory and written to stdout
 # as a tar instead, everything the run itself prints going to stderr, so it can
@@ -17,6 +21,7 @@ shopt -s inherit_errexit failglob
 
 bin=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 out=$PWD/tmp/coverage
+measured=(--include-path="$PWD" --exclude-path="$PWD/test")
 
 usage() {
     echo "Usage: bin/coverage [--tar] [test/DIR/NAME.test...]" >&2
@@ -71,7 +76,7 @@ if [ -n "$tar" ]; then
     report=$(mktemp -d)
     trap 'rm -rf -- "$report"' EXIT
     rc=0
-    kcov --include-path="$PWD" "$report" "$bin/test" "$@" >&2 || rc=$?
+    kcov "${measured[@]}" "$report" "$bin/test" "$@" >&2 || rc=$?
     cd -- "$report"
     # kcov links test to the run's own directory by its absolute path, which
     # would dangle once the report leaves the container, so each such link is
@@ -98,6 +103,6 @@ if [ -e "$out" ]; then
 fi
 mkdir -p -- "$out"
 
-kcov --include-path="$PWD" "$out" "$bin/test" "$@"
+kcov "${measured[@]}" "$out" "$bin/test" "$@"
 
 echo "bin/coverage: report written to tmp/coverage/index.html" >&2

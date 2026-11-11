@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Ansible dynamic inventory listing, as ungrouped, every host in a known_hosts
-# file whose first name ends in .DOMAIN. Ansible passes only --list or --host,
-# so a wrapper script supplies the file and domain before them.
+# file whose first name ends in .DOMAIN, with its port where that is not 22.
+# Ansible passes only --list or --host, so a wrapper script supplies the file
+# and domain before them.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -23,36 +24,70 @@ if ! [ -f "$f" ] || ! [ -r "$f" ]; then
     exit 1
 fi
 
+# Sets inventory to {hosts, hostvars, conflicts}: each host once, in the order
+# of its first line; ansible_port for a host on a port other than 22; and each
+# host found on more than one port, which fails the run.
+#
+# Each line's first name, after any leading blanks, runs up to its first
+# whitespace or comma, as sshd(8) describes known_hosts. A line whose first
+# non-blank is # is a comment; one opening with a marker (@cert-authority,
+# @revoked) holds a CA or a revoked key, and one with a hashed name (|) hides
+# the host, so neither names a host to list. A name in brackets followed by a
+# port is the host on that port, and a bare name is the host on port 22. A
+# wildcard (* or ?) or negated (!) name is a pattern, not a host. The domain is
+# compared as a string, so nothing in it is a pattern.
+read_inventory() {
+    local conflicts
+    inventory=$(jq -cRn --arg domain "$domain" '
+        [inputs | sub("^\\s+"; "")
+            | select(test("^[#@|]") | not)
+            | capture("^(?<name>[^\\s,]*)").name
+            | capture("^\\[(?<host>[^\\]]*)\\]:(?<port>[0-9]+)$")
+                // {host: ., port: "22"}
+            | select(.host | endswith("." + $domain))
+            | select(.host | test("[*?]|^!") | not)]
+        | reduce .[] as $e ({}; .[$e.host] += [$e.port | tonumber])
+        | map_values(unique)
+        | {
+            hosts: keys_unsorted,
+            hostvars: with_entries(select(.value != [22])
+                | .value = {ansible_port: .value[0]}),
+            conflicts: [to_entries[] | select(.value | length > 1) | .key]
+        }
+    ' "$f")
+
+    conflicts=$(jq -r --arg prog "${0##*/}" --arg f "$f" '
+        .conflicts[] | "\($prog): \(.) has more than one port in \($f)"
+    ' <<<"$inventory")
+    if [ -n "$conflicts" ]; then
+        echo "$conflicts" >&2
+        exit 1
+    fi
+}
+
 cmd_host() {
-    jq -n '{}'
+    read_inventory
+    jq --arg host "$1" '.hostvars[$host] // {}' <<<"$inventory"
 }
 
 cmd_list() {
-    local hosts
-    # Each line's first name runs up to its first whitespace or comma; a line
-    # whose first non-blank is # is a comment, as ssh reads it. The domain is
-    # compared as a string, so nothing in it is a pattern.
-    hosts=$(jq -cRn --arg domain "$domain" '
-        [inputs | select(test("^\\s*#") | not)
-            | capture("^(?<name>[^\\s,]*)").name
-            | select(endswith("." + $domain))]
-    ' "$f")
+    read_inventory
 
-    if [ "$hosts" = "[]" ]; then
+    if [ "$(jq '.hosts | length' <<<"$inventory")" -eq 0 ]; then
         echo "${0##*/}: no host in $f ends in .$domain" >&2
         exit 1
     fi
 
-    jq -n --argjson hosts "$hosts" '{
-        ungrouped: {hosts: $hosts},
-        _meta: {hostvars: {}}
-    }'
+    jq '{
+        ungrouped: {hosts: .hosts},
+        _meta: {hostvars: .hostvars}
+    }' <<<"$inventory"
 }
 
 case "$1" in
 --host)
     [ $# -eq 2 ] || usage
-    cmd_host
+    cmd_host "$2"
     ;;
 --list)
     [ $# -eq 1 ] || usage

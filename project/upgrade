@@ -8,16 +8,25 @@ prog=${0##*/}
 f_projects=.projects
 
 usage() {
-    echo "Usage: $prog [--from PROJECT]" >&2
+    echo "Usage: $prog [--from PROJECT | --skip-upgrade]" >&2
     exit 2
 }
 
 # --from resumes the upgrade stage at PROJECT, once the project that stopped the
 # sweep before it has been finished by hand. Every other stage covers every
-# project, since a stopped sweep never reached them.
+# project, since a stopped sweep never reached them. --skip-upgrade resumes past
+# the upgrade stage altogether, for a sweep the last listed project stopped,
+# which leaves --from no next project to name.
 from=()
+skip=
 case $# in
 0) ;;
+1)
+    if [ "$1" != --skip-upgrade ]; then
+        usage
+    fi
+    skip=1
+    ;;
 2)
     if [ "$1" != --from ] || [ -z "$2" ]; then
         usage
@@ -46,18 +55,21 @@ fi
 echo "$prog: pull" >&2
 "$dir/upgrade-pull"
 
-echo "$prog: upgrade" >&2
-# make runs under `script` so the tools it drives still see a tty; -e so the
-# status carried back out is make's own rather than script's, which is what
-# tells the sweep an upgrade failed. Which project declares the target is
-# make-if-declared's question, not this one's.
-"$dir/each-without-project" "${from[@]}" "$dir/make-if-declared" upgrade sh -c '
-    set -eu
-    if script --version >/dev/null 2>&1; then
-        script -q -e -c "make upgrade" /dev/null
-    else
-        script -e /dev/null make upgrade
-    fi'
+if [ -z "$skip" ]; then
+    echo "$prog: upgrade" >&2
+    # make runs under `script` so the tools it drives still see a tty; -e so the
+    # status carried back out is make's own rather than script's, which is what
+    # tells the sweep an upgrade failed. Which project declares the target is
+    # make-if-declared's question, not this one's.
+    "$dir/each-without-project" "${from[@]}" "$dir/make-if-declared" upgrade \
+        sh -c '
+            set -eu
+            if script --version >/dev/null 2>&1; then
+                script -q -e -c "make upgrade" /dev/null
+            else
+                script -e /dev/null make upgrade
+            fi'
+fi
 
 echo "$prog: rebuild" >&2
 "$dir/each-without-project" "$dir/make-if-declared" build

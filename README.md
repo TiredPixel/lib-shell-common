@@ -97,6 +97,8 @@ Where the build or tests fail, fix them, then finish:
 make upgrade-post
 ```
 
+A repository that also sweeps projects with `project/upgrade` orders these steps differently, and finishes a stopped sweep before its own `upgrade-post` (*Working across projects*).
+
 ## Locking Python and npm tools
 
 A tool installed from PyPI or npm brings dependencies of its own, which a pin on the tool alone leaves to resolve afresh at every uncached build, and pipx also downloads pip into its shared venv. A Dockerfile therefore installs such a tool from a hashed lock committed beside it, so a plain `docker build` installs exactly what the lock holds.
@@ -377,7 +379,7 @@ A review reads the diff against the base branch of its time, so once the pull re
 
 Check runs belong to a commit, so pull requests open on the same head commit share its checks, and a clean review of one could pass the other. So while another open pull request of the repository has the same head, a check that would pass waits instead, naming the pull requests; closing all but one, or pushing to all but one, lets the remaining one's checks pass, since the gate runs again for it when another is closed or pushed from that head. A listing of the open pull requests the gate cannot read fails the run. For the same reason, a run for an open pull request that fails once it has read the head, before posting its checks, as where the head is beyond the 250 commits GitHub lists, fails each of the review app's `review/` check runs on the head not failing already, its summary naming the error, so a pass posted for another pull request cannot pass this one; where it cannot, it says so, and the run fails all the same.
 
-The gate cannot close three gaps, each lasting until a later run posts the current state: a pull request opened or reopened on a head that already passes carries that pass until the gate's run for it posts the wait, and a run already under way can post its pass after that; a merge into a new base before the gate's run for the change posts the checks goes unchecked; and the run again after a close or a push runs beside the remaining pull request's own runs, so can post a state read just before theirs.
+The gate cannot close four gaps, each lasting until a later run posts the current state: a pull request opened or reopened on a head that already passes carries that pass until the gate's run for it posts the wait, and a run already under way can post its pass after that; a merge into a new base before the gate's run for the change posts the checks goes unchecked; the run again after a close or a push runs beside the remaining pull request's own runs, so can post a state read just before theirs; and the workflow runs on comments and pull request events, not on a review's submission, so a review with findings Codex submits on the head, with no edit to its summary after it, is read only at the next such event, a check already posted as success staying so until then.
 
 It reads only what the Codex app posted, known by the app's account rather than by Codex's markers, which anyone can paste. Anyone with write access to the repository can edit a comment, so a summary or receipt someone other than Codex last edited fails both checks; such a receipt, or one naming no single commit, fails them while it may belong to the head's review, so a new commit clears it. Any other comment by Codex that someone else last edited, posted since the review started or at a time the gate cannot read, fails both too, since an edit could turn a failure comment into one the gate passes over, until a new review. Anyone with write access can also delete a comment, so each check run records in its `external_id` the summary and the comments it rested on; where a later run finds one of them gone, or an older summary in place of the one recorded, the check fails until a review started since passes, so deleting Codex's newest comments cannot bring back an older clean result.
 
@@ -487,7 +489,7 @@ The workflow names the tag each action follows on comment lines at its top, so `
 
 The `docker/` scripts that build or push tagged images, or log in, such as `docker/build-dev-latest` and `docker/login`, read the image repository, such as `ghcr.io/OWNER/NAME`, from a `.dockerrepo` file at the calling repository's root.
 
-They run from that root, building the `Dockerfile` there, and tag each image from the branch checked out. On a detached HEAD, as in a pull request or a tag push, the tag is the first of CircleCI's `CIRCLE_BRANCH` and `CIRCLE_TAG`, then GitHub Actions' `GITHUB_HEAD_REF` and `GITHUB_REF_NAME`, that is set and not empty; with none, the script fails before building.
+They run from that root, building the `Dockerfile` there, and tag each image from the branch checked out. On a detached HEAD, as in a pull request or a tag push, the tag is the first of CircleCI's `CIRCLE_BRANCH` and `CIRCLE_TAG`, then GitHub Actions' `GITHUB_HEAD_REF` and `GITHUB_REF_NAME`, that is set and not empty. With none, a script that pushes fails before building, so a registry collects no image for every commit built, while `docker/build-dev-latest-nopush` and `docker/build-dev-stable-nopush`, which push nothing, tag the image by the short commit id, so a project's tests still build during a bisect or a rebase.
 
 The name is fitted to Docker's tag grammar: each character other than an ASCII letter, a digit, `_`, `.` or `-` is written as `-`, so `feature/a+b` tags as `feature-a-b`; any leading `.` or `-` is dropped; and the tag is cut to 124 characters, leaving room for a `.dev` or `.prd` suffix. A name with nothing left, such as `---`, fails before building.
 
@@ -505,7 +507,7 @@ lib/shell-common/docker/build-compose --profile test
 lib/shell-common/docker/build-prd-latest
 ```
 
-`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release and each shorter prefix of it, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`, then pushes each tag, naming it on stderr. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building. A release on HEAD that is not a valid Docker tag, such as `v1+build`, also fails before building.
+`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release, then pushes each tag, naming it on stderr. A release of digits and dots with an optional leading `v` adds each shorter prefix of it too, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`; any other, such as the prerelease `v1.2.3-rc.1`, is added under its full tag alone. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building. A release on HEAD that is not a valid Docker tag, such as `v1+build`, also fails before building.
 
 ```sh
 lib/shell-common/docker/build-tags
@@ -566,15 +568,40 @@ Where one project's upgrade stops the sweep, that project is finished with its o
 lib/shell-common/project/upgrade --from app-c
 ```
 
+Where the project that stopped the sweep is the last one listed, there is no next project to name, so once it is finished the sweep is resumed with `--skip-upgrade` instead: the pull runs again, no project's upgrade runs, and the rebuild, start and stop cover every project.
+
+```sh
+lib/shell-common/project/upgrade --skip-upgrade
+```
+
+A repository that sweeps projects and also pins a `Dockerfile` and workflows of its own (*Upgrading the library*) re-pins them after the sweep, in a target of its own, rather than in `upgrade-pre`. `project/upgrade` pulls the repository first, and a proposed workflow is the whole file, built from the live one as checked out, so one built before the pull would lack origin's newer edits to it and undo them once approved; the pull would also be refused where it brings a change to a file the re-pinning has just written.
+
+```make
+upgrade-pre:
+	git submodule sync lib/shell-common
+	git submodule update --init --checkout lib/shell-common
+	lib/shell-common/github/workflows-pending
+	cd lib/shell-common && git checkout latest && git pull --ff-only
+upgrade-pin:
+	lib/shell-common/docker/upgrade --record tmp/upgrade.record Dockerfile .github/workflows/*.yml
+upgrade:
+	$(MAKE) upgrade-pre
+	lib/shell-common/project/upgrade
+	$(MAKE) upgrade-pin
+	$(MAKE) upgrade-post
+```
+
+The sweep's start and stop then run the repository's own services on the old pins; `upgrade-post`, as *Upgrading the library* gives it, builds and tests the new ones. Where a listed project's upgrade stops the sweep, the repository's own `make upgrade-pin` and `make upgrade-post` run last, after the resumed sweep completes: the resumed sweep's pull can move the library's submodule again, and `docker/upgrade-commit` removes the record once it has used it, so an `upgrade-post` run before the resume would leave any such move with no record to commit it by.
+
 ## Releasing
 
-`project/release-create-latest TAG` releases onto `latest`, and `project/release-create-stable TAG` releases onto `testing` before fast-forwarding `stable` to the tag. Both must be called from the repository's top level, and refuse a tree carrying anything but submodule pointers. Neither pulls: each moves the release branch in every listed project to the commit checked out there, and checks it out in the repository itself, and a branch there or on origin holding a commit the release lacks stops it before anything moves, since only `project/upgrade` brings new commits in. Each commits the pointers the tree has moved as `Release TAG`, with a line for each pointer move as the body, as `PATH OLD..NEW (direction)`, then signs the tag with `git tag -s` in every project, so a signing key must be available before either runs.
+`project/release-create-latest TAG` releases onto `latest`, and `project/release-create-stable TAG` releases onto `testing` before fast-forwarding `stable` to the tag. Both must be called from the repository's top level, and refuse a tree carrying anything but submodule pointers. Neither pulls: each moves the release branch in every listed project and in the repository itself to the commit checked out there, so a release run from another branch releases that branch's commits, and a branch there or on origin holding a commit the release lacks stops it before anything moves, since only `project/upgrade` brings new commits in. `project/release-create-stable` checks `stable` the same way before anything moves, so an origin without it, or a `stable` with commits of its own, stops the release before `testing` or the tag is pushed. Each commits the pointers the tree has moved as `Release TAG`, with a line for each pointer move as the body, as `PATH OLD..NEW (direction)`, then signs the tag with `git tag -s` in every project, so a signing key must be available before either runs. Only then is anything pushed: each project's release branch goes to its origin with the tag in one atomic push, so an origin that refuses either takes neither. Projects are pushed one after another, so a refusal leaves those pushed before it released, and a rerun is refused, since the tag then exists on their origins. `project/release-create-stable` then pushes `stable` on its own.
 
 ```sh
 lib/shell-common/project/release-create-latest v1.2
 ```
 
-A tag that already exists in any project, locally or on its origin, is refused before anything is signed, so every origin must be reachable; one that does not answer within the limit `project/tag-list-origin` sets, which `project/tag-create` runs in every project, stops the release. `project/tag-list` lists the latest tags across every project.
+A tag that already exists in any project, locally or on its origin, is refused before any project moves or anything is committed, so every origin must be reachable; one that does not answer within the limit `project/tag-list-origin` sets, which `project/tag-create` runs in every project, stops the release. `project/tag-list` lists the latest tags across every project.
 
 ```sh
 lib/shell-common/project/tag-list
@@ -590,7 +617,7 @@ lib/shell-common/ansible/test
 
 ansible-lint caches in `./.ansible/` where it can write there, and no option moves it. In a container that mounts the source by path, the cache stays in the container; a repository that runs the scripts on the host lists `/.ansible/` in its `.gitignore`.
 
-`ansible/inventory-ssh-known-hosts` is a dynamic inventory listing every host in a `known_hosts` file whose first name ends in `.DOMAIN`. Ansible passes an inventory only `--list` or `--host`, so a wrapper script of the repository's own gives the file and domain before them. A host matched gets no variables, and a file with none fails the run:
+`ansible/inventory-ssh-known-hosts` is a dynamic inventory listing every host in a `known_hosts` file whose first name ends in `.DOMAIN`. Ansible passes an inventory only `--list` or `--host`, so a wrapper script of the repository's own gives the file and domain before them. Each host is listed once, and one ssh records on another port, as `[host.example.com]:2222`, gets that port as `ansible_port`; a host on two ports, a bare name counting as port 22, fails the run, as does a file with no host matched. A wildcard or negated name, a hashed name and a `@cert-authority` or `@revoked` line name no single host, so none is listed:
 
 ```sh
 lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.com --list
@@ -604,13 +631,13 @@ lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.co
 lib/shell-common/terraform/format
 ```
 
-`terraform/test-cli` checks the configuration without reading any state: it fails on any unformatted file, showing the diff, then initialises with no backend, validates and runs `terraform test`. It saves no plan, and first removes any `.terraform.plan` it finds in the directory it runs from, saying so, so that `terraform/deploy-cli` cannot apply a plan left by an earlier run. `terraform test` runs what the repository's test files declare, which can create real infrastructure where a `run` block applies without mocked providers.
+`terraform/test-cli` checks the configuration without reading any state: it fails on any unformatted file, showing the diff, then initialises with no backend and the dependency lock file, `.terraform.lock.hcl`, read-only, validates and runs `terraform test`. Initialising fails where the committed lock would change, such as where a version constraint no longer admits the provider version locked, or no lock is committed for a provider the configuration needs, since only `terraform/upgrade` moves a provider; a plain `terraform init`, run by hand and its lock file committed, adds an entry that is missing and moves none. It saves no plan, and first removes any `.terraform.plan` it finds in the directory it runs from, saying so, so that `terraform/deploy-cli` cannot apply a plan left by an earlier run. `terraform test` runs what the repository's test files declare, which can create real infrastructure where a `run` block applies without mocked providers.
 
 ```sh
 lib/shell-common/terraform/test-cli
 ```
 
-`terraform/plan-cli` removes any earlier `.terraform.plan`, initialises and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. A failed run leaves no earlier plan behind. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
+`terraform/plan-cli` removes any earlier `.terraform.plan`, initialises with the lock file read-only, failing as `terraform/test-cli` does where the committed lock would change, so that `terraform/deploy-cli` applies no provider version that was never committed, and plans, saving the plan as `.terraform.plan` in the directory it runs from, the repository's root as called. A failed run leaves no earlier plan behind. The repository's `.gitignore` names `/.terraform.plan`, so the plan is never committed.
 
 ```sh
 lib/shell-common/terraform/plan-cli
@@ -622,7 +649,7 @@ lib/shell-common/terraform/plan-cli
 lib/shell-common/terraform/deploy-cli
 ```
 
-`terraform/test-cloud` checks formatting, initialises and plans for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
+`terraform/test-cloud` checks formatting, initialises with the lock file read-only, failing as `terraform/test-cli` does where the committed lock would change, and plans for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
 
 ```sh
 lib/shell-common/terraform/test-cloud
@@ -689,7 +716,7 @@ make lint
 
 ### Measuring coverage
 
-`make coverage` runs the lint and tests under kcov in the `shell_test` container, which hands the report out as a tar on stdout, and `bin/coverage --extract` unpacks it on the host into `tmp/coverage/`. The report replaces the last one only once it is wholly unpacked, so a bad test name, a failed build or an export cut short leaves the last one; a run whose tests fail still replaces it, and the target fails. `TESTS` narrows it as it does `make test`.
+`make coverage` runs the lint and tests under kcov in the `shell_test` container, measuring the repository's scripts but not `test/` itself; the container hands the report out as a tar on stdout, and `bin/coverage --extract` unpacks it on the host into `tmp/coverage/`. The report replaces the last one only once it is wholly unpacked, so a bad test name, a failed build or an export cut short leaves the last one; a run whose tests fail still replaces it, and the target fails. `TESTS` narrows it as it does `make test`.
 
 ```sh
 make coverage

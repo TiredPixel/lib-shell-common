@@ -33,7 +33,7 @@ fail() {
 }
 
 fmt='fmt -recursive -check -diff'
-init='init -backend=false -input=false'
+init='init -backend=false -input=false -lockfile=readonly'
 
 # Runs test-cli in a fresh project, holding a plan where $2 is "stale", with the
 # fake failing at $3, or nowhere where that is empty, and checks it exits $4,
@@ -74,6 +74,23 @@ check init-fails "" init 1 "fake terraform: init failed" "$fmt"$'\n'"$init"
 check validate-fails "" validate 1 "fake terraform: validate failed" \
     "$fmt"$'\n'"$init"$'\n'validate
 check test-fails "" test 1 "fake terraform: test failed" "$all"
+
+# Any argument is a usage error, refused before the earlier plan is removed or
+# terraform runs.
+rm -rf -- "$work/project"
+mkdir "$work/project"
+echo stale >"$work/project/.terraform.plan"
+: >"$FAKE_LOG"
+rc=0
+(cd "$work/project" && "$script" x) >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
+    [ "$(<"$work/err")" != "Usage: test-cli" ]; then
+    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
+elif [ -s "$FAKE_LOG" ]; then
+    fail argument "terraform was called as: $(<"$FAKE_LOG")"
+elif ! [ -e "$work/project/.terraform.plan" ]; then
+    fail argument "the earlier plan was removed"
+fi
 
 if [ "$failures" -gt 0 ]; then
     exit 1

@@ -3,10 +3,11 @@
 # Tests docker/init, and docker/repo through it, sourced in a shell with no
 # options set and in one under the strict mode its callers run, in scratch
 # projects with git faked on PATH: the fake answers HEAD's branch as
-# FAKE_BRANCH, "HEAD" where that is the detached state. Each case prints what a
-# child of the sourcing shell sees of REPO, TAG and DOCKER_BUILDKIT, so only
-# what init exports counts, and compares stdout and stderr exactly. Sourcing
-# must set none of the shell's options and leave no variable of its own.
+# FAKE_BRANCH, "HEAD" where that is the detached state, and its short commit id
+# as FAKE_COMMIT. Each case prints what a child of the sourcing shell sees of
+# REPO, TAG and DOCKER_BUILDKIT, so only what init exports counts, and compares
+# stdout and stderr exactly. Sourcing must set none of the shell's options and
+# leave no variable of its own.
 #
 # Run: test/docker/init.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -92,6 +93,20 @@ for mode in plain strict; do
     # An empty variable is passed over for a later one that is set.
     check "$mode-empty-then-set" "$mode" 0 "r/x g 1" FAKE_BRANCH=HEAD \
         CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=g
+    # A caller that sets init_detached=commit, as one pushing nothing does, has
+    # a detached HEAD outside CI named by its commit, and only that: a branch
+    # or a CI variable still names the tag, and any other value is refused.
+    check "$mode-detached-commit" "$mode" 0 "r/x 1a2b3c4 1" FAKE_BRANCH=HEAD \
+        FAKE_COMMIT=1a2b3c4 init_detached=commit
+    check "$mode-detached-commit-empty-variable" "$mode" 0 "r/x 1a2b3c4 1" \
+        FAKE_BRANCH=HEAD FAKE_COMMIT=1a2b3c4 init_detached=commit \
+        CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=
+    check "$mode-detached-commit-branch" "$mode" 0 "r/x a-b 1" \
+        FAKE_BRANCH=a/b FAKE_COMMIT=1a2b3c4 init_detached=commit
+    check "$mode-detached-commit-ci" "$mode" 0 "r/x e-f 1" FAKE_BRANCH=HEAD \
+        FAKE_COMMIT=1a2b3c4 init_detached=commit GITHUB_HEAD_REF=e/f
+    check "$mode-detached-other" "$mode" 1 "$detached" FAKE_BRANCH=HEAD \
+        FAKE_COMMIT=1a2b3c4 init_detached=branch
 
     # Each character Docker's tag grammar refuses becomes a -, then any leading
     # . or - goes, then the tag is cut to 124 characters.
@@ -133,8 +148,8 @@ done
 
 # Sourcing changes none of the shell's options, leaves no variable of its own
 # set, and prints nothing.
-if ! (cd "$work/project" && FAKE_BRANCH=a/b bash --norc --noprofile \
-    "$work/options" "$init") >"$work/out" 2>"$work/err"; then
+if ! (cd "$work/project" && FAKE_BRANCH=a/b init_detached=commit bash --norc \
+    --noprofile "$work/options" "$init") >"$work/out" 2>"$work/err"; then
     fail options "$(<"$work/err")"
 elif [ -s "$work/out" ] || [ -s "$work/err" ]; then
     fail options "sourcing printed: $(<"$work/out")$(<"$work/err")"

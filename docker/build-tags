@@ -2,12 +2,17 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+if [ $# -ne 0 ]; then
+    echo "Usage: ${0##*/}" >&2
+    exit 2
+fi
+
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/init"
 
 # git describe fails with no reachable annotated tag, stopping the build before
 # any push: these images carry a release, unlike build-compose's, so an untagged
 # copy has none to give. Only a HEAD exactly on an annotated tag adds the
-# release and its shorter prefixes as tags.
+# release as a tag, and its shorter prefixes where it is a plain version.
 release=$(git describe --abbrev=0)
 version=$(git describe)
 
@@ -30,6 +35,12 @@ add_tag "$TAG"
 alnum=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 tag_grammar="^[${alnum}_][${alnum}_.-]{0,127}\$"
 
+# A plain version is digits and dots with an optional leading v. Only it gives
+# its prefixes, since cutting anything else at its dots, such as v1.4.2-rc.1,
+# would push v1.4 and v1 for a prerelease.
+digits=0123456789
+plain_version="^v?[$digits]+(\\.[$digits]+)*\$"
+
 if [ "$version" = "$release" ]; then
     if ! [[ $release =~ $tag_grammar ]]; then
         echo "${0##*/}: $release: release is not a valid image tag" >&2
@@ -39,10 +50,12 @@ if [ "$version" = "$release" ]; then
     prefix=$release
     add_tag "$prefix"
 
-    while [ "${prefix%.*}" != "$prefix" ]; do
-        prefix=${prefix%.*}
-        add_tag "$prefix"
-    done
+    if [[ $release =~ $plain_version ]]; then
+        while [ "${prefix%.*}" != "$prefix" ]; do
+            prefix=${prefix%.*}
+            add_tag "$prefix"
+        done
+    fi
 fi
 
 tag_args=()

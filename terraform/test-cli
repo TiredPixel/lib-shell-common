@@ -2,6 +2,11 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+if [ $# -ne 0 ]; then
+    echo "Usage: ${0##*/}" >&2
+    exit 2
+fi
+
 f_plan=.terraform.plan
 
 # This script saves no plan, so one found here came from an earlier run and is
@@ -14,7 +19,9 @@ fi
 # -diff, so a failure shows what would change rather than only naming the file.
 terraform fmt -recursive -check -diff
 
-# No backend, so the checks read no state and need no credentials for it.
-terraform init -backend=false -input=false
+# No backend, so the checks read no state and need no credentials for it. The
+# lock file read-only, so a check never writes it: init fails where it would
+# change .terraform.lock.hcl, and only terraform/upgrade moves a provider.
+terraform init -backend=false -input=false -lockfile=readonly
 terraform validate
 terraform test

@@ -12,6 +12,11 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+if [ $# -ne 0 ]; then
+    echo "Usage: ${0##*/}" >&2
+    exit 2
+fi
+
 # lastpipe so the loop below runs in this shell and keeps what it reads, and so
 # pipefail sees git's status. A process substitution hides it entirely:
 # `mapfile -d "" -t x < <(false)` succeeds, leaving an empty array that reads as

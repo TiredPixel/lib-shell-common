@@ -196,6 +196,17 @@ fi
 fixture
 FAKE_UP_RC=1 check start-fails 1 "$(printf '%s\n' "build lib1" "start app")"
 
+# Any argument is a usage error, refused before anything is built or started.
+fixture
+rc=0
+(cd "$w/app" && "$build" x) >"$w/out" 2>"$w/err" || rc=$?
+if [ "$rc" != 2 ] || [ -s "$w/out" ] ||
+    [ "$(<"$w/err")" != "Usage: build" ]; then
+    fail argument "exit $rc: $(<"$w/out")$(<"$w/err")"
+elif [ -s "$FAKE_LOG" ]; then
+    fail argument "the log is: $(<"$FAKE_LOG")"
+fi
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi

@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# Tests ansible/test in a scratch project with ansible-lint faked on PATH, so
+# nothing is linted. The fake logs each call's arguments and, where FAKE_FAIL is
+# set, fails with that status.
+#
+# Run: test/ansible/test.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+dir=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../ansible")
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/ansible/test")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin" "$work/project"
+cp -p -- "$fixtures/ansible-lint" "$work/bin/"
+
+export FAKE_LOG=$work/log
+export PATH=$work/bin:$PATH
+
+# The options ansible/format shares, as the fake logs them.
+# shellcheck source=SCRIPTDIR/../../ansible/lint-args
+source "$dir/lint-args"
+lint=$(printf '%q ' "${ansible_lint_args[@]}")
+lint=${lint% }
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Runs ansible/test with the arguments after $4 and FAKE_FAIL as $2, and checks
+# it exits $3, prints nothing on stdout and $4 on stderr, and calls ansible-lint
+# as want_calls has it.
+check() {
+    local name=$1 rc=0
+    : >"$FAKE_LOG"
+    (cd "$work/project" && FAKE_FAIL=$2 "$dir/test" "${@:5}") >"$work/out" \
+        2>"$work/err" || rc=$?
+    if [ "$rc" -ne "$3" ]; then
+        fail "$name" "exit $rc, not $3: $(<"$work/err")"
+    elif [ -s "$work/out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$4" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    elif [ "$(<"$FAKE_LOG")" != "$want_calls" ]; then
+        fail "$name" "ansible-lint was called as: $(<"$FAKE_LOG")"
+    fi
+}
+
+# Checks with the shared options and fixes nothing.
+want_calls=$lint
+check lints "" 0 ""
+
+# ansible-lint's own status is the run's.
+check lint-fails 2 2 "fake ansible-lint: failed"
+
+# Any argument is a usage error, refused before ansible-lint runs.
+want_calls=""
+check argument "" 2 "Usage: test" x
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

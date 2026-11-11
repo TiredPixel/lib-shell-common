@@ -3,13 +3,15 @@
 # Tests bin/files in scratch trees, with find faked on PATH, each sourcing it
 # under strict mode as bin/format and bin/lint do, and printing the two sets it
 # finds, a line to a file: "shell f" for each shell file, then "yaml f" for each
-# YAML file.
+# YAML file. bin/files is sourced where it is, so coverage measures it; each
+# tree holds a copy only to be listed.
 #
 # Run: test/bin/files.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 files=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../bin")/files
+export FILES=$files
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
@@ -20,7 +22,7 @@ shopt -s inherit_errexit failglob
 # The fake find signals this shell, not its own parent, which is the background
 # job bin/files runs it in.
 export SHOW_PID=$$
-source "${FILES:-bin/files}"
+source "$FILES"
 printf 'shell %s\n' "${shell_files[@]}"
 printf 'yaml %s\n' "${yaml_files[@]}"
 EOF
@@ -175,9 +177,8 @@ check github-empty "$t" 0 "$(shells)"$'\n'"yaml docker-compose.yml"$'\n'"yaml .h
 
 for d in "${dirs[@]}"; do
     t=$(tree "missing-${d//\//-}")
-    # Sourced from outside the tree, since bin/ may be the one missing.
     rm -r -- "${t:?}/$d"
-    FILES=$files check "missing-${d//\//-}" "$t" 1 "" "bin/files: $d/ is missing"
+    check "missing-${d//\//-}" "$t" 1 "" "bin/files: $d/ is missing"
 done
 
 t=$(tree missing-test-fixtures)
@@ -201,12 +202,12 @@ t=$(tree empty-docker)
 rm -- "$t/docker/a"
 check empty-docker "$t" 1 "" "bin/files: docker/ holds no bash script"
 
-# A bin/ holding no bash file fails too, bin/files sourced from outside the
-# tree, since its own shell=bash line would otherwise count.
+# A bin/ holding no bash file fails too, with no copy of bin/files there, since
+# its own shell=bash line would otherwise count.
 t=$(tree no-scripts-bin)
 rm -- "$t/bin/a" "$t/bin/files"
 printf '#!/bin/sh\n' >"$t/bin/b"
-FILES=$files check no-scripts-bin "$t" 1 "" "bin/files: bin/ holds no bash script"
+check no-scripts-bin "$t" 1 "" "bin/files: bin/ holds no bash script"
 
 # bin/files alone is enough, found by its shell=bash line.
 t=$(tree only-files-bin)

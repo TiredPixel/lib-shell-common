@@ -5,7 +5,7 @@ shopt -s inherit_errexit failglob
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 # Checked here as well as in project/tag-create, because tag-create runs only
-# after the sweep has run and the release commit has been made.
+# after project/release-assert has checked the tree.
 if [ $# -ne 1 ] || [ -z "$1" ]; then
     echo "Usage: ${0##*/} TAG" >&2
     exit 2
@@ -14,12 +14,11 @@ tag=$1
 
 source "$dir/release-onto"
 
-release_onto "$dir" testing "$tag"
+# stable is checked with testing, before anything moves, so an origin without
+# it or a stable carrying commits of its own stops the release unpublished.
+release_onto "$dir" testing "$tag" stable
 
-release_checkout "$dir" stable "refs/tags/$tag"
-
-# --ff-only whatever the caller's merge.ff: stable only ever moves to a release,
-# so a stable carrying commits of its own stops here rather than merging.
-"$dir/each" git merge --ff-only "refs/tags/$tag"
+# HEAD in every project is now the tag, so stable moves to the release.
+release_checkout "$dir" stable
 
 release_push "$dir" stable

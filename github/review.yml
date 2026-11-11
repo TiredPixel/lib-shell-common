@@ -25,6 +25,7 @@ jobs:
       # Minted here, in the workflow only a person may change, by an action
       # pinned by full SHA, so the key never leaves the workflow.
       - id: token
+        name: Mint review app token
         # The action's name and a full commit SHA leave no way to break the
         # line.
         # yamllint disable-line rule:line-length
@@ -61,7 +62,7 @@ name: Review
       - edited
   # Runs the default branch's copy, so a pull request cannot change the workflow
   # to take the key; a public repository needs an Actions event policy allowing
-  # this event explicitly (README, Setting a repository up).
+  # this event explicitly (lib-shell-common's README, Setting a repository up).
   pull_request_target:
     types:
       # Closing a pull request lets another open on the same head commit, whose

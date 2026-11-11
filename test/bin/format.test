@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Tests bin/format in a scratch tree beside a stub bin/files, so the case
-# decides which files it lists, independent of the real list, with every tool it
-# runs faked on PATH. Each fake logs its name and arguments, each shell-quoted,
-# and exits 7 where FAKE_FAIL names it, or on the one call whose log line
-# FAKE_FAIL holds whole. A case checks the whole log, so a tool given any
-# argument other than those expected fails it.
+# Tests bin/format in a scratch tree holding a stub bin/files, so the case
+# decides which files it lists, independent of the real list, with readlink and
+# every tool it runs faked on PATH. Each fake tool logs its name and arguments,
+# each shell-quoted, and exits 7 where FAKE_FAIL names it, or on the one call
+# whose log line FAKE_FAIL holds whole. A case checks the whole log, so a tool
+# given any argument other than those expected fails it.
 #
 # Run: test/bin/format.test. Reports each case that failed on stderr, and exits
 # 1 if any did.
@@ -36,12 +36,28 @@ chmod +x "$work/path/fake"
 for tool in "${tools[@]}"; do
     ln -s fake "$work/path/$tool"
 done
+
+# bin/format runs where it is, so coverage measures it, and finds bin/files
+# beside the path readlink -f gives for it, so a fake readlink answers that one
+# call with bin/format in the tree it runs from, and runs the real one for
+# anything else.
+real_readlink=$(command -v readlink)
+cat >"$work/path/readlink" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ \$# = 2 ] && [ "\$1" = -f ] && [ "\$2" = $(printf %q "$format") ]; then
+    echo "\$PWD/bin/format"
+    exit 0
+fi
+exec $(printf %q "$real_readlink") "\$@"
+EOF
+chmod +x "$work/path/readlink"
 export FAKE_LOG=$work/log
 export PATH=$work/path:$PATH
 
 t=$work/tree
 mkdir -p "$t/bin"
-cp -- "$format" "$t/bin/format"
 cat >"$t/bin/files" <<'EOF'
 # shellcheck shell=bash
 shfmt_args=(--fake-shfmt)
@@ -123,7 +139,7 @@ declare -A section=(
 check() {
     local name=$1 status=$2 log=$3 said=$4 rc=0
     : >"$FAKE_LOG"
-    (cd "$t" && bin/format) >"$work/out" 2>"$work/err" || rc=$?
+    (cd "$t" && "$format") >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status" "$work/err"
     elif [ "$(<"$FAKE_LOG")" != "$log" ]; then

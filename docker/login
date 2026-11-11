@@ -2,6 +2,11 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+if [ $# -ne 0 ]; then
+    echo "Usage: ${0##*/}" >&2
+    exit 2
+fi
+
 # repo rather than init, since logging in needs no tag, so a detached HEAD with
 # no CI variable to name it does not stop it.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/repo"

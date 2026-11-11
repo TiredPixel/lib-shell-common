@@ -37,12 +37,13 @@ fail() {
     failures=$((failures + 1))
 }
 
-# Runs docker/$2 and checks its status is $3, docker was called as $4 has it, a
-# line to a call, and its stdout is $5 and its stderr $6.
+# Runs docker/$2 with the arguments after $6 and checks its status is $3, docker
+# was called as $4 has it, a line to a call, and its stdout is $5 and its stderr
+# $6.
 check() {
     local name=$1 script=$2 status=$3 calls=$4 out=$5 err=$6 rc=0
     : >"$FAKE_LOG"
-    "$dir/$script" >"$work/out" 2>"$work/err" || rc=$?
+    "$dir/$script" "${@:7}" >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$FAKE_LOG")" != "$calls" ]; then
@@ -92,6 +93,11 @@ for model in latest stable; do
     FAKE_PUSH=4 check "$model-push-fails" "build-prd-$model" 4 \
         "$built"$'\n'"$push" "fake docker: built"$'\n'"$pushed" \
         "fake docker: building"
+
+    # Any argument is a usage error, refused before docker is called, so --help
+    # neither builds nor pushes.
+    check "$model-argument" "build-prd-$model" 2 "" "" \
+        "Usage: build-prd-$model" --help
 done
 
 if [ "$failures" -gt 0 ]; then

@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 case $* in
-"rev-parse --abbrev-ref HEAD") echo a/b ;;
+"rev-parse --abbrev-ref HEAD") echo "${FAKE_BRANCH:-a/b}" ;;
+"rev-parse --short HEAD") echo 1a2b3c4 ;;
 describe)
     case ${FAKE_DESCRIBE:-} in
     "")

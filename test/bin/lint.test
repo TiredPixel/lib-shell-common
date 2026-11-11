@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Tests bin/lint in a scratch tree beside a stub bin/files, so the case decides
+# Tests bin/lint in a scratch tree holding a stub bin/files, so the case decides
 # which files it lists, independent of the real list, and stubs of
-# lint/yaml-keys and lint/dockerfile-locks, with every tool it runs faked on
-# PATH. Each fake, the dockerfile-locks stub among them, logs its name and
-# arguments, each shell-quoted, and exits 7 where FAKE_FAIL names it, or on the
-# one call whose log line FAKE_FAIL holds whole; the stub yaml-keys logs the
-# names it reads in place of arguments. A case checks the whole log, so a tool
-# given any argument other than those expected fails it.
+# lint/yaml-keys and lint/dockerfile-locks, with readlink and every tool it runs
+# faked on PATH. Each fake tool, the dockerfile-locks stub among them, logs its
+# name and arguments, each shell-quoted, and exits 7 where FAKE_FAIL names it,
+# or on the one call whose log line FAKE_FAIL holds whole; the stub yaml-keys
+# logs the names it reads in place of arguments. A case checks the whole log,
+# so a tool given any argument other than those expected fails it.
 #
 # Run: test/bin/lint.test. Reports each case that failed on stderr, and exits 1
 # if any did.
@@ -39,12 +39,28 @@ chmod +x "$work/path/fake"
 for tool in "${tools[@]}"; do
     ln -s fake "$work/path/$tool"
 done
+
+# bin/lint runs where it is, so coverage measures it, and finds bin/files and
+# lint/ by the path readlink -f gives for it, so a fake readlink answers that
+# one call with bin/lint in the tree it runs from, and runs the real one for
+# anything else.
+real_readlink=$(command -v readlink)
+cat >"$work/path/readlink" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ \$# = 2 ] && [ "\$1" = -f ] && [ "\$2" = $(printf %q "$lint") ]; then
+    echo "\$PWD/bin/lint"
+    exit 0
+fi
+exec $(printf %q "$real_readlink") "\$@"
+EOF
+chmod +x "$work/path/readlink"
 export FAKE_LOG=$work/log
 export PATH=$work/path:$PATH
 
 t=$work/tree
 mkdir -p "$t/bin" "$t/lint"
-cp -- "$lint" "$t/bin/lint"
 cat >"$t/bin/files" <<'EOF'
 # shellcheck shell=bash
 shfmt_args=(--fake-shfmt)
@@ -173,7 +189,7 @@ declare -A section=(
 check() {
     local name=$1 status=$2 log=$3 said=$4 rc=0
     : >"$FAKE_LOG"
-    (cd "$t" && bin/lint) >"$work/out" 2>"$work/err" || rc=$?
+    (cd "$t" && "$lint") >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status" "$work/err"
     elif [ "$(<"$FAKE_LOG")" != "$log" ]; then

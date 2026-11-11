@@ -5,9 +5,9 @@
 # faked on PATH, so nothing is built, pushed or read from a repository. The fake
 # docker logs each call's arguments, a line to a call, and exits with
 # FAKE_BUILD's status from a build and FAKE_PUSH's from a push. The fake git
-# puts HEAD on branch a/b and describes it as FAKE_DESCRIBE, failing as an
-# untagged repository does where that is empty, or as a broken one does where it
-# is "broken".
+# puts HEAD on branch a/b, or detached at commit 1a2b3c4 where FAKE_BRANCH is
+# HEAD, and describes it as FAKE_DESCRIBE, failing as an untagged repository
+# does where that is empty, or as a broken one does where it is "broken".
 #
 # Run: test/docker/build-dev.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -25,6 +25,9 @@ echo r/x >"$work/project/.dockerrepo"
 export FAKE_LOG=$work/log
 export FAKE_DESCRIBE=v1.2-3-gabcdef0
 export PATH=$work/bin:$PATH
+# A CI running these tests names its own branch or tag in them, which would name
+# the detached cases' images.
+unset CIRCLE_BRANCH CIRCLE_TAG GITHUB_HEAD_REF GITHUB_REF_NAME
 cd "$work/project"
 
 failures=0
@@ -38,12 +41,13 @@ fail() {
     failures=$((failures + 1))
 }
 
-# Runs docker/$2 and checks its status is $3, docker was called as $4 has it, a
-# line to a call, and its stdout is $5 and its stderr $6.
+# Runs docker/$2 with the arguments after $6 and checks its status is $3, docker
+# was called as $4 has it, a line to a call, and its stdout is $5 and its stderr
+# $6.
 check() {
     local name=$1 script=$2 status=$3 calls=$4 out=$5 err=$6 rc=0
     : >"$FAKE_LOG"
-    "$dir/$script" >"$work/out" 2>"$work/err" || rc=$?
+    "$dir/$script" "${@:7}" >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status: $(<"$work/err")"
     elif [ "$(<"$FAKE_LOG")" != "$calls" ]; then
@@ -98,6 +102,20 @@ for model in latest stable; do
     FAKE_PUSH=4 check "$model-push-fails" "build-dev-$model" 4 \
         "$built"$'\n'"$push" "fake docker: built"$'\n'"$pushed" \
         "fake docker: building"
+
+    # On a detached HEAD outside CI, the build that pushes nothing is named by
+    # the commit, and the one that pushes is refused before docker is called.
+    FAKE_BRANCH=HEAD check "$model-nopush-detached" "build-dev-$model-nopush" \
+        0 "${built//a-b.dev/1a2b3c4.dev}" "fake docker: built" \
+        "fake docker: building"
+    FAKE_BRANCH=HEAD check "$model-detached" "build-dev-$model" 1 "" "" \
+        "build-dev-$model: TAG: detached HEAD and no CI branch or tag variable \
+set; check out a branch"
+
+    # Any argument is a usage error, refused before docker is called.
+    for script in "build-dev-$model-nopush" "build-dev-$model"; do
+        check "$script-argument" "$script" 2 "" "" "Usage: $script" --help
+    done
 done
 
 if [ "$failures" -gt 0 ]; then

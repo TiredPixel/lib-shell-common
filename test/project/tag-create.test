@@ -249,22 +249,82 @@ expect_out local-offline "tag-create: 1.2: already exists"
 expect local-offline stdout "$(<"$w/out")" ""
 expect_untagged local-offline 1.2
 
-# A missing, empty or extra argument is refused with the usage before anything
-# runs.
+# --check passes a tag that exists nowhere, and signs and pushes nothing.
 fixture
-run
-expect no-tag status "$rc" 2
-expect no-tag stderr "$(<"$w/err")" "Usage: tag-create TAG"
-expect no-tag stdout "$(<"$w/out")" ""
-run ""
-expect empty-tag status "$rc" 2
-expect empty-tag stderr "$(<"$w/err")" "Usage: tag-create TAG"
-expect empty-tag stdout "$(<"$w/out")" ""
-run 1.2 1.3
-expect extra status "$rc" 2
-expect extra stderr "$(<"$w/err")" "Usage: tag-create TAG"
-expect extra stdout "$(<"$w/out")" ""
-expect_untagged extra 1.2
+run --check 1.2
+expect check-free status "$rc" 0
+expect check-free stdout "$(<"$w/out")" ""
+expect_untagged check-free 1.2
+expect check-free "lib's 1.2" "$(tag_of "$w/app/lib" 1.2)" none
+expect check-free "lib's origin's 1.2" "$(tag_of "$w/lib.git" 1.2)" none
+
+# --check refuses a tag existing in any project, or only on an origin, as a run
+# that creates it does.
+fixture
+git -C "$w/app/lib" tag 1.2
+run --check 1.2
+expect check-local-exists status "$rc" 1
+expect_out check-local-exists "tag-create: 1.2: already exists"
+expect_untagged check-local-exists 1.2
+
+fixture
+git -C "$w/lib.up" tag -a -m 1.2 1.2
+git -C "$w/lib.up" push -q "$w/lib.git" 1.2
+run --check 1.2
+expect check-remote-exists status "$rc" 1
+expect_out check-remote-exists "tag-create: 1.2: already exists on an origin"
+expect_untagged check-remote-exists 1.2
+expect check-remote-exists "lib's 1.2" "$(tag_of "$w/app/lib" 1.2)" none
+
+# --no-push signs the tag in every project and pushes it to no origin.
+fixture
+run --no-push 1.2
+expect no-push status "$rc" 0
+expect no-push stdout "$(<"$w/out")" ""
+for r in app app/lib; do
+    if ! git -C "$w/$r" cat-file tag 1.2 2>/dev/null |
+        grep -qFx -- '-----BEGIN PGP SIGNATURE-----'; then
+        fail no-push "$r has no signed tag 1.2: $(<"$w/err")"
+    fi
+done
+for r in app lib; do
+    expect no-push "$r's origin's 1.2" "$(tag_of "$w/$r.git" 1.2)" none
+done
+
+# --no-push refuses a tag existing in any project before anything is signed.
+fixture
+git -C "$w/app/lib" tag 1.2
+run --no-push 1.2
+expect no-push-exists status "$rc" 1
+expect_out no-push-exists "tag-create: 1.2: already exists"
+expect_untagged no-push-exists 1.2
+
+# A missing, empty or extra argument, both modes, or a TAG beginning with -, is
+# refused with the usage before anything runs, in every mode.
+fixture
+for args in no-tag empty-tag extra dash-tag check-no-tag check-empty-tag \
+    check-extra no-push-no-tag no-push-empty-tag no-push-extra check-no-push \
+    no-push-check; do
+    case $args in
+    no-tag) run ;;
+    empty-tag) run "" ;;
+    extra) run 1.2 1.3 ;;
+    dash-tag) run -1.2 ;;
+    check-no-tag) run --check ;;
+    check-empty-tag) run --check "" ;;
+    check-extra) run --check 1.2 1.3 ;;
+    no-push-no-tag) run --no-push ;;
+    no-push-empty-tag) run --no-push "" ;;
+    no-push-extra) run --no-push 1.2 1.3 ;;
+    check-no-push) run --check --no-push ;;
+    no-push-check) run --no-push --check 1.2 ;;
+    esac
+    expect "$args" status "$rc" 2
+    expect "$args" stderr "$(<"$w/err")" \
+        "Usage: tag-create [--check | --no-push] TAG"
+    expect "$args" stdout "$(<"$w/out")" ""
+    expect_untagged "$args" 1.2
+done
 
 if [ "$failures" -gt 0 ]; then
     exit 1

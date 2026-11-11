@@ -510,6 +510,20 @@ upcommit lib lib2
 run sub-diverged
 expect_failure sub-diverged
 
+# Any argument is a usage error, refused before anything moves.
+fixture
+upcommit app app2
+upcommit lib lib2
+before=$(head_of "$w/app")
+before_lib=$(head_of "$w/app/lib")
+rc=0
+(cd "$w/app" && "$pull" x) >"$w/out" 2>"$w/err" || rc=$?
+expect argument status "$rc" 2
+expect argument stdout "$(<"$w/out")" ""
+expect argument stderr "$(<"$w/err")" "Usage: upgrade-pull"
+expect argument "app's commit" "$(head_of "$w/app")" "$before"
+expect argument "lib's commit" "$(head_of "$w/app/lib")" "$before_lib"
+
 if [ "$failures" -gt 0 ]; then
     exit 1
 fi
