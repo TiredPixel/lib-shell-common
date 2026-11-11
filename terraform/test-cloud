@@ -5,7 +5,8 @@ shopt -s inherit_errexit failglob
 # -diff, so a failure shows what would change rather than only naming the file.
 terraform fmt -recursive -check -diff
 
-terraform init
+# The lock file read-only, for the reason terraform/test-cli gives.
+terraform init -lockfile=readonly
 
 # Unsaved, with no deploy-cloud to apply it: Terraform Cloud did not support
 # plan -out as of February 2023. Whether it does now is in HashiCorp's

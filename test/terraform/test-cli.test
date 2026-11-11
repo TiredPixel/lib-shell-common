@@ -33,7 +33,7 @@ fail() {
 }
 
 fmt='fmt -recursive -check -diff'
-init='init -backend=false -input=false'
+init='init -backend=false -input=false -lockfile=readonly'
 
 # Runs test-cli in a fresh project, holding a plan where $2 is "stale", with the
 # fake failing at $3, or nowhere where that is empty, and checks it exits $4,

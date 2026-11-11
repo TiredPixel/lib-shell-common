@@ -631,7 +631,7 @@ lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.co
 lib/shell-common/terraform/format
 ```
 
-`terraform/test-cli` checks the configuration without reading any state: it fails on any unformatted file, showing the diff, then initialises with no backend, validates and runs `terraform test`. It saves no plan, and first removes any `.terraform.plan` it finds in the directory it runs from, saying so, so that `terraform/deploy-cli` cannot apply a plan left by an earlier run. `terraform test` runs what the repository's test files declare, which can create real infrastructure where a `run` block applies without mocked providers.
+`terraform/test-cli` checks the configuration without reading any state: it fails on any unformatted file, showing the diff, then initialises with no backend and the dependency lock file, `.terraform.lock.hcl`, read-only, validates and runs `terraform test`. Initialising fails where the committed lock would change, such as where a version constraint no longer admits the provider version locked, or no lock is committed for a provider the configuration needs, since only `terraform/upgrade` moves a provider. It saves no plan, and first removes any `.terraform.plan` it finds in the directory it runs from, saying so, so that `terraform/deploy-cli` cannot apply a plan left by an earlier run. `terraform test` runs what the repository's test files declare, which can create real infrastructure where a `run` block applies without mocked providers.
 
 ```sh
 lib/shell-common/terraform/test-cli
@@ -649,7 +649,7 @@ lib/shell-common/terraform/plan-cli
 lib/shell-common/terraform/deploy-cli
 ```
 
-`terraform/test-cloud` checks formatting, initialises and plans for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
+`terraform/test-cloud` checks formatting, initialises with the lock file read-only, failing as `terraform/test-cli` does where the committed lock would change, and plans for Terraform Cloud, but saves no plan, and no script applies one; the comment above its plan says why.
 
 ```sh
 lib/shell-common/terraform/test-cloud
