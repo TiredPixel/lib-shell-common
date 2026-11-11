@@ -4,33 +4,38 @@
 # docker, curl and git faked on PATH, so nothing is pulled or fetched. Each fake
 # refuses, with exit 2, any arguments but the exact ones upgrade should give it,
 # and names on stderr what it pulls or fetches. The fake docker answers every
-# pull and gives each image it pulled, and no other, the digest FAKE_DIGEST
-# names. Its run takes only docker/lock-resolve on stdin, through sh -c given
-# as the entrypoint, as root, in an image it pulled, as pulled or at that
-# digest, or in FAKE_HELD, and runs it on the host, reading the file
-# FAKE_OS_RELEASE names for /etc/os-release, with PATH only a copy of the
-# directory FAKE_CONTAINER names, holding the managers, bash, pip and npm the
-# image has, and a few real tools, while apt-get, dnf, microdnf, apk, python3
-# and npm are faked, each manager adding to the copy what it installs, and each
-# reading its stdin to the end; pip runs only once its module is there, gives
-# FAKE_PIP_VERSION, 24.0 where unset, and answers with the report in the file
-# FAKE_REPORT names, and npm gives a version or writes the package-lock.json
-# FAKE_NPM_LOCK names, each naming on stderr what it was given. The fake curl
-# answers every /releases/latest with the redirect FAKE_REDIRECT names, every
-# PyPI /pypi/NAME/VERSION/json with the file pypi/NAME/VERSION.json under
-# FAKE_FILES, every npm /latest lookup with FAKE_NPM and every
-# https://dl.test/PATH with the file PATH under FAKE_FILES, or a 404 where there
-# is none. The fake git answers ls-remote of a tag and a branch of one NAME, run
-# under timeout with no prompt, with FAKE_LS_REMOTE where it is set, and
-# otherwise with the file OWNER/REPO/NAME under FAKE_TAGS, holding the tag's
-# lines, or nothing where there is none; the status of one literal path, and a
-# directory's top level, it passes to the real git, which a --record run asks
-# for. FAKE_PULL=fail, FAKE_RUN=fail, FAKE_PIP=fail, FAKE_CURL=fail and
-# FAKE_GIT=fail make each fail as the real one would, and FAKE_GIT=timeout exits
-# silently with timeout's 124. A fake mktemp fails for the template
-# FAKE_MKTEMP_FAIL names, and otherwise runs the real one. Where FAKE_GREP=fail,
-# a fake grep fails as the real one would on an unreadable file, given exactly
-# the search upgrade makes for FREEZE lines, and otherwise runs the real one.
+# pull with a Digest line on stdout, as docker pull prints one, for FAKE_DIGEST,
+# none where that is empty, and another for FAKE_DIGEST_TOO where it is set, and
+# gives each image it pulled, and no other, the digest FAKE_DIGEST names. Its
+# inspect of a pulled image gives as the first of its RepoDigests the first line
+# of FAKE_REPO_DIGESTS where that is set, so a pin taken from it rather than
+# from the pull is caught. Its run takes only docker/lock-resolve on stdin,
+# through sh -c given as the entrypoint, as root, in an image it pulled, as
+# pulled or at that digest, or in FAKE_HELD, and runs it on the host, reading
+# the file FAKE_OS_RELEASE names for /etc/os-release, with PATH only a copy of
+# the directory FAKE_CONTAINER names, holding the managers, bash, pip and npm
+# the image has, and a few real tools, while apt-get, dnf, microdnf, apk,
+# python3 and npm are faked, each manager adding to the copy what it installs,
+# and each reading its stdin to the end; pip runs only once its module is there,
+# gives FAKE_PIP_VERSION, 24.0 where unset, and answers with the report in the
+# file FAKE_REPORT names, and npm gives a version or writes the
+# package-lock.json FAKE_NPM_LOCK names, each naming on stderr what it was
+# given. The fake curl answers every /releases/latest with the redirect
+# FAKE_REDIRECT names, every PyPI /pypi/NAME/VERSION/json with the file
+# pypi/NAME/VERSION.json under FAKE_FILES, every npm /latest lookup with
+# FAKE_NPM and every https://dl.test/PATH with the file PATH under FAKE_FILES,
+# or a 404 where there is none. The fake git answers ls-remote of a tag and a
+# branch of one NAME, run under timeout with no prompt, with FAKE_LS_REMOTE
+# where it is set, and otherwise with the file OWNER/REPO/NAME under FAKE_TAGS,
+# holding the tag's lines, or nothing where there is none; the status of one
+# literal path, and a directory's top level, it passes to the real git, which a
+# --record run asks for. FAKE_PULL=fail, FAKE_RUN=fail, FAKE_PIP=fail,
+# FAKE_CURL=fail and FAKE_GIT=fail make each fail as the real one would, and
+# FAKE_GIT=timeout exits silently with timeout's 124. A fake mktemp fails for
+# the template FAKE_MKTEMP_FAIL names, and otherwise runs the real one. Where
+# FAKE_GREP=fail, a fake grep fails as the real one would on an unreadable file,
+# given exactly the search upgrade makes for FREEZE lines, and otherwise runs
+# the real one.
 #
 # upgrade runs where it is, so coverage measures it, with DOCKERFILE_LOCKS_LINT
 # naming a fake lint/dockerfile-locks, which names on stderr the file it checks
@@ -103,9 +108,13 @@ if [ $# = 2 ] && [ "$1" = pull ]; then
         echo "fake docker: pull $2 failed" >&2
         exit 1
     fi
+    for digest in "${FAKE_DIGEST:-}" "${FAKE_DIGEST_TOO:-}"; do
+        [ -z "$digest" ] || echo "Digest: $digest"
+    done
+    echo "Status: Downloaded newer image for $2"
 elif [ $# = 3 ] && [ "$1" = inspect ] &&
     [ "$2" = '--format={{index .RepoDigests 0}}' ] && pulled "$3" ""; then
-    echo "${3%:*}@$FAKE_DIGEST"
+    echo "${FAKE_REPO_DIGESTS:-${3%:*}@$FAKE_DIGEST}" | head -n 1
 elif [ $# -ge 12 ] &&
     [ "$1 $2 $3 $4 $5 $6 $7" = "run -i --rm --entrypoint sh --user 0" ] &&
     { pulled "$8" @ || pulled "$8" "" || [ "$8" = "${FAKE_HELD:-}" ]; } &&
@@ -598,6 +607,25 @@ FAKE_PULL=fail check from-pull-fails $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 "pull
 
 FAKE_DIGEST=nonsense check from-no-digest $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 "gave r/x:1 no digest" \
     $'# TRACK FROM r/x:1\nFROM r/x:1'
+
+FAKE_DIGEST="" check from-pull-gives-no-digest $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 \
+    "upgrade: @F@: docker pull gave r/x:1 no digest" $'# TRACK FROM r/x:1\nFROM r/x:1'
+
+# The pin is the digest the pull names, though the image's RepoDigests list a
+# mirror's digest first and the digest an earlier pull of the tag gave, and the
+# pull's output still reaches stderr, not stdout.
+other=sha256:$(printf 'b%.0s' {1..64})
+FAKE_REPO_DIGESTS="m.test/r/x@$other"$'\n'"r/x@$old"$'\n'"r/x@$new" \
+    check from-pull-digest $'# TRACK FROM r/x:1\nFROM r/x@'"$old"$'\n' 0 \
+    "Digest: $new" $'# TRACK FROM r/x:1\nFROM r/x@'"$new"
+
+# A pull naming two digests leaves the pin unchosen; one naming the same digest
+# twice names one.
+FAKE_DIGEST_TOO=$old check from-pull-two-digests $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 \
+    "upgrade: @F@: docker pull gave r/x:1 more than one digest: $new and $old" \
+    $'# TRACK FROM r/x:1\nFROM r/x:1'
+FAKE_DIGEST_TOO=$new check from-pull-digest-twice $'# TRACK FROM r/x:1\nFROM r/x:1\n' 0 "" \
+    $'# TRACK FROM r/x:1\nFROM r/x@'"$new"
 
 check arg-rewrites $'# TRACK ARG V github:o/p\nFROM s\nARG V=1.0.0\nRUN echo "$V"\nARG V=1.0.0\nARG VV=1.0.0\n' \
     0 "" $'# TRACK ARG V github:o/p\nFROM s\nARG V=1.2.3\nRUN echo "$V"\nARG V=1.2.3\nARG VV=1.0.0'

@@ -212,6 +212,16 @@ say() {
     echo "${0##*/}: $*" >&2
 }
 
+# Copies stdin to stderr, a line at a time as it comes, and to stdout, so a
+# command's output is both shown as progress and kept.
+relay() {
+    local line
+    while IFS= read -r line <&3 || [ -n "$line" ]; do
+        printf '%s\n' "$line" >&2
+        printf '%s\n' "$line"
+    done 3<&0
+}
+
 die() {
     refuse "$dockerfile" "$@"
 }
@@ -1044,12 +1054,22 @@ for data in "${froms[@]}"; do
     tag=${data##*:}
 
     say "pulling $repo:$tag"
-    docker pull "$repo:$tag" >&2
+    pulled=$(docker pull "$repo:$tag" | relay)
 
-    digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$repo:$tag")
-    digest=${digest#*@}
-    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
-        die "docker inspect gave $repo:$tag no digest: $digest"
+    # The digest is the one the pull's Digest line names, what the tag resolved
+    # to in this repository. The image's RepoDigests, which docker inspect
+    # gives, can hold the same image under another repository's name, such as
+    # a mirror's, or the digest an earlier pull of the tag gave, in any order.
+    digest=""
+    while IFS= read -r line <&3; do
+        [[ "$line" =~ ^Digest:\ (sha256:[0-9a-f]{64})$ ]] || continue
+        if [ -n "$digest" ] && [ "$digest" != "${BASH_REMATCH[1]}" ]; then
+            die "docker pull gave $repo:$tag more than one digest:" \
+                "$digest and ${BASH_REMATCH[1]}"
+        fi
+        digest=${BASH_REMATCH[1]}
+    done 3<<<"$pulled"
+    [ -n "$digest" ] || die "docker pull gave $repo:$tag no digest"
     say "$repo:$tag is $digest"
     news["FROM $repo"]=$digest
 
