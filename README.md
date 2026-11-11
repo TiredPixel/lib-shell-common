@@ -507,7 +507,7 @@ lib/shell-common/docker/build-compose --profile test
 lib/shell-common/docker/build-prd-latest
 ```
 
-`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release and each shorter prefix of it, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`, then pushes each tag, naming it on stderr. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building. A release on HEAD that is not a valid Docker tag, such as `v1+build`, also fails before building.
+`docker/build-tags` builds the `Dockerfile`'s last stage, tags it `REPO:TAG` and, where HEAD is exactly on an annotated tag, also with that release, then pushes each tag, naming it on stderr. A release of digits and dots with an optional leading `v` adds each shorter prefix of it too, so `v1.2.3` adds `v1.2.3`, `v1.2` and `v1`; any other, such as the prerelease `v1.2.3-rc.1`, is added under its full tag alone. Its `GIT_DESCRIBE` is `git describe`'s own, so with no annotated tag reachable from HEAD it fails before building. A release on HEAD that is not a valid Docker tag, such as `v1+build`, also fails before building.
 
 ```sh
 lib/shell-common/docker/build-tags

@@ -81,9 +81,27 @@ expect() {
     done
 }
 
-# On a release, the release and each shorter prefix are tags too.
+# On a plain version release, the release and each shorter prefix are tags too,
+# with or without a leading v.
 expect 1.2.3 a-b 1.2.3 1.2 1
 check on-release 0 a/b 1.2.3 1.2.3 "$calls"
+expect v1.4.2 a-b v1.4.2 v1.4 v1
+check on-release-v 0 a/b v1.4.2 v1.4.2 "$calls"
+
+# Any other release is a tag under its full name alone, so a prerelease takes
+# no version's prefix.
+expect v1.4.2-rc.1 a-b v1.4.2-rc.1
+check prerelease 0 a/b v1.4.2-rc.1 v1.4.2-rc.1 "$calls"
+expect 1.4.2-rc.1 a-b 1.4.2-rc.1
+check prerelease-no-v 0 a/b 1.4.2-rc.1 1.4.2-rc.1 "$calls"
+expect V1.2 a-b V1.2
+check release-upper-v 0 a/b V1.2 V1.2 "$calls"
+expect vv1.2 a-b vv1.2
+check release-double-v 0 a/b vv1.2 vv1.2 "$calls"
+expect 1..2 a-b 1..2
+check release-empty-part 0 a/b 1..2 1..2 "$calls"
+expect 1.2. a-b 1.2.
+check release-trailing-dot 0 a/b 1.2. 1.2. "$calls"
 
 # Past a release, only the branch is.
 expect 1.2.3-4-gabcdef0 a-b
@@ -107,7 +125,7 @@ check release-128 0 a/b "$r128" "$r128" "$calls"
 
 # Upper-case letters and _ are in the grammar too, _ even as the first
 # character.
-expect V1_x.Y a-b V1_x.Y V1_x
+expect V1_x.Y a-b V1_x.Y
 check release-upper-underscore 0 a/b V1_x.Y V1_x.Y "$calls"
 expect _1 a-b _1
 check release-leading-underscore 0 a/b _1 _1 "$calls"
