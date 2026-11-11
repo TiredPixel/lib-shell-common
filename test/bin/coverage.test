@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 #
 # Tests bin/coverage, and make coverage, which pipes its --tar run into its
-# --extract, in a scratch tree, with kcov and docker faked on PATH. The fake
-# kcov logs its arguments, each shell-quoted, then the entries of the report
-# directory it was given, as "out:" and their names; where FAKE_FILES names
-# files, it then prints a line on stdout and writes each of them, holding its
-# own name, into that directory; where FAKE_LINK is set, it also links test
+# --extract, in a scratch tree, with kcov and docker faked on PATH. bin/coverage
+# runs where it is, so coverage measures it, from the scratch tree, which holds
+# a link to it only for the Makefile's recipe. The fake kcov logs its arguments,
+# each shell-quoted, then the entries of the report directory it was given, its
+# first argument that is no option, as "out:" and their names; where FAKE_FILES
+# names files, it then prints a line on stdout and writes each of them, holding
+# its own name, into that directory; where FAKE_LINK is set, it also links test
 # there to the directory's data/ by its absolute path, as kcov does to its run,
 # and abs to /dev/null. It exits with FAKE_KCOV's status. The fake docker says
 # on stderr that it built for make coverage's build, failing it where
-# FAKE_BUILD is set, runs the tree's bin/coverage with what follows "coverage"
-# in its run, cutting its stdout to FAKE_CUT bytes and exiting 0 where that is
-# set, and refuses anything else.
+# FAKE_BUILD is set, runs bin/coverage through the tree's link with what follows
+# "coverage" in its run, cutting its stdout to FAKE_CUT bytes and exiting 0
+# where that is set, and refuses anything else.
 #
 # Run: test/bin/coverage.test. Reports each case that failed on stderr, and
 # exits 1 if any did.
@@ -30,25 +32,30 @@ cat >"$work/path/kcov" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
+for out in "$@"; do
+    if [[ $out != --* ]]; then
+        break
+    fi
+done
 {
     printf kcov
     printf ' %q' "$@"
     echo
     printf out:
-    find "$2" -mindepth 1 -printf ' %P' | LC_ALL=C sort
+    find "$out" -mindepth 1 -printf ' %P' | LC_ALL=C sort
     echo
 } >>"$FAKE_LOG"
 if [ -n "${FAKE_FILES-}" ]; then
     echo "fake kcov: stdout"
     read -r -a files <<<"$FAKE_FILES"
     for f in "${files[@]}"; do
-        mkdir -p -- "$(dirname -- "$2/$f")"
-        echo "$f" >"$2/$f"
+        mkdir -p -- "$(dirname -- "$out/$f")"
+        echo "$f" >"$out/$f"
     done
 fi
 if [ -n "${FAKE_LINK-}" ]; then
-    ln -s -- "$2/data" "$2/test"
-    ln -s -- /dev/null "$2/abs"
+    ln -s -- "$out/data" "$out/test"
+    ln -s -- /dev/null "$out/abs"
 fi
 exit "${FAKE_KCOV:-0}"
 EOF
@@ -95,12 +102,12 @@ fail() {
     failures=$((failures + 1))
 }
 
-# Makes a tree at $work/$1 holding bin/coverage and the Makefile, and prints its
-# path.
+# Makes a tree at $work/$1 holding the Makefile and, for its recipe, a link to
+# bin/coverage, and prints its path.
 tree() {
     local t=$work/$1
     mkdir -p "$t/bin"
-    cp -- "$coverage" "$t/bin/coverage"
+    ln -s -- "$coverage" "$t/bin/coverage"
     cp -- "$src/Makefile" "$t/Makefile"
     echo "$t"
 }
@@ -151,10 +158,11 @@ check() {
     local name=$1 t=$2 status=$3 said=$4 rc=0 log
     shift 4
     : >"$FAKE_LOG"
-    (cd "$t" && bin/coverage "$@") >"$work/out" 2>"$work/err" || rc=$?
+    (cd "$t" && "$coverage" "$@") >"$work/out" 2>"$work/err" || rc=$?
     log=$(
         printf kcov
-        printf ' %q' "--include-path=$t" "$t/tmp/coverage" "$t/bin/test" "$@"
+        printf ' %q' "--include-path=$t" "--exclude-path=$t/test" \
+            "$t/tmp/coverage" "$src/bin/test" "$@"
         printf '\nout:'
     )
     if [ "$rc" != "$status" ]; then
@@ -199,7 +207,7 @@ for args in test/a/one one.test a/one.test test/a/b/c.test ./test/a/one.test \
     said="bin/coverage: ${names[-1]} is not a test/*/*.test"$'\n'"$usage"
     rc=0
     : >"$FAKE_LOG"
-    (cd "$t" && bin/coverage "${names[@]}") >"$work/out" 2>"$work/err" ||
+    (cd "$t" && "$coverage" "${names[@]}") >"$work/out" 2>"$work/err" ||
         rc=$?
     if [ "$rc" != 2 ]; then
         fail "$name" "exit $rc, not 2" "$work/err"
@@ -227,11 +235,12 @@ check_tar() {
     rm -rf -- "$work/tmpdir"
     mkdir "$work/tmpdir"
     (cd "$t" && FAKE_FILES="data/f index.html" TMPDIR=$work/tmpdir \
-        bin/coverage --tar "$@") >"$work/out" 2>"$work/err" || rc=$?
-    report=$(sed -n 1p "$FAKE_LOG" | cut -d ' ' -f 3)
+        "$coverage" --tar "$@") >"$work/out" 2>"$work/err" || rc=$?
+    report=$(sed -n 1p "$FAKE_LOG" | cut -d ' ' -f 4)
     log=$(
         printf kcov
-        printf ' %q' "--include-path=$t" "$report" "$t/bin/test" "$@"
+        printf ' %q' "--include-path=$t" "--exclude-path=$t/test" "$report" \
+            "$src/bin/test" "$@"
         printf '\nout:'
     )
     if [ "$rc" != "$status" ]; then
@@ -264,7 +273,7 @@ FAKE_KCOV=3 check_tar tar-fails "$t" 3
 # Without an index.html, the export fails, and tar names what is missing.
 t=$(tree tar-no-index)
 rc=0
-(cd "$t" && FAKE_FILES=data/f bin/coverage --tar) >"$work/out" 2>"$work/err" ||
+(cd "$t" && FAKE_FILES=data/f "$coverage" --tar) >"$work/out" 2>"$work/err" ||
     rc=$?
 if [ "$rc" = 0 ] || [ "$rc" = 3 ]; then
     fail tar-no-index "exit $rc, not tar's failure" "$work/err"
@@ -277,7 +286,7 @@ cp -- "$work/out" "$work/no-index.tar"
 # elsewhere, and a link out of it is left as kcov wrote it.
 t=$(tree tar-links)
 rc=0
-(cd "$t" && FAKE_FILES="data/f index.html" FAKE_LINK=1 bin/coverage --tar) \
+(cd "$t" && FAKE_FILES="data/f index.html" FAKE_LINK=1 "$coverage" --tar) \
     >"$work/out" 2>"$work/err" || rc=$?
 rm -rf -- "$work/links"
 mkdir "$work/links"
@@ -296,7 +305,7 @@ fi
 extract() {
     local name=$1 t=$2 in=$3 status=$4 said=$5 rc=0
     shift 5
-    (cd "$t" && bin/coverage --extract "$@") <"$in" >"$work/out" \
+    (cd "$t" && "$coverage" --extract "$@") <"$in" >"$work/out" \
         2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status" "$work/err"
@@ -344,7 +353,7 @@ for in in empty short.tar cut-index.tar junk no-index.tar; do
     said="bin/coverage: no complete report on stdin; tmp/coverage/ is left as"
     said+=" it was"$'\n'"bin/coverage: removing $t/tmp/coverage.new"
     rc=0
-    (cd "$t" && bin/coverage --extract) <"$work/$in" >"$work/out" \
+    (cd "$t" && "$coverage" --extract) <"$work/$in" >"$work/out" \
         2>"$work/err" || rc=$?
     if [ "$rc" != 1 ]; then
         fail "$name" "exit $rc, not 1" "$work/err"
@@ -379,7 +388,7 @@ for kcov in 0 3; do
     if { [ "$kcov" = 0 ] && [ "$rc" != 0 ]; } ||
         { [ "$kcov" != 0 ] && [ "$rc" = 0 ]; }; then
         fail "$name" "exit $rc" "$work/err"
-    elif ! grep -qF -- " $t/bin/test test/a/one.test" "$FAKE_LOG"; then
+    elif ! grep -qF -- " $src/bin/test test/a/one.test" "$FAKE_LOG"; then
         fail "$name" "the log is:" "$FAKE_LOG"
     elif ! grep -qxF -- "fake docker: built" "$work/err" ||
         ! grep -qxF -- "$report" "$work/err"; then

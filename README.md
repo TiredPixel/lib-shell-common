@@ -716,7 +716,7 @@ make lint
 
 ### Measuring coverage
 
-`make coverage` runs the lint and tests under kcov in the `shell_test` container, which hands the report out as a tar on stdout, and `bin/coverage --extract` unpacks it on the host into `tmp/coverage/`. The report replaces the last one only once it is wholly unpacked, so a bad test name, a failed build or an export cut short leaves the last one; a run whose tests fail still replaces it, and the target fails. `TESTS` narrows it as it does `make test`.
+`make coverage` runs the lint and tests under kcov in the `shell_test` container, measuring the repository's scripts but not `test/` itself; the container hands the report out as a tar on stdout, and `bin/coverage --extract` unpacks it on the host into `tmp/coverage/`. The report replaces the last one only once it is wholly unpacked, so a bad test name, a failed build or an export cut short leaves the last one; a run whose tests fail still replaces it, and the target fails. `TESTS` narrows it as it does `make test`.
 
 ```sh
 make coverage

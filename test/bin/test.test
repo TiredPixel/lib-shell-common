@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Tests bin/test in scratch trees, with bin/lint and nproc faked. The fake
-# bin/lint logs "lint" and exits with FAKE_LINT's status; the fake nproc prints
-# FAKE_NPROC. Each fake test logs "start" and "end" with its name, prints its
-# name, and exits with the status in its own name, as in test/a/fail3.test.
-# Where FAKE_GATES is set, between start and end it reads a line from the FIFO
-# there named after its file, so the case decides when it ends.
+# Tests bin/test in scratch trees, with bin/lint, nproc and readlink faked. The
+# fake bin/lint logs "lint" and exits with FAKE_LINT's status; the fake nproc
+# prints FAKE_NPROC. Each fake test logs "start" and "end" with its name,
+# prints its name, and exits with the status in its own name, as in
+# test/a/fail3.test. Where FAKE_GATES is set, between start and end it reads a
+# line from the FIFO there named after its file, so the case decides when it
+# ends.
 #
 # Run: test/bin/test.test. Reports each case that failed on stderr, and exits 1
 # if any did.
@@ -25,17 +26,33 @@ echo "$FAKE_NPROC"
 EOF
 chmod +x "$work/path/nproc"
 
+# bin/test runs where it is, so coverage measures it, and finds bin/lint beside
+# the path readlink -f gives for it, so a fake readlink answers that one call
+# with bin/test in the tree it runs from, and runs the real one for anything
+# else.
+real_readlink=$(command -v readlink)
+cat >"$work/path/readlink" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ \$# = 2 ] && [ "\$1" = -f ] && [ "\$2" = $(printf %q "$runner") ]; then
+    echo "\$PWD/bin/test"
+    exit 0
+fi
+exec $(printf %q "$real_readlink") "\$@"
+EOF
+chmod +x "$work/path/readlink"
+
 export FAKE_LOG=$work/log
 export FAKE_NPROC=4
 export PATH=$work/path:$PATH
 
-# Makes a tree at $work/$1 holding bin/test, the fake bin/lint, and a fake test
-# at each of the remaining paths, and prints its path.
+# Makes a tree at $work/$1 holding the fake bin/lint and a fake test at each of
+# the remaining paths, and prints its path.
 tree() {
     local t=$work/$1 f
     shift
     mkdir -p "$t/bin"
-    cp -- "$runner" "$t/bin/test"
     cat >"$t/bin/lint" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -87,7 +104,7 @@ check() {
     local name=$1 t=$2 status=$3 said=$4 rc=0 line summary
     shift 4
     : >"$FAKE_LOG"
-    (cd "$t" && bin/test "$@") >"$work/out" 2>"$work/err" || rc=$?
+    (cd "$t" && "$runner" "$@") >"$work/out" 2>"$work/err" || rc=$?
     if [ "$rc" != "$status" ]; then
         fail "$name" "exit $rc, not $status" "$work/err"
         return 1
@@ -232,7 +249,7 @@ gated() {
     done
     exec 4<>"$gates/one.test" 5<>"$gates/two.test" 6<>"$gates/three.test"
     : >"$FAKE_LOG"
-    (cd "$2" && FAKE_NPROC=$3 FAKE_GATES=$gates exec bin/test 4>&- 5>&- 6>&-) \
+    (cd "$2" && FAKE_NPROC=$3 FAKE_GATES=$gates exec "$runner" 4>&- 5>&- 6>&-) \
         >"$work/out" 2>"$work/err" &
     pid=$!
 }
