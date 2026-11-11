@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Tests ansible/inventory-ssh-known-hosts on a scratch known_hosts file: which
-# hosts it lists, its refusal of no match or of an unreadable file, and its
-# usage errors. It reads only that file, so nothing is faked.
+# hosts it lists and with which ports, its refusal of no match, of a host on
+# two ports or of an unreadable file, and its usage errors. It reads only that file, so nothing is faked.
 #
 # Run: test/ansible/inventory-ssh-known-hosts.test. Exits 1 naming each case
 # that failed.
@@ -38,7 +38,28 @@ notexample.com ssh-ed25519 AAAA
 o'neil.example.com ssh-ed25519 AAAA
 say"hi.example.com ssh-ed25519 AAAA
 e.example.com	ssh-ed25519 AAAA
+a.example.com ssh-rsa AAAA
+  f.example.com ssh-ed25519 AAAA
+[g.example.com]:2222 ssh-ed25519 AAAA
+[g.example.com]:2222 ssh-rsa AAAA
+[h.example.com]:22 ssh-ed25519 AAAA
+*.example.com ssh-ed25519 AAAA
+i?.example.com ssh-ed25519 AAAA
+!j.example.com ssh-ed25519 AAAA
+[*.example.com]:2222 ssh-ed25519 AAAA
+@cert-authority *.example.com ssh-ed25519 AAAA
+@revoked k.example.com ssh-ed25519 AAAA
+|1|bC5leGFtcGxlLmNvbQ==|bC5leGFtcGxlLmNvbQ== ssh-ed25519 AAAA
 
+EOF
+
+# Each host here is on two ports, the bare name standing for port 22.
+cat >"$work/known_hosts_ports" <<'EOF'
+l.example.com ssh-ed25519 AAAA
+[l.example.com]:2222 ssh-ed25519 AAAA
+[m.example.com]:2222 ssh-ed25519 AAAA
+[m.example.com]:2200 ssh-ed25519 AAAA
+n.example.com ssh-ed25519 AAAA
 EOF
 
 # The X stands where a regex would read the dot in example.com as any character.
@@ -73,13 +94,22 @@ usage="Usage: inventory-ssh-known-hosts KNOWN_HOSTS DOMAIN --list | --host HOST"
 
 said=""
 check list 0 \
-    '{"ungrouped":{"hosts":["a.example.com","b.example.com","o'"'"'neil.example.com","say\"hi.example.com","e.example.com"]},"_meta":{"hostvars":{}}}' \
+    '{"ungrouped":{"hosts":["a.example.com","b.example.com","o'"'"'neil.example.com","say\"hi.example.com","e.example.com","f.example.com","g.example.com","h.example.com"]},"_meta":{"hostvars":{"g.example.com":{"ansible_port":2222}}}}' \
     "$kh" example.com --list
 said="inventory-ssh-known-hosts: no host in $work/known_hosts_dot ends in .example.com"
 check list-dot-literal 1 "" "$work/known_hosts_dot" example.com --list
 
 said=""
 check host 0 '{}' "$kh" example.com --host a.example.com
+check host-port 0 '{"ansible_port":2222}' "$kh" example.com --host g.example.com
+check host-port-22 0 '{}' "$kh" example.com --host h.example.com
+check host-unlisted 0 '{}' "$kh" example.com --host j.example.com
+
+said="inventory-ssh-known-hosts: l.example.com has more than one port in $work/known_hosts_ports"
+check list-ports-bare 1 "" "$work/known_hosts_ports" example.com --list
+said="inventory-ssh-known-hosts: m.example.com has more than one port in $work/known_hosts_ports"
+check list-ports-brackets 1 "" "$work/known_hosts_ports" example.com --list
+check host-ports 1 "" "$work/known_hosts_ports" example.com --host n.example.com
 
 said="inventory-ssh-known-hosts: no host in $kh ends in .example.net"
 check no-match 1 "" "$kh" example.net --list

@@ -617,7 +617,7 @@ lib/shell-common/ansible/test
 
 ansible-lint caches in `./.ansible/` where it can write there, and no option moves it. In a container that mounts the source by path, the cache stays in the container; a repository that runs the scripts on the host lists `/.ansible/` in its `.gitignore`.
 
-`ansible/inventory-ssh-known-hosts` is a dynamic inventory listing every host in a `known_hosts` file whose first name ends in `.DOMAIN`. Ansible passes an inventory only `--list` or `--host`, so a wrapper script of the repository's own gives the file and domain before them. A host matched gets no variables, and a file with none fails the run:
+`ansible/inventory-ssh-known-hosts` is a dynamic inventory listing every host in a `known_hosts` file whose first name ends in `.DOMAIN`. Ansible passes an inventory only `--list` or `--host`, so a wrapper script of the repository's own gives the file and domain before them. Each host is listed once, and one ssh records on another port, as `[host.example.com]:2222`, gets that port as `ansible_port`; a host on two ports, a bare name counting as port 22, fails the run, as does a file with no host matched. A wildcard or negated name, a hashed name and a `@cert-authority` or `@revoked` line name no single host, so none is listed:
 
 ```sh
 lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.com --list
