@@ -4,7 +4,9 @@
 # PATH, so nothing is built or read from a repository. The fake docker logs each
 # call's arguments, a line to a call, and exits with FAKE_BUILD's status. The
 # fake git describes HEAD as FAKE_DESCRIBE, failing as an untagged repository
-# does where that is empty, or as a broken one does where it is "broken".
+# does where that is empty, or as a broken one does where it is "broken", and
+# gives FAKE_ORIGIN as the origin remote's URL, failing as a checkout with no
+# origin does where that is empty.
 #
 # Run: test/docker/build-compose.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -20,6 +22,7 @@ cp -p -- "$fixtures/docker" "$fixtures/git" "$work/bin/"
 
 export FAKE_LOG=$work/log
 export FAKE_DESCRIBE=v1.2-3-gabcdef0
+export FAKE_ORIGIN=git@github.com:o/r.git
 export PATH=$work/bin:$PATH
 cd "$work/project"
 
@@ -55,25 +58,34 @@ check() {
 
 built="fake docker: built"
 building="fake docker: building"
+# The source as docker/image-source gives it for FAKE_ORIGIN.
+source_arg="--build-arg IMAGE_SOURCE=https://github.com/o/r"
 
-check built 0 "compose build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE" \
+check built 0 \
+    "compose build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE $source_arg" \
     "$built" "$building"
 
 # Its arguments go to docker compose, ahead of build.
 check arguments 0 \
-    "compose -f a\\ b.yml build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE" \
-    "$built" "$building" -f "a b.yml"
+    "compose -f a\\ b.yml build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE \
+$source_arg" "$built" "$building" -f "a b.yml"
 
 # Stamped with nothing, and git's fatal: kept off the console.
-FAKE_DESCRIBE='' check untagged 0 "compose build --build-arg GIT_DESCRIBE=" \
-    "$built" "$building"
+FAKE_DESCRIBE='' check untagged 0 \
+    "compose build --build-arg GIT_DESCRIBE= $source_arg" "$built" "$building"
 
 # Any other failure of git's stops the build before docker is called.
 FAKE_DESCRIBE=broken check describe-fails 1 "" "" \
     "fatal: bad object HEAD"$'\n'"build-compose: git describe failed"
 
+# So does a checkout with no origin to take the source from.
+FAKE_ORIGIN='' check no-origin 1 "" "" \
+    "error: No such remote 'origin'"$'\n'"build-compose: IMAGE_SOURCE: git \
+remote get-url origin failed"
+
 FAKE_BUILD=3 check build-fails 3 \
-    "compose build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE" "$built" "$building"
+    "compose build --build-arg GIT_DESCRIBE=$FAKE_DESCRIBE $source_arg" \
+    "$built" "$building"
 
 if [ "$failures" -gt 0 ]; then
     exit 1

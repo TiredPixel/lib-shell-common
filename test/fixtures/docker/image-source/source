@@ -1,0 +1,8 @@
+# shellcheck shell=bash
+if [ "$1" = strict ]; then
+    set -Eeuo pipefail
+    shopt -s inherit_errexit failglob
+fi
+# shellcheck source=SCRIPTDIR/../../../../docker/image-source
+source "$2"
+echo "${image_source-unset}|${image_source_alnum-unset}|${image_source_path-unset}"

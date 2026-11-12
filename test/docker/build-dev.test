@@ -7,7 +7,9 @@
 # FAKE_BUILD's status from a build and FAKE_PUSH's from a push. The fake git
 # puts HEAD on branch a/b, or detached at commit 1a2b3c4 where FAKE_BRANCH is
 # HEAD, and describes it as FAKE_DESCRIBE, failing as an untagged repository
-# does where that is empty, or as a broken one does where it is "broken".
+# does where that is empty, or as a broken one does where it is "broken"; it
+# gives FAKE_ORIGIN as the origin remote's URL, failing as a checkout with no
+# origin does where that is empty.
 #
 # Run: test/docker/build-dev.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -24,6 +26,7 @@ echo r/x >"$work/project/.dockerrepo"
 
 export FAKE_LOG=$work/log
 export FAKE_DESCRIBE=v1.2-3-gabcdef0
+export FAKE_ORIGIN=https://github.com/o/r.git
 export PATH=$work/bin:$PATH
 # A CI running these tests names its own branch or tag in them, which would name
 # the detached cases' images.
@@ -59,10 +62,12 @@ check() {
     fi
 }
 
-# The build docker is called for, from the cache tags $1 and stamped $2.
+# The build docker is called for, from the cache tags $1, stamped $2 and
+# sourced from FAKE_ORIGIN as docker/image-source gives it.
 build() {
     echo "build --target dev $1 --build-arg BUILDKIT_INLINE_CACHE=1" \
-        "--build-arg GIT_DESCRIBE=$2 -t r/x:a-b.dev ."
+        "--build-arg GIT_DESCRIBE=$2" \
+        "--build-arg IMAGE_SOURCE=https://github.com/o/r -t r/x:a-b.dev ."
 }
 
 push="push r/x:a-b.dev"
@@ -91,6 +96,13 @@ for model in latest stable; do
     for script in "build-dev-$model-nopush" "build-dev-$model"; do
         FAKE_DESCRIBE=broken check "$script-describe-fails" "$script" 1 "" "" \
             "${broken}build-dev-$model-nopush: git describe failed"
+    done
+
+    # So does a checkout with no origin to take the source from.
+    for script in "build-dev-$model-nopush" "build-dev-$model"; do
+        FAKE_ORIGIN='' check "$script-no-origin" "$script" 1 "" "" \
+            "error: No such remote 'origin'"$'\n'"build-dev-$model-nopush: \
+IMAGE_SOURCE: git remote get-url origin failed"
     done
 
     check "$model" "build-dev-$model" 0 "$built"$'\n'"$push" \

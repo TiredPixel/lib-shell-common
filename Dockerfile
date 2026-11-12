@@ -39,8 +39,6 @@ RUN --mount=type=bind,source=Dockerfile.lock/mdformat,target=/lock \
 #===============================================================================
 FROM docker.io/library/debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 AS dev
 
-LABEL org.opencontainers.image.source=https://github.com/TiredPixel/lib-shell-common
-
 SHELL ["/bin/bash", "-Eeuo", "pipefail", "-O", "inherit_errexit", "-O", "failglob", "-c"]
 
 RUN apt-get update \
@@ -212,9 +210,13 @@ USER $USER_UID:$USER_GID
 
 WORKDIR /home/x/r
 
-# Last in the stage, so a new stamp rebuilds no earlier layer. Empty where no
-# build argument is given, as under compose run --build.
+# Last in the stage, so a new stamp rebuilds no earlier layer. Where no build
+# argument is given, as under compose run --build, the version is empty and the
+# source this repository; the docker/ scripts pass the building repository's
+# own, so a consuming repository that builds this file names itself.
 ARG GIT_DESCRIBE
+ARG IMAGE_SOURCE=https://github.com/TiredPixel/lib-shell-common
+LABEL org.opencontainers.image.source=$IMAGE_SOURCE
 LABEL org.opencontainers.image.version=$GIT_DESCRIBE
 #===============================================================================
 FROM dev AS test

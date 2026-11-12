@@ -12,6 +12,7 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 # Nothing is pushed, so a detached HEAD outside CI is named by its commit.
 init_detached=commit source "$dir/init"
 source "$dir/describe"
+source "$dir/image-source"
 
 docker build \
     --target dev \
@@ -21,4 +22,5 @@ docker build \
     --cache-from "$REPO:stable.dev" \
     --build-arg BUILDKIT_INLINE_CACHE=1 \
     --build-arg GIT_DESCRIBE="$describe" \
+    --build-arg IMAGE_SOURCE="$image_source" \
     -t "$REPO:$TAG.dev" .

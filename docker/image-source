@@ -1,0 +1,40 @@
+# shellcheck shell=bash
+#
+# Sourced by the docker/ scripts that pass GIT_DESCRIBE, to set image_source to
+# the building checkout's own repository, as https://github.com/OWNER/REPO, for
+# the IMAGE_SOURCE build argument, so an image built from a Dockerfile another
+# repository wrote names the repository that built it. Taken from the origin
+# remote, in its https or its git@ form, with or without .git. Sets no shell
+# options, since it runs under its caller's.
+#
+# Unlike an untagged HEAD, whose empty stamp describe allows, a checkout with no
+# origin, or with one that names no GitHub repository, has no right source to
+# give, so either has its reason given and exits 1, with or without errexit,
+# rather than label an image with nothing or with another repository. The URL
+# is not echoed, since an https origin can carry a credential.
+
+if ! image_source=$(git remote get-url origin); then
+    echo "${0##*/}: IMAGE_SOURCE: git remote get-url origin failed" >&2
+    exit 1
+fi
+
+case $image_source in
+https://github.com/*) image_source=${image_source#https://github.com/} ;;
+git@github.com:*) image_source=${image_source#git@github.com:} ;;
+*) image_source="" ;;
+esac
+image_source=${image_source%.git}
+
+# GitHub's owner and repository name characters, the letters written out as
+# docker/init's are, since a bracket range can match others under some locales.
+image_source_alnum=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
+image_source_path="^[${image_source_alnum}-]+/[${image_source_alnum}_.-]+\$"
+
+if ! [[ $image_source =~ $image_source_path ]]; then
+    echo "${0##*/}: IMAGE_SOURCE: origin is no GitHub repository URL, such as" \
+        "https://github.com/OWNER/REPO or git@github.com:OWNER/REPO.git" >&2
+    exit 1
+fi
+
+image_source=https://github.com/$image_source
+unset image_source_alnum image_source_path
