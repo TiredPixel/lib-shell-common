@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# Tests docker/image-source, sourced in a shell with no options set and in one
+# under the strict mode its callers run, with git faked on PATH: the fake gives
+# FAKE_ORIGIN as the origin remote's URL, or fails as git does with no origin
+# where that is "none". Each case prints what the sourcing shell then holds in
+# image_source and the file's own working variables. Sourcing must set none of
+# the shell's options.
+#
+# Run: test/docker/image-source.test. Exits 1 naming each case that failed.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+image_source=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/image-source
+fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/image-source")
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+mkdir "$work/bin"
+cp -p -- "$fixtures/git" "$work/bin/"
+export PATH=$work/bin:$PATH
+
+# The shells that source image-source are scripts in files rather than -c
+# strings, as its callers are, so $0 names the script as it names a caller.
+cp -p -- "$fixtures/source" "$fixtures/options" "$work/"
+
+failures=0
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    failures=$((failures + 1))
+}
+
+# Sources image-source with FAKE_ORIGIN set to $3, in a bash with no options or,
+# where $2 is strict, under the callers' strict mode, and checks its status is
+# $4, its stdout $5 and its stderr $6.
+check() {
+    local name=$1 mode=$2 origin=$3 status=$4 out=$5 err=$6 rc=0
+    FAKE_ORIGIN=$origin bash --norc --noprofile "$work/source" "$mode" \
+        "$image_source" >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+    elif [ "$(<"$work/out")" != "$out" ]; then
+        fail "$name" "stdout is: $(<"$work/out")"
+    elif [ "$(<"$work/err")" != "$err" ]; then
+        fail "$name" "stderr is: $(<"$work/err")"
+    fi
+}
+
+refused="source: IMAGE_SOURCE: origin is no GitHub repository URL, such as"
+refused+=" https://github.com/OWNER/REPO or git@github.com:OWNER/REPO.git"
+
+for mode in plain strict; do
+    # Either form, with or without .git, gives the https form without it, the
+    # owner's and the name's case kept.
+    for origin in https://github.com/Ow-n3r/r_e.p-o \
+        https://github.com/Ow-n3r/r_e.p-o.git git@github.com:Ow-n3r/r_e.p-o \
+        git@github.com:Ow-n3r/r_e.p-o.git; do
+        check "$mode-$origin" "$mode" "$origin" 0 \
+            "https://github.com/Ow-n3r/r_e.p-o|unset|unset" ""
+    done
+
+    # No origin passes git's message on, and exits 1 before the caller goes on.
+    check "$mode-no-origin" "$mode" none 1 "" \
+        "error: No such remote 'origin'"$'\n'"source: IMAGE_SOURCE: git remote \
+get-url origin failed"
+
+    # Anything but a GitHub repository's URL in either form is refused, without
+    # the URL, which may carry a credential.
+    for origin in "" https://gitlab.com/o/r.git ssh://git@github.com/o/r.git \
+        http://github.com/o/r https://user:secret@github.com/o/r.git \
+        https://github.com/o https://github.com/o/ https://github.com/o/r/ \
+        https://github.com/o/r/x git@github.com:o https://github.com/o_x/r \
+        https://github.com/o/.git "https://github.com/o/r x" \
+        https://github.com/o/r$'\nx' https://github.com/o/r$'\xc3\xa9' \
+        https://github.com.evil/o/r git@github.com/o/r; do
+        check "$mode-refused-$origin" "$mode" "$origin" 1 "" "$refused"
+    done
+done
+
+# Sourcing changes none of the shell's options.
+FAKE_ORIGIN=https://github.com/o/r bash --norc --noprofile "$work/options" \
+    "$image_source" ||
+    fail options "sourcing changed the shell's options"
+
+if [ "$failures" -gt 0 ]; then
+    exit 1
+fi

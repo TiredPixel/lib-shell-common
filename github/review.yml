@@ -1,12 +1,12 @@
 ---
 # TRACK USES actions/create-github-app-token@v3
 # TRACK USES TiredPixel/lib-shell-common@latest
-# One run at a time for each pull request, none cancelled: GitHub keeps a single
-# run pending in the group, the latest, and each run reads the pull request's
-# state afresh, so the last one posts the current state, however many comments
-# Codex's edits queue. The gate's run again for another pull request after a
-# close or a push runs in the first one's group, so beside the other's own runs,
-# a gap the gate's header names.
+# One run at a time for each pull request, none cancelled once running: GitHub
+# keeps a single run pending in the group, the latest, and each run reads the
+# pull request's state afresh, so the last one posts the current state, however
+# many comments Codex's edits queue. The gate's run again for another pull
+# request after a close or a push runs in the first one's group, so beside the
+# other's own runs, a gap the gate's header names.
 concurrency:
   cancel-in-progress: false
   group: review-${{ github.event.number || github.event.issue.number }}
@@ -65,8 +65,8 @@ name: Review
   # this event explicitly (lib-shell-common's README, Setting a repository up).
   pull_request_target:
     types:
-      # Closing a pull request lets another open on the same head commit, whose
-      # checks it shared, pass.
+      # Closing a pull request lets another open one on the same head commit,
+      # whose checks it shared, pass.
       - closed
       # A change of base raises edited, and a review of the diff against the old
       # base no longer counts.

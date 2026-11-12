@@ -17,5 +17,12 @@ describe)
     *) echo "$FAKE_DESCRIBE" ;;
     esac
     ;;
+"remote get-url origin")
+    if [ -z "${FAKE_ORIGIN:-}" ]; then
+        echo "error: No such remote 'origin'" >&2
+        exit 2
+    fi
+    echo "$FAKE_ORIGIN"
+    ;;
 *) exit 2 ;;
 esac

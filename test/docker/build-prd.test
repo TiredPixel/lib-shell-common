@@ -6,7 +6,8 @@
 # exits with FAKE_BUILD's status from a build and FAKE_PUSH's from a push. The
 # fake git puts HEAD on branch a/b and describes it as FAKE_DESCRIBE, failing as
 # an untagged repository does where that is empty, or as a broken one does where
-# it is "broken".
+# it is "broken"; it gives FAKE_ORIGIN as the origin remote's URL, failing as a
+# checkout with no origin does where that is empty.
 #
 # Run: test/docker/build-prd.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -23,6 +24,7 @@ echo r/x >"$work/project/.dockerrepo"
 
 export FAKE_LOG=$work/log
 export FAKE_DESCRIBE=v1.2-3-gabcdef0
+export FAKE_ORIGIN=git@github.com:o/r
 export PATH=$work/bin:$PATH
 cd "$work/project"
 
@@ -55,10 +57,12 @@ check() {
     fi
 }
 
-# The build docker is called for, from the cache tags $1 and stamped $2.
+# The build docker is called for, from the cache tags $1, stamped $2 and
+# sourced from FAKE_ORIGIN as docker/image-source gives it.
 build() {
     echo "build --target prd $1 --build-arg BUILDKIT_INLINE_CACHE=1" \
-        "--build-arg GIT_DESCRIBE=$2 -t r/x:a-b.prd ."
+        "--build-arg GIT_DESCRIBE=$2" \
+        "--build-arg IMAGE_SOURCE=https://github.com/o/r -t r/x:a-b.prd ."
 }
 
 push="push r/x:a-b.prd"
@@ -86,6 +90,11 @@ for model in latest stable; do
     # Any other failure of git's stops the build before docker is called.
     FAKE_DESCRIBE=broken check "$model-describe-fails" "build-prd-$model" 1 \
         "" "" "${broken}build-prd-$model: git describe failed"
+
+    # So does a checkout with no origin to take the source from.
+    FAKE_ORIGIN='' check "$model-no-origin" "build-prd-$model" 1 "" "" \
+        "error: No such remote 'origin'"$'\n'"build-prd-$model: IMAGE_SOURCE: \
+git remote get-url origin failed"
 
     FAKE_BUILD=3 check "$model-build-fails" "build-prd-$model" 3 "$built" \
         "fake docker: built" "fake docker: building"

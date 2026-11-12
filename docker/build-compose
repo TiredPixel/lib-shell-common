@@ -2,7 +2,11 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/describe"
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+source "$dir/describe"
+source "$dir/image-source"
 
 docker compose "$@" build \
-    --build-arg GIT_DESCRIBE="$describe"
+    --build-arg GIT_DESCRIBE="$describe" \
+    --build-arg IMAGE_SOURCE="$image_source"

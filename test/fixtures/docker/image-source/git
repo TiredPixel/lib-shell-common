@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+[ "$*" = "remote get-url origin" ] || exit 2
+if [ "$FAKE_ORIGIN" = none ]; then
+    echo "error: No such remote 'origin'" >&2
+    exit 2
+fi
+echo "$FAKE_ORIGIN"

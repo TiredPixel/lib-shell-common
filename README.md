@@ -495,6 +495,8 @@ The name is fitted to Docker's tag grammar: each character other than an ASCII l
 
 Each build passes the `GIT_DESCRIBE` build argument, which a `Dockerfile` reads with `ARG GIT_DESCRIBE` to stamp the image with the commit it was built from. Every script but `docker/build-tags` takes it from `docker/describe`: what `git describe` prints, or empty where no tag describes HEAD, any other git failure stopping the build. A `Dockerfile` that needs a version refuses an empty `GIT_DESCRIBE` where it stamps the image.
 
+Each build also passes the `IMAGE_SOURCE` build argument, the building checkout's own repository as `https://github.com/OWNER/REPO`, which a `Dockerfile` reads with `ARG IMAGE_SOURCE` for its `org.opencontainers.image.source` label, so an image built from a `Dockerfile` another repository wrote names the repository that built and pushed it. A default of the `Dockerfile`'s own repository, as in `ARG IMAGE_SOURCE=https://github.com/OWNER/REPO`, keeps the label on a build that passes nothing. Every script takes it from `docker/image-source`: the `origin` remote, in its `https://github.com/` or `git@github.com:` form, with or without `.git`. A checkout with no `origin`, or one naming no GitHub repository, fails before building.
+
 `docker/build-compose` runs `docker compose build`, its arguments going before `build` as Compose's own options, and tags nothing itself, so it needs no `.dockerrepo`:
 
 ```sh

@@ -6,7 +6,9 @@
 # status from a build and FAKE_PUSH's from a push. The fake git puts HEAD on
 # branch FAKE_BRANCH, "HEAD" where that is the detached state, and describes it
 # as FAKE_DESCRIBE, its latest annotated tag being FAKE_RELEASE; where that is
-# empty, both fail as a repository with no annotated tag does.
+# empty, both fail as a repository with no annotated tag does. It gives
+# FAKE_ORIGIN as the origin remote's URL, failing as a checkout with no origin
+# does where that is empty.
 #
 # Run: test/docker/build-tags.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
@@ -22,6 +24,7 @@ cp -p -- "$fixtures/docker" "$fixtures/git" "$work/bin/"
 echo r/x >"$work/project/.dockerrepo"
 
 export FAKE_LOG=$work/log
+export FAKE_ORIGIN=https://github.com/o/r
 cd "$work/project"
 
 failures=0
@@ -58,13 +61,14 @@ check() {
     fi
 }
 
-# Sets calls to the docker calls for a build stamped $1 and tagged with the tags
-# after it, in order, each pushed in turn, and want_out and want_err to what a
-# run that goes through prints.
+# Sets calls to the docker calls for a build stamped $1, sourced from
+# FAKE_ORIGIN and tagged with the tags after it, in order, each pushed in turn,
+# and want_out and want_err to what a run that goes through prints.
 expect() {
     local version=$1 tag build="build --build-arg BUILDKIT_INLINE_CACHE=1"
     shift
     build+=" --build-arg GIT_DESCRIBE=$version"
+    build+=" --build-arg IMAGE_SOURCE=$FAKE_ORIGIN"
     for tag in "$@"; do
         build+=" --cache-from r/x:$tag"
     done
@@ -157,6 +161,13 @@ want_err="fake docker: building"
 check build-fails 3 a/b 1.2 1.2 "$build" FAKE_BUILD=3
 want_out+=$'\n'"fake docker: pushed r/x:a-b"
 check push-fails 4 a/b 1.2 1.2 "$build"$'\n'"push r/x:a-b" FAKE_PUSH=4
+
+# A checkout with no origin to take the source from stops the run before docker
+# is called.
+want_out=""
+want_err="error: No such remote 'origin'"$'\n'
+want_err+="build-tags: IMAGE_SOURCE: git remote get-url origin failed"
+check no-origin 1 a/b 1.2 1.2 "" FAKE_ORIGIN=
 
 # Any argument is a usage error, refused before docker is called.
 : >"$FAKE_LOG"

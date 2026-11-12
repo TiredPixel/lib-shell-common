@@ -52,9 +52,11 @@ scripts=()
 for f in "${found[@]}"; do
     case $(basename "$f") in
     # Gradle generates these and rewrites them on every wrapper bump, so their
-    # style is not the author's to fix. What matters about a wrapper is the
-    # integrity of the distribution it names, which is a checksum question --
-    # gradle/actions/wrapper-validation is the check for it.
+    # style is not the author's to fix. What matters about a wrapper is its
+    # integrity, which is a checksum question: gradle/actions/wrapper-validation
+    # checks the wrapper JAR against Gradle's published checksums, and
+    # distributionSha256Sum in gradle-wrapper.properties checks the distribution
+    # the JAR downloads.
     gradlew | gradlew.bat)
         continue
         ;;
