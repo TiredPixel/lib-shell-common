@@ -282,6 +282,17 @@ elif ! grep -qF index.html "$work/err"; then
 fi
 cp -- "$work/out" "$work/no-index.tar"
 
+# With no report at all, the export fails the same way, at tar rather than at
+# the listing of the report's entries.
+t=$(tree tar-empty)
+rc=0
+(cd "$t" && "$coverage" --tar) >"$work/out" 2>"$work/err" || rc=$?
+if [ "$rc" = 0 ]; then
+    fail tar-empty "exit 0, not tar's failure" "$work/err"
+elif ! grep -qF ./index.html "$work/err"; then
+    fail tar-empty "stderr is:" "$work/err"
+fi
+
 # A link into the report is made relative, so it still resolves once unpacked
 # elsewhere, and a link out of it is left as kcov wrote it.
 t=$(tree tar-links)

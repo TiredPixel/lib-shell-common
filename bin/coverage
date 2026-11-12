@@ -80,10 +80,14 @@ if [ -n "$tar" ]; then
     cd -- "$report"
     # kcov links test to the run's own directory by its absolute path, which
     # would dangle once the report leaves the container, so each such link is
-    # made relative; a link anywhere else is left as it is.
+    # made relative; a link anywhere else is left as it is. failglob would end
+    # the run on an empty report, before tar names the missing index.html, and
+    # it takes precedence over nullglob.
+    shopt -u failglob
     shopt -s nullglob
     entries=(./*)
     shopt -u nullglob
+    shopt -s failglob
     for l in "${entries[@]}"; do
         if [ -L "$l" ]; then
             target=$(readlink -- "$l")
