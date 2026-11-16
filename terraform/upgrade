@@ -7,4 +7,9 @@ if [ $# -ne 0 ]; then
     exit 2
 fi
 
+# No call to HashiCorp's Checkpoint service, which Terraform otherwise makes in
+# the background to ask for a newer release, unless its answer from the last 48
+# hours is cached.
+export CHECKPOINT_DISABLE=1
+
 terraform init -upgrade

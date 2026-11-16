@@ -11,12 +11,15 @@
 # 3. Each file is read as docker/dockerfile-parse reads it, as docker/upgrade
 # reads it too.
 #
-# A RUN's shell or exec form, the heredoc that is its script, as in RUN <<EOF or
-# RUN bash <<EOF, and the script a shell's -c gives are split into simple
-# commands at ; & | ( ) ` and newlines. Leading assignments, reserved words such
-# as if or {, and the wrappers sudo and env are passed, with their options, -u
-# and -C taking a value. The first word that is not an option after a tool is
-# its command. Refused:
+# A RUN's shell or exec form, its heredocs where they are its script, and the
+# script a shell's -c gives are split into simple commands at ; & | ( ) ` and
+# newlines. Leading assignments, reserved words such as if or {, and the
+# wrappers sudo and env are passed, with their options, -u and -C taking a
+# value. The first word that is not an option after a tool is its command. The
+# RUN's heredocs are its script where no command reads them, as in RUN <<EOF,
+# or where the command reading them, the one holding the << word, wherever it
+# sits in the RUN, is a shell given no -c, as in RUN bash <<EOF; otherwise they
+# are only that command's input, as in RUN cat <<EOF >file. Refused:
 #
 #   pip, pip3 or python3 -m pip install, download or wheel
 #       unless the RUN is --network=none or pip is given --no-index with no
@@ -26,13 +29,27 @@
 #       with no hash check
 #   pipx or python3 -m pipx install or inject
 #       unless the RUN is --network=none, --pip-args ARGS carries --no-index
-#       and --find-links, and python3 -m venv has made a directory ending in
+#       and --find-links, python3 -m venv has made a directory ending in
 #       /shared earlier in the RUN, pipx's shared venv, which pipx would
-#       otherwise make with pip from PyPI; and pipx --preinstall always
+#       otherwise make with pip from PyPI, and
+#       PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE holds 1, or another value pipx
+#       reads as true, and is exported, by an export earlier in the RUN or
+#       one after an assignment, the last assignment before the command
+#       setting what it holds, or is assigned so before the command, env's or
+#       a shell's whose -c script or heredoc runs it included, or the command
+#       is given --skip-maintenance, since pipx otherwise upgrades the shared
+#       venv's pip from PyPI on an inject or an install into a venv that
+#       exists, which are not told apart here; and pipx --preinstall always
 #   npm install, update, install-test, link or dedupe, or any alias npm gives
 #   them, such as i, add, up or ddp
 #       unless the RUN is --network=none, since only npm ci installs a lock as
 #       given
+#   npm ci or install-ci-test, or any alias npm gives them, such as ic, cit or
+#   sit
+#       unless given --no-update-notifier, since npm otherwise asks the
+#       registry for a newer npm whenever its cache does not show it asked in
+#       the last week, which a fresh image's never does, in a RUN
+#       --network=none included
 #   pip lock, pip-compile, uv pip compile, uv lock, uv export, poetry lock or
 #   export, pipenv lock, and pdm lock or export
 #       unless the RUN is --network=none, since a lock resolved during the
@@ -52,7 +69,7 @@
 #       unless the RUN is --network=none, since an isolated build fetches its
 #       build dependencies with no hash check
 #
-# Every other command passes, npm ci and bun ci among them. This catches the
+# Every other command passes, bun ci among them. This catches the
 # unlocked installs a Dockerfile's author writes by mistake, not those written
 # to evade it, which a suppression comment would pass anyway. Not seen: eval,
 # find -exec, any other wrapper, such as exec, nice, timeout, flock or xargs, a
@@ -66,7 +83,15 @@
 # configuration file, a lock's own options, such as --find-links in it, any
 # other installer or build frontend, that yarn 1 ignores --immutable, and that
 # bun's --frozen-lockfile and bun ci install with no lock where none is
-# committed.
+# committed, a variable set by ENV or in another RUN, since each RUN is read
+# alone, that sudo, env -i, env -u, export -n and unset drop a variable, VAR+=,
+# the scope of an export made in a subshell, pipeline or command substitution,
+# an assignment before a special builtin other than export, which sh keeps, a
+# redirection before the command word, a RUN with several heredocs, whose
+# bodies are read as one by the first command holding a << word, a << word
+# quoted or inside a script, a << word with no command other than as the whole
+# RUN, and npm's update-notifier set through npm_config_update_notifier or an
+# .npmrc.
 #
 # A RUN is let through by a comment line among those directly above its first
 # line, the nearest such comment taken, REASON required, so one with no reason
@@ -111,6 +136,15 @@ why() {
 }
 
 assignment='^[A-Za-z_][A-Za-z0-9_]*\+?='
+auto_upgrade='^PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=(.*)$'
+
+# Whether $1 is a value pipx reads as true, as its strtobool does.
+true_to_pipx() {
+    case ${1,,} in
+    1 | t | true | y | yes | on) return 0 ;;
+    esac
+    return 1
+}
 
 # Whether $1 is a URL other than a file: one.
 remote() {
@@ -168,7 +202,7 @@ check_pip() {
 
 # Checks pipx subcommand $1, given the rest.
 check_pipx() {
-    local sub=$1 a prev="" pip_args=""
+    local sub=$1 a prev="" pip_args="" on
     shift
     for a in "$@"; do
         case $prev:$a in
@@ -187,6 +221,13 @@ check_pipx() {
         why "pipx $sub --pip-args lacks --find-links"
     [ -n "$shared" ] || why "pipx $sub with no python3 -m venv making its" \
         "shared venv, a directory ending in /shared, earlier in this RUN"
+    on=""
+    [ -z "$exported" ] || on=$value
+    [ -z "$prefixed" ] || on=${prefixed/0/}
+    [ -n "$on" ] || has --skip-maintenance "$@" ||
+        why "pipx $sub with no PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1" \
+            "exported earlier in this RUN, nor --skip-maintenance, so pipx" \
+            "can upgrade its shared venv's pip from PyPI"
 }
 
 # Whether option $1 is among the rest.
@@ -219,7 +260,7 @@ check_build() {
 
 # Checks command $1, given the rest.
 check_named() {
-    local name=$1 a c="" line n=1
+    local name=$1 a c="" line n=1 outer_exported outer_value
     local -a pos=()
     shift
     case $name in
@@ -233,7 +274,17 @@ check_named() {
             esac
             shift || :
         done
-        [ -z "$c" ] || [ $# -eq 0 ] || check_script "$1"
+        # The shell's prefix reaches its script, a value not exported does
+        # not, and its exports reach nothing after it.
+        outer_exported=$exported outer_value=$value
+        [ -n "$exported" ] || value=""
+        [ -z "$prefixed" ] || exported=1 value=${prefixed/0/}
+        if [ -n "$c" ]; then
+            [ $# -eq 0 ] || check_script "$1"
+        elif [ -n "$with_heredoc" ]; then
+            read_heredoc
+        fi
+        exported=$outer_exported value=$outer_value
         return 0
         ;;
     esac
@@ -280,6 +331,17 @@ check_named() {
         for a in "${pos[@]}"; do
             [[ ${a%/} != */shared ]] || shared=1
         done
+        return 0
+        ;;
+    # npm ci, install-ci-test and their aliases, which install a lock as given
+    # but ask for a newer npm, offline or not.
+    "npm ci "* | "npm clean-install "* | "npm ic "* | "npm install-clean "* | \
+        "npm isntall-clean "* | "npm install-ci-test "* | "npm cit "* | \
+        "npm clean-install-test "* | "npm sit "*)
+        ! has --no-update-notifier "$@" ||
+            return 0
+        why "npm ${pos[0]} without --no-update-notifier, so npm asks the" \
+            "registry for a newer npm"
         return 0
         ;;
     esac
@@ -335,11 +397,32 @@ check_named() {
     esac
 }
 
+# Checks the RUN's heredocs as its script, once.
+read_heredoc() {
+    local body=$heredoc
+    heredoc=""
+    [ -z "$body" ] || check_script "$body"
+}
+
 # Checks one simple command, its words $@, past any assignments, reserved words
-# and wrappers.
+# and wrappers. PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE is followed as value,
+# 1 where what it holds pipx reads as true, and exported, each as the RUN's
+# shell would have them: an assignment sets prefixed, 1 or 0, for the command
+# it precedes, and value where it is the whole command or precedes export,
+# which also sets exported. A << word says the command reads the RUN's
+# heredocs, which are its script where there is no command or, through
+# with_heredoc, where it is a shell.
 check_command() {
-    local -a w=("$@")
-    local k=0 name
+    local -a w=("$@") rest=()
+    local k=0 name a prefix="" docs=""
+    for a in "${w[@]}"; do
+        if [[ $a =~ $dockerfile_heredoc ]]; then
+            docs=1
+        else
+            rest+=("$a")
+        fi
+    done
+    w=("${rest[@]}")
     while [ "$k" -lt ${#w[@]} ]; do
         name=${w[k]##*/}
         k=$((k + 1))
@@ -353,13 +436,45 @@ check_command() {
                 k=$((k + 1))
             done
             ;;
+        export)
+            [ -z "$prefix" ] || value=${prefix/0/}
+            for a in "${w[@]:k}"; do
+                if [[ $a =~ $auto_upgrade ]]; then
+                    exported=1
+                    if true_to_pipx "${BASH_REMATCH[1]}"; then
+                        value=1
+                    else
+                        value=""
+                    fi
+                elif [ "$a" = PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE ]; then
+                    exported=1
+                fi
+            done
+            return 0
+            ;;
         *)
+            if [[ ${w[k - 1]} =~ $auto_upgrade ]]; then
+                if true_to_pipx "${BASH_REMATCH[1]}"; then
+                    prefix=1
+                else
+                    prefix=0
+                fi
+                continue
+            fi
             [[ ! ${w[k - 1]} =~ $assignment ]] || continue
+            prefixed=$prefix
+            with_heredoc=""
+            case $name in
+            sh | bash | dash | ash) with_heredoc=$docs ;;
+            *) [ -z "$docs" ] || heredoc="" ;;
+            esac
             check_named "$name" "${w[@]:k}"
             return 0
             ;;
         esac
     done
+    [ -z "$prefix" ] || value=${prefix/0/}
+    [ -z "$docs" ] || read_heredoc
 }
 
 # Ends check_script's word, if one has begun.
@@ -447,6 +562,11 @@ check_run() {
     reasons=()
     shared=""
     offline=""
+    exported=""
+    value=""
+    prefixed=""
+    with_heredoc=""
+    heredoc=$2
     while [[ $text =~ ^(--[^[:space:]]*)[[:blank:]]*(.*)$ ]]; do
         text=${BASH_REMATCH[2]}
         [ "${BASH_REMATCH[1]}" != --network=none ] || offline=1
@@ -458,7 +578,6 @@ check_run() {
         [ -z "$quoted" ] || text=$quoted
     fi
     check_script "$text"
-    check_script "$2"
 }
 
 # Refuses line $2 of $1 for the reasons after it, kept in check_file's found to
@@ -474,8 +593,8 @@ ignore='^[[:space:]]*#[[:space:]]*dockerfile-locks ignore:(.*)$'
 run='^[[:space:]]*([Oo][Nn][Bb][Uu][Ii][Ll][Dd][[:space:]]+)?[Rr][Uu][Nn]([[:space:]]+(.*))?$'
 
 check_file() {
-    local dockerfile=$1 i k a text word script reason error
-    local -a lines=() logical=() comments=() bodies=() words=() found=()
+    local dockerfile=$1 i k a text reason error
+    local -a lines=() logical=() comments=() bodies=() found=()
     # dockerfile_parse sets them, though nothing here reads them.
     # shellcheck disable=SC2034
     local escape ends
@@ -489,21 +608,7 @@ check_file() {
         at=$dockerfile:$((i + 1))
         [[ ${logical[i]} =~ $run ]] || continue
         text=${BASH_REMATCH[3]}
-        # Its heredocs are its script where it has no command but them, or its
-        # command, past any heredocs, is a shell; otherwise they are only that
-        # command's input, as in RUN <<EOF cat >file.
-        script=${bodies[i]-}
-        read -r -a words <<<"$text"
-        for word in "${words[@]}"; do
-            [[ $word != --* ]] || continue
-            [[ ! $word =~ $dockerfile_heredoc ]] || continue
-            case ${word##*/} in
-            sh | bash | dash | ash) ;;
-            *) script="" ;;
-            esac
-            break
-        done
-        check_run "$text" "$script"
+        check_run "$text" "${bodies[i]-}"
         # The nearest in the comment lines directly above, so that another
         # tool's, such as hadolint's, may sit below it.
         k=""
@@ -529,6 +634,11 @@ check_file() {
 reasons=()
 shared=""
 offline=""
+exported=""
+value=""
+prefixed=""
+with_heredoc=""
+heredoc=""
 at=""
 refused=0
 

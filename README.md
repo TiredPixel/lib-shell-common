@@ -166,6 +166,7 @@ RUN apt-get update \
 RUN --network=none \
     --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
     export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
+        PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 \
     && python3 -m venv "$PIPX_HOME/shared" \
     && pipx install \
         --pip-args='--disable-pip-version-check --no-index --find-links=/wheels' \
@@ -176,7 +177,16 @@ RUN --network=none \
     && "$PIPX_HOME/venvs/mdformat/bin/python" -m pip check
 ```
 
-`python3 -m venv` makes pipx's shared venv from the distribution's bundled pip, in the same `RUN` as every pipx call, since pipx would otherwise download pip, unpinned, to make or refresh it. `--pip-args` is written out on each call, so `lint/dockerfile-locks` can read it.
+`python3 -m venv` makes pipx's shared venv from the distribution's bundled pip, in the same `RUN` as every pipx call, since pipx would otherwise download pip, unpinned, to make it. `PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1`, exported in the same `RUN`, keeps pipx 1.13 and later from upgrading that pip from PyPI on the inject, which it otherwise does wherever the shared venv's pip was installed more than 30 days before or, since pipx 1.18.7, is below a floor the distribution's may well sit under; offline, the attempt fails, is logged with a traceback and ignored, so the build passes with the error in its log. Debian 13's pipx 1.7.1 lacks the variable and ignores it, and upgrades no pip installed in the last 30 days, as the venv made in the same `RUN` is, so the pattern holds on either (*Turning off update checks and self-upgrades*). `--pip-args` and the variable are written out, so `lint/dockerfile-locks` can read them.
+
+On Fedora, each `apt-get` install above takes the `dnf` form, `python3-pip` and `pipx` being its package names too, and `npm` for the npm tool below:
+
+```dockerfile
+RUN dnf install -y --setopt=install_weak_deps=False --setopt='*.countme=0' pipx \
+    && dnf clean all
+```
+
+`install_weak_deps=False` leaves out what Fedora only recommends, as `--no-install-recommends` does, and `countme=0` on every repository keeps dnf from flagging a metadata request to be counted, which Fedora's repository files otherwise ask for (*Turning off update checks and self-upgrades*).
 
 ## Installing a locked npm tool
 
@@ -190,13 +200,31 @@ RUN apt-get update \
 RUN --mount=type=bind,source=Dockerfile.lock/js,target=/lock \
     mkdir /opt/js \
     && ln -s /lock/package.json /lock/package-lock.json /opt/js/ \
-    && npm ci --prefix /opt/js --ignore-scripts --no-audit --no-fund \
+    && npm ci --prefix /opt/js --ignore-scripts --no-audit --no-fund --no-update-notifier \
     && node -p "require('/opt/js/node_modules/snazzy/package.json').version"
 
 ENV PATH=/opt/js/node_modules/.bin:$PATH
 ```
 
-`node -p` checks snazzy installed, since `snazzy --version` prints nothing.
+`--no-update-notifier` keeps npm from asking the registry for a newer npm, which it otherwise does whenever its cache does not show it asked in the last week, which a fresh image's never does; `lint/dockerfile-locks` requires it. `node -p` checks snazzy installed, since `snazzy --version` prints nothing.
+
+## Turning off update checks and self-upgrades
+
+An image built from these patterns supplies each tool at a pinned version with its automatic behaviours off: a check for a newer release reaches the network for nothing the build needs and, where the network is absent, fails quietly or with a traceback, and a self-upgrade moves a version no pin names. Where a pattern installs the tool or a script of this library runs it, the switch sits in that pattern or script, or is required by `lint/dockerfile-locks`, so a repository learns of it from `make lint` rather than from this repository's `Dockerfile`; the other entries are for a repository that installs the tool itself, and nothing here enforces them. Each entry was read from the tool's documentation or source in November 2026:
+
+- pipx: `PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1`, exported in the installing `RUN` (*Installing a locked Python tool with pipx*), which `lint/dockerfile-locks` requires, or `--skip-maintenance` on each call from pipx 1.16; pipx reads `1`, `true`, `yes`, `on`, `t` or `y`, in any case. pipx otherwise upgrades its shared venv's pip from PyPI on `inject`, `upgrade`, `reinstall`, `run` and an install into a venv that exists, wherever that pip was installed more than 30 days before, by its file's modification time, or, from pipx 1.18.7, is below 26.2.2, which Fedora 44's 26.0.1 is. The variable arrived in pipx 1.13; Debian 13's 1.7.1 ignores it and upgrades no pip installed in the last 30 days.
+- npm: `--no-update-notifier` on each command (*Installing a locked npm tool*), which `lint/dockerfile-locks` requires on `npm ci` and `docker/lock-resolve` passes, or `npm_config_update_notifier=false` in the environment or an `.npmrc`. npm otherwise asks the registry for a newer npm whenever its cache does not show it asked in the last week, which a fresh image's never does, and skips the check where `CI` is set, as GitHub Actions sets it.
+- pip: `--disable-pip-version-check` on each call, as the patterns pass, or `PIP_DISABLE_PIP_VERSION_CHECK=1`; `--no-index` implies it. pip otherwise asks its index for a newer pip on `install`, `download`, `wheel`, `lock` and `index`, once a week by its cache, so on every call under `--no-cache-dir`, but never from a distribution's Python outside a venv, which is externally managed.
+- Terraform: `CHECKPOINT_DISABLE=1`, any value but an empty one, which the `terraform/` scripts export (*Planning and applying Terraform*), or `disable_checkpoint = true` in the CLI configuration file; `disable_checkpoint_signature` stops only the anonymous id. Terraform otherwise asks HashiCorp's Checkpoint service for a newer release and security bulletins in the background on every command, its answer cached for 48 hours under `~/.terraform.d/`.
+- ansible-lint: `--offline`, which `ansible/lint-args` passes (*Checking Ansible*). From 24.9.0 it also skips the check for a newer ansible-lint, which asks GitHub's releases API once a day where pip installed ansible-lint; a distribution's package is never checked.
+- gh: `GH_TELEMETRY=false` and `GH_NO_UPDATE_NOTIFIER=1`, which `github/review-gate` exports (*Gating merges on reviews*). From 2.91 gh otherwise sends pseudonymous telemetry after each command, under CI and off a terminal too, through a `gh send-telemetry` process it starts; `DO_NOT_TRACK=1` and `gh config set telemetry disabled` also stop it. Its check for a newer gh is built only into Homebrew's gh, and skipped under CI or off a terminal.
+- dotenv-linter: `DOTENV_LINTER_SKIP_UPDATES=true`, `true` alone, since `1` is refused as an invalid value, or `--skip-updates` on `check`; this repository's `Dockerfile` sets the variable beside the install. `check` otherwise asks crates.io for a newer release once a day; `fix` and `diff` never do.
+- taplo: a configuration file holding `[schema]` with `enabled = false`, named by `TAPLO_CONFIG` or found as `.taplo.toml` in the directory or one above it. `lint`, `check` and `validate` otherwise fetch the schema a `#:schema` directive or a top-level `$schema` key names, which `--no-schema` does not stop, since it turns off only `--schema`, the configuration's associations and the catalogues; a file `TAPLO_CONFIG` names that cannot be read is only warned of, the fetch staying on. taplo checks for no newer taplo.
+- dnf: `--setopt='*.countme=0'` on each `dnf install` (*Installing a locked Python tool with pipx*), which `docker/lock-resolve` passes to dnf and microdnf. Fedora's repository files set `countme=1` on `fedora`, `updates` and `updates-testing`, so dnf, run as root, flags one metadata request a week per repository to be counted, chosen at random among the window's first four metadata downloads, a count the image keeps across layers, so a build's single download sends it with one chance in four and its fourth, where it reaches one, always does. The glob covers every repository, where dnf 5 refuses an id matching nothing, and dnf 4 and microdnf take it too; `countme=0` under `[main]` does not override a repository file's. UBI 9's repositories set none, using only `baseurl`.
+- tflint: `TFLINT_DISABLE_VERSION_CHECK=1`. From 0.61 `tflint --version` otherwise asks GitHub's releases API for a newer release, cached for 48 hours; no other command does.
+- k9s: `skipLatestRevCheck: true` under `k9s:` in its `config.yaml`. k9s otherwise asks GitHub's releases API for a newer release each time its cluster information refreshes.
+
+Docker's CLI and Compose, git, curl, jq, yq, actionlint, hadolint, dockerfmt, checkmake, ShellCheck, shfmt, yamllint, mdformat, kcov and ansible-core check for no newer release and send nothing of their own; Compose exports traces only where an `OTEL_` variable ending `ENDPOINT` or the Docker context names an endpoint, and Docker's CLI metrics and traces only where `DOCKER_CLI_OTEL_EXPORTER_OTLP_ENDPOINT` or the Docker context does, as Docker Desktop's does.
 
 ## Holding a pin back
 
@@ -287,7 +315,7 @@ curl -fsSL https://pypi.org/pypi/mdformat/1.0.0/json | jq -r '"mdformat==1.0.0 "
 A package in an npm lock is moved by editing its version in `package.json`, then rewriting `package-lock.json` in the lock's own directory, since npm names the lock after it:
 
 ```sh
-npm install --prefix Dockerfile.lock/js --package-lock-only --ignore-scripts --no-audit --no-fund
+npm install --prefix Dockerfile.lock/js --package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier
 ```
 
 ## Checking Dockerfiles for unlocked installs
@@ -298,7 +326,7 @@ npm install --prefix Dockerfile.lock/js --package-lock-only --ignore-scripts --n
 Dockerfile:12: npm install resolves versions itself, where npm ci installs a lock as given
 ```
 
-A pip install passes with `--require-hashes`, a local `-r` lock and `--only-binary=:all:` or `--no-build-isolation`, as in the wheels stage above, and with `--no-index` and only local `--find-links`, or in a `RUN --network=none`, which fetch nothing. A pipx install passes in the offline form above, npm as `npm ci` or in a `RUN --network=none`, `npx` given `--no`, and yarn, pnpm, bun and uv in their frozen forms, such as `uv sync --locked`.
+A pip install passes with `--require-hashes`, a local `-r` lock and `--only-binary=:all:` or `--no-build-isolation`, as in the wheels stage above, and with `--no-index` and only local `--find-links`, or in a `RUN --network=none`, which fetch nothing. A pipx install passes in the offline form above, `PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE` exported true earlier in the `RUN` or set so before the command, or `--skip-maintenance` given, npm as `npm ci --no-update-notifier` or, but for `npm ci` and its aliases, in a `RUN --network=none`, `npx` given `--no`, and yarn, pnpm, bun and uv in their frozen forms, such as `uv sync --locked`. `npm ci` is refused without `--no-update-notifier` even in a `RUN --network=none`, since npm asks the registry for a newer npm whenever its cache does not show it asked in the last week, which a fresh image's never does (*Turning off update checks and self-upgrades*).
 
 A `Dockerfile` it cannot read, with an `escape` directive given twice or other than `\` or `` ` ``, with a heredoc that has no end line, or with an exec-form `RUN` `jq` fails to read, fails the run with status 3.
 
@@ -611,7 +639,7 @@ lib/shell-common/project/tag-list
 
 ## Checking Ansible
 
-`ansible/test` runs ansible-lint, which also syntax-checks each playbook, and `ansible/format` applies its fixes, both from the repository's root with the same options, set in `ansible/lint-args`: offline, warnings failing, the current directory as the project root, and `lib/` and vault files left out.
+`ansible/test` runs ansible-lint, which also syntax-checks each playbook, and `ansible/format` applies its fixes, both from the repository's root with the same options, set in `ansible/lint-args`: offline, which from ansible-lint 24.9.0 also skips its check for a newer ansible-lint (*Turning off update checks and self-upgrades*), warnings failing, the current directory as the project root, and `lib/` and vault files left out.
 
 ```sh
 lib/shell-common/ansible/test
@@ -626,6 +654,8 @@ lib/shell-common/ansible/inventory-ssh-known-hosts ~/.ssh/known_hosts example.co
 ```
 
 ## Planning and applying Terraform
+
+Each `terraform/` script exports `CHECKPOINT_DISABLE=1` before running Terraform, which otherwise asks HashiCorp's Checkpoint service for a newer release and security bulletins from a background request on any command whose cached answer is over 48 hours old, which a short command may not finish (*Turning off update checks and self-upgrades*).
 
 `terraform/format` formats every Terraform file under the directory it is called from, and `terraform/upgrade` runs `terraform init -upgrade` there.
 

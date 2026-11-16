@@ -11,6 +11,12 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+if [ "${GH_TELEMETRY-}" != false ] || [ -z "${GH_NO_UPDATE_NOTIFIER-}" ]; then
+    echo "fake gh: GH_TELEMETRY is not false, or GH_NO_UPDATE_NOTIFIER is" \
+        "empty" >&2
+    exit 2
+fi
+
 args=()
 for arg in "$@"; do
     case $arg in

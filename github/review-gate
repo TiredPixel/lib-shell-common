@@ -280,6 +280,10 @@ finish() {
     exit "$status"
 }
 
+# No telemetry, which gh 2.91 and later otherwise send after each command,
+# under CI too, and no asking GitHub for a newer gh.
+export GH_TELEMETRY=false GH_NO_UPDATE_NOTIFIER=1
+
 work=$(mktemp -d)
 trap finish EXIT
 
