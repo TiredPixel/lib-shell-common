@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
+if [ "${CHECKPOINT_DISABLE-}" != 1 ]; then
+    echo "fake terraform: CHECKPOINT_DISABLE is not 1" >&2
+    exit 2
+fi
 args=$(printf '%q ' "$@")
 echo "${args% }" >>"$FAKE_LOG"
 if [ -e .terraform.plan ]; then

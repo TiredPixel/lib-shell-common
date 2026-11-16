@@ -7,8 +7,9 @@
 # Read only by the scripts that source this file, so it looks unused here.
 # shellcheck disable=SC2034
 ansible_lint_args=(
-    # No installing requirements.yml and no refreshing schemas, so a run reaches
-    # no network.
+    # No installing requirements.yml, no refreshing schemas and, from
+    # ansible-lint 24.9.0, no asking GitHub for a newer ansible-lint, so a run
+    # reaches no network.
     --offline
     # The scripts run from the repository's root. Without this, ansible-lint
     # looks upward for .git, .hg or its own config file and, where a container's

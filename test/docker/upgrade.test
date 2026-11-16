@@ -180,9 +180,9 @@ cat >"$work/container/dnf" <<'EOF'
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 cat >/dev/null
-if [ "$1 $2 $3" = "install -y --setopt=install_weak_deps=False" ]; then
+if [ "$1 $2 $3 $4" = "install -y --setopt=install_weak_deps=False --setopt=*.countme=0" ]; then
     echo "fake dnf: $*"
-    "$FAKE_INSTALL" "$(dirname "$0")" "${@:4}"
+    "$FAKE_INSTALL" "$(dirname "$0")" "${@:5}"
 else
     echo "fake dnf: unexpected arguments: $*" >&2
     exit 2
@@ -193,9 +193,9 @@ cat >"$work/container/microdnf" <<'EOF'
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 cat >/dev/null
-if [ "$1 $2 $3" = "install -y --setopt=install_weak_deps=0" ]; then
+if [ "$1 $2 $3 $4" = "install -y --setopt=install_weak_deps=0 --setopt=*.countme=0" ]; then
     echo "fake microdnf: $*"
-    "$FAKE_INSTALL" "$(dirname "$0")" "${@:4}"
+    "$FAKE_INSTALL" "$(dirname "$0")" "${@:5}"
 else
     echo "fake microdnf: unexpected arguments: $*" >&2
     exit 2
@@ -260,8 +260,8 @@ cat >/dev/null
 if [ "$*" = --version ]; then
     echo 10.9.2
     exit
-elif [ $# != 8 ] || [ "$1 $2" != "install --prefix" ] || ! [ -d "$3" ] ||
-    [ "${*:4}" != "--package-lock-only --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/" ]; then
+elif [ $# != 9 ] || [ "$1 $2" != "install --prefix" ] || ! [ -d "$3" ] ||
+    [ "${*:4}" != "--package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier --registry=https://registry.npmjs.org/" ]; then
     echo "fake npm: unexpected arguments: $*" >&2
     exit 2
 fi
@@ -2146,13 +2146,13 @@ fi
 # On Fedora, pip and npm come from dnf.
 lockcase lock-fedora "$pdf"
 FAKE_OS_RELEASE=$work/os/fedora lockgo
-if expect lock-fedora 0 "fake dnf: install -y --setopt=install_weak_deps=False python3-pip" \
+if expect lock-fedora 0 "fake dnf: install -y --setopt=install_weak_deps=False --setopt=*.countme=0 python3-pip" \
     "fake apt-get:"; then
     holds lock-fedora "$d/Dockerfile.lock/m/requirements.txt" "$req"
 fi
 lockcase lock-fedora-npm "$ndf"
 FAKE_OS_RELEASE=$work/os/fedora lockgo
-expect lock-fedora-npm 0 "fake dnf: install -y --setopt=install_weak_deps=False npm" \
+expect lock-fedora-npm 0 "fake dnf: install -y --setopt=install_weak_deps=False --setopt=*.countme=0 npm" \
     "fake apt-get:" || true
 
 # Each family is chosen by ID, or else by the first word of ID_LIKE naming one,
@@ -2165,11 +2165,11 @@ n=0
 for data in "ubuntu|container|pypi|fake apt-get: update;fake apt-get: install -y --no-install-recommends python3-pip" \
     "ubuntu|container|npm|fake apt-get: update;fake apt-get: install -y --no-install-recommends npm" \
     "mint|container|pypi|fake apt-get: install -y --no-install-recommends python3-pip" \
-    "rhel|container|pypi|fake dnf: install -y --setopt=install_weak_deps=False python3-pip" \
-    "rocky|container|pypi|fake dnf: install -y --setopt=install_weak_deps=False python3-pip" \
-    "rocky|container|npm|fake dnf: install -y --setopt=install_weak_deps=False npm" \
-    "rhel|container-micro|pypi|fake microdnf: install -y --setopt=install_weak_deps=0 python3-pip" \
-    "rocky|container-micro|npm|fake microdnf: install -y --setopt=install_weak_deps=0 npm" \
+    "rhel|container|pypi|fake dnf: install -y --setopt=install_weak_deps=False --setopt=*.countme=0 python3-pip" \
+    "rocky|container|pypi|fake dnf: install -y --setopt=install_weak_deps=False --setopt=*.countme=0 python3-pip" \
+    "rocky|container|npm|fake dnf: install -y --setopt=install_weak_deps=False --setopt=*.countme=0 npm" \
+    "rhel|container-micro|pypi|fake microdnf: install -y --setopt=install_weak_deps=0 --setopt=*.countme=0 python3-pip" \
+    "rocky|container-micro|npm|fake microdnf: install -y --setopt=install_weak_deps=0 --setopt=*.countme=0 npm" \
     "alpine|container|pypi|fake apk: add --no-cache py3-pip" \
     "alpine|container|npm|fake apk: add --no-cache npm" \
     "postmarketos|container|pypi|fake apk: add --no-cache py3-pip" \

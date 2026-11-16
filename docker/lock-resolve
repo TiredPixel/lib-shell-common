@@ -20,7 +20,8 @@
 # than 22.2. With npm, it is the package-lock.json npm writes from
 # registry.npmjs.org for PACKAGE_JSON, the package.json's contents, in a
 # directory named NAME, as a lock's own is, since npm names the lock after it;
-# no install script is run. Everything else goes to stderr.
+# no install script is run, and npm is not asked for a newer npm. Everything
+# else goes to stderr.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -120,13 +121,16 @@ if [ -z "$present" ]; then
         ;;
     dnf)
         # Minimal images, such as UBI's, carry microdnf alone, which reads a
-        # boolean only as 0 or 1.
+        # boolean only as 0 or 1. countme=0 for every repository, since
+        # Fedora's set countme=1, which flags one metadata request a week to
+        # be counted; a glob, since dnf 5 refuses a repository id that
+        # matches nothing.
         if command -v dnf >/dev/null; then
-            dnf install -y --setopt=install_weak_deps=False "${packages[@]}" \
-                </dev/null
+            dnf install -y --setopt=install_weak_deps=False \
+                --setopt='*.countme=0' "${packages[@]}" </dev/null
         elif command -v microdnf >/dev/null; then
-            microdnf install -y --setopt=install_weak_deps=0 "${packages[@]}" \
-                </dev/null
+            microdnf install -y --setopt=install_weak_deps=0 \
+                --setopt='*.countme=0' "${packages[@]}" </dev/null
         else
             echo "lock-resolve: /etc/os-release names $id, like Fedora or" \
                 "RHEL, but the image has neither dnf nor microdnf" >&2
@@ -175,7 +179,8 @@ npm)
     NPM_CONFIG_USERCONFIG=$top/user.npmrc \
         NPM_CONFIG_GLOBALCONFIG=$top/global.npmrc \
         npm install --prefix "$dir" --package-lock-only --ignore-scripts \
-        --no-audit --no-fund --registry=https://registry.npmjs.org/ </dev/null
+        --no-audit --no-fund --no-update-notifier \
+        --registry=https://registry.npmjs.org/ </dev/null
     cat -- "$dir/package-lock.json" >&3
     ;;
 esac

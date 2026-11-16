@@ -156,7 +156,9 @@ RUN case $(dpkg --print-architecture) in \
 
 # dotenv-linter publishes no checksum (its release page,
 # github.com/dotenv-linter/dotenv-linter/releases, checked 2026-11), so the
-# hashes are taken from the downloads themselves.
+# hashes are taken from the downloads themselves. Its check otherwise asks
+# crates.io for a newer release once a day; only true turns that off, since
+# clap reads the variable as a strict boolean.
 ARG DOTENV_LINTER_VERSION=4.0.0
 ARG DOTENV_LINTER_SHA256_AMD64=9e2f1f6eb88a71ac15ef209f78f5a68644db82f132d2677112b4f80ec2bd2127
 ARG DOTENV_LINTER_SHA256_ARM64=c4113aafd35e5f9095b2f757061d07cc8eb5cc0bcd755249877af08b7ffafb9a
@@ -171,17 +173,23 @@ RUN case $(dpkg --print-architecture) in \
         && rm /tmp/dotenv-linter.tar.gz \
         && dotenv-linter --version | grep -qF " ${DOTENV_LINTER_VERSION}"
 
+ENV DOTENV_LINTER_SKIP_UPDATES=true
+
 # mdformat, which bin/format and bin/lint run on Markdown, from pipx with its
 # gfm and frontmatter plugins injected: Debian 13's mdformat package carries
 # neither. Offline, pip can take only the wheels the wheels stage downloaded, so
 # every version is the lock's. pipx's shared venv is made here, from Debian's
-# bundled pip, since pipx would otherwise fetch pip unpinned to make it, and in
-# the same RUN as the inject, since pipx upgrades it from PyPI once it is old
-# enough. DL3013 asks for each version written here, which the lock alone pins.
+# bundled pip, since pipx would otherwise fetch pip unpinned to make it.
+# PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE keeps pipx 1.13 and later from
+# upgrading that pip from PyPI on the inject, which offline fails and is only
+# logged; Debian 13's pipx 1.7.1 ignores the variable, and upgrades no pip
+# younger than 30 days. DL3013 asks for each version written here, which the
+# lock alone pins.
 # hadolint ignore=DL3013
 RUN --network=none \
     --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
     export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
+        PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 \
     && python3 -m venv "$PIPX_HOME/shared" \
     && pipx install \
         --pip-args='--disable-pip-version-check --no-index --find-links=/wheels' \

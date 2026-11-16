@@ -78,7 +78,9 @@ lock_tail=" outside a RUN --network=none, since a lock resolved during the build
 npm_install="npm install resolves versions itself, where npm ci installs a lock as given"
 online="pipx install outside a RUN --network=none"
 no_shared="pipx install with no python3 -m venv making its shared venv, a directory ending in /shared, earlier in this RUN"
+no_auto="pipx install with no PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 exported earlier in this RUN, nor --skip-maintenance, so pipx can upgrade its shared venv's pip from PyPI"
 venv="python3 -m venv \"\$PIPX_HOME/shared\""
+auto="export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1"
 
 # Arguments.
 run no-arguments 2 "$usage"
@@ -111,10 +113,11 @@ FROM docker.io/library/debian@sha256:0 AS dev
 RUN --network=none \\
     --mount=type=bind,from=wheels,source=/wheels,target=/wheels \\
     export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \\
+        PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 \\
     && $venv \\
     && pipx install $pipx_args mdformat \\
     && pipx inject $pipx_args mdformat mdformat-gfm mdformat-frontmatter
-RUN npm ci --prefix /opt/js --ignore-scripts
+RUN npm ci --prefix /opt/js --ignore-scripts --no-update-notifier
 DOCKERFILE
 
 pass nothing "apt-get update && apt-get install -y pipx"
@@ -154,49 +157,183 @@ refuse pip-hashes-only "pip install --require-hashes x --only-binary :all:" "$no
 pass pip-binary-spaced "pip install --require-hashes --only-binary :all: -r /l"
 refuse pip-lock-only "pip install -r /l" "$no_hashes; $no_binary"
 
-# pipx, offline from wheels into the shared venv made first.
+# pipx, offline from wheels into the shared venv made first, its pip kept from
+# upgrading.
 check pipx 0 "" <<DOCKERFILE
 FROM x
-RUN --network=none $venv && pipx install $pipx_args mdformat
+RUN --network=none $auto && $venv && pipx install $pipx_args mdformat
 DOCKERFILE
 
 check pipx-separate 0 "" <<'DOCKERFILE'
 FROM x
 RUN --network=none python3 -m venv /opt/pipx/shared/ \
+    && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 \
     && python3 -m pipx install --pip-args="--no-index -f /wheels" mdformat
 DOCKERFILE
 
 check pipx-online 1 "Dockerfile:2: $online" <<DOCKERFILE
 FROM x
-RUN $venv && pipx install $pipx_args mdformat
+RUN $auto && $venv && pipx install $pipx_args mdformat
 DOCKERFILE
 
 check pipx-no-pip-args 1 "Dockerfile:2: pipx inject --pip-args lacks --no-index; pipx inject --pip-args lacks --find-links" <<DOCKERFILE
 FROM x
-RUN --network=none $venv && pipx inject mdformat mdformat-gfm
+RUN --network=none $auto && $venv && pipx inject mdformat mdformat-gfm
 DOCKERFILE
 
 check pipx-pip-args-spaced 0 "" <<DOCKERFILE
 FROM x
-RUN --network=none $venv && pipx install --pip-args '--no-index --find-links=/w' mdformat
+RUN --network=none $auto && $venv && pipx install --pip-args '--no-index --find-links=/w' mdformat
 DOCKERFILE
 
 check pipx-no-venv 1 "Dockerfile:2: $no_shared" <<DOCKERFILE
 FROM x
-RUN --network=none pipx install $pipx_args mdformat
+RUN --network=none $auto && pipx install $pipx_args mdformat
 DOCKERFILE
 
 check pipx-venv-after 1 "Dockerfile:2: $no_shared" <<DOCKERFILE
 FROM x
-RUN --network=none pipx install $pipx_args mdformat && $venv
+RUN --network=none $auto && pipx install $pipx_args mdformat && $venv
 DOCKERFILE
 
 check pipx-preinstall 1 "Dockerfile:2: pipx --preinstall runs pip without the --pip-args" <<DOCKERFILE
 FROM x
-RUN --network=none $venv && pipx install $pipx_args --preinstall=pip mdformat
+RUN --network=none $auto && $venv && pipx install $pipx_args --preinstall=pip mdformat
 DOCKERFILE
 
 pass pipx-other "pipx list && pipx --version"
+
+# The variable keeping pipx from upgrading the shared venv's pip: each form
+# that reaches the command, and each that does not.
+check pipx-no-auto-upgrade 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && pipx install $pipx_args mdformat
+DOCKERFILE
+
+check pipx-no-auto-upgrade-inject 1 "Dockerfile:2: ${no_auto/install/inject}" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && pipx inject $pipx_args mdformat mdformat-gfm
+DOCKERFILE
+
+check pipx-all 1 "Dockerfile:2: $online; $no_shared; $no_auto" <<DOCKERFILE
+FROM x
+RUN pipx install $pipx_args mdformat
+DOCKERFILE
+
+n=0
+for data in "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=True &&" \
+    "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE='yes' PIPX_HOME=/opt/pipx &&" \
+    "export PIPX_HOME=/opt/pipx PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=on &&" \
+    "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE &&" \
+    "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=t" \
+    "PIPX_HOME=/opt/pipx PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=y" \
+    "env PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1" \
+    "sudo PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1"; do
+    n=$((n + 1))
+    check "pipx-auto-upgrade-off-$n" 0 "" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && $data pipx install $pipx_args mdformat
+DOCKERFILE
+done
+check pipx-skip-maintenance 0 "" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && pipx install $pipx_args --skip-maintenance mdformat && pipx inject --skip-maintenance $pipx_args mdformat mdformat-gfm
+DOCKERFILE
+
+n=0
+for data in "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 &&" \
+    "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=enabled &&" \
+    "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE= &&" \
+    "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE &&" \
+    "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 &&" \
+    "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 true &&" \
+    "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE &&" \
+    "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=false" \
+    "env -i PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=no"; do
+    n=$((n + 1))
+    check "pipx-auto-upgrade-on-$n" 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && $data pipx install $pipx_args mdformat
+DOCKERFILE
+done
+check pipx-export-after 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && pipx install $pipx_args mdformat && $auto
+DOCKERFILE
+
+# A later value pipx reads as false undoes an earlier true one, exported or
+# not.
+n=0
+for data in "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE &&" \
+    "$auto && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 &&" \
+    "$auto && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 &&" \
+    "$auto && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE &&" \
+    "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0" \
+    "$auto && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=off"; do
+    n=$((n + 1))
+    check "pipx-auto-upgrade-undone-$n" 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && $data pipx install $pipx_args mdformat
+DOCKERFILE
+done
+check pipx-auto-upgrade-redone 0 "" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 pipx install $pipx_args mdformat
+DOCKERFILE
+
+# A shell's prefix reaches the script it runs, from -c or a heredoc, and its
+# exports reach nothing after it.
+check pipx-shell-prefix 0 "" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 sh -c "pipx install $pipx_args mdformat"
+RUN --network=none ["env", "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1", "sh", "-c", "$venv && pipx install $pipx_args mdformat"]
+RUN --network=none PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 bash <<EOF
+$venv && pipx install $pipx_args mdformat
+EOF
+DOCKERFILE
+
+check pipx-shell-prefix-false 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && $auto && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 sh -c "pipx install $pipx_args mdformat"
+DOCKERFILE
+
+check pipx-shell-export 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && sh -c "$auto" && pipx install $pipx_args mdformat
+DOCKERFILE
+
+check pipx-shell-unexported 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 && sh -c "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE && pipx install $pipx_args mdformat"
+DOCKERFILE
+
+# The variable once exported holds its last value, and a prefix before export
+# is what it exports.
+check pipx-exported-then-set 0 "" <<DOCKERFILE
+FROM x
+RUN --network=none $venv && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 && pipx install $pipx_args mdformat
+RUN --network=none $venv && export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=yes && pipx install $pipx_args mdformat
+RUN --network=none $venv && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE && pipx install $pipx_args mdformat
+DOCKERFILE
+
+# The heredoc's reader is the command holding the << word, wherever it sits,
+# with its own prefix, and what runs after it counts for nothing in the body.
+check pipx-heredoc-reader 1 "Dockerfile:5: $no_auto
+Dockerfile:8: $no_auto" <<DOCKERFILE
+FROM x
+RUN --network=none PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 bash <<EOF && true
+$venv && pipx install $pipx_args mdformat
+EOF
+RUN --network=none bash <<EOF && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 true
+$venv && pipx install $pipx_args mdformat
+EOF
+RUN --network=none bash <<EOF && $auto
+$venv && pipx install $pipx_args mdformat
+EOF
+RUN --network=none $auto && cd /tmp && bash <<EOF
+$venv && pipx install $pipx_args mdformat
+EOF
+DOCKERFILE
 
 # npm.
 twin npm-install "npm install" "$npm_install"
@@ -206,8 +343,18 @@ for c in i in ins inst insta instal isnt isnta isntal isntall u up upgrade \
     udpate update install-test it link ln dedupe ddp; do
     refuse "npm-$c" "npm $c x" "${npm_install/install/$c}"
 done
-pass npm-ci "npm ci && npm run build && npm test"
-pass npm-other "npm un x && npm uninstall x && npm ls && npm ll && npm list && npm cit && npm install-ci-test && npm sit && npm ic && npm install-clean && npm isntall-clean"
+pass npm-ci "npm ci --no-update-notifier && npm run build && npm test"
+pass npm-other "npm un x && npm uninstall x && npm ls && npm ll && npm list"
+# npm ci installs the lock as given, but asks for a newer npm unless told not
+# to, offline too.
+npm_ci="npm ci without --no-update-notifier, so npm asks the registry for a newer npm"
+refuse npm-ci-notifier "npm ci --prefix /opt/js" "$npm_ci"
+check npm-ci-notifier-offline 1 "Dockerfile:2: $npm_ci" < <(printf 'FROM x\nRUN --network=none npm ci\n')
+for c in clean-install ic install-clean isntall-clean install-ci-test cit \
+    clean-install-test sit; do
+    refuse "npm-$c" "npm $c" "${npm_ci/ci/$c}"
+    pass "npm-$c-notifier" "npm $c --no-update-notifier"
+done
 
 # Lock generators.
 for c in "pip lock" pip-compile "uv pip compile" "uv lock" "uv export" \
@@ -323,6 +470,37 @@ FROM x
 RUN --mount=type=cache,target=/x /bin/bash <<-"EOF"
 	npm i
 	EOF
+DOCKERFILE
+
+# A shell past assignments, quoted or not, wrappers and earlier commands still
+# runs the heredoc, and a shell given -c reads it as input alone.
+check heredoc-shell-wrapped 1 "Dockerfile:2: ${npm_install/install/i}
+Dockerfile:5: ${npm_install/install/i}
+Dockerfile:8: ${npm_install/install/i}
+Dockerfile:11: ${npm_install/install/i}
+Dockerfile:14: ${npm_install/install/i}" <<'DOCKERFILE'
+FROM x
+RUN A=1 bash <<EOF
+npm i
+EOF
+RUN env -u A B=1 sh <<EOF
+npm i
+EOF
+RUN sudo -E -u x -- sh <<EOF
+npm i
+EOF
+RUN A="a b" bash <<EOF
+npm i
+EOF
+RUN export A=1 && cd /x && bash <<EOF
+npm i
+EOF
+RUN A=1 cat <<EOF
+npm i
+EOF
+RUN bash -c true <<EOF
+npm i
+EOF
 DOCKERFILE
 
 check heredoc-other 0 "" <<'DOCKERFILE'
