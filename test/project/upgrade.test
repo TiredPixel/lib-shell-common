@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 #
-# Tests project/upgrade in place against real repositories in a scratch dir,
-# real GNU make and util-linux script: app, whose submodules lib1 and lib2 are
-# listed in its .projects, each cloned from a bare remote, with app's remote one
-# commit ahead of the clone. lib1 and app declare upgrade and build, lib2 build
-# alone; a recipe logs the target, the project and whether its stdout is a tty,
-# and fails where the project holds a file named fail. A post-merge hook in app
-# logs that the pull reached it. Only app has a compose file, and docker is
-# faked on PATH: compose config --services prints web, compose pull
-# --ignore-buildable logs "images" and the project, compose up logs "start" and
-# the project and exits FAKE_UP_RC, compose stop logs "stop" and the project, ps
-# does nothing, and any other call fails. Every case builds its fixture afresh
-# and runs project/upgrade in app.
-#
-# Run: test/project/upgrade.test. Exits 1 naming each case that failed.
+# Runs in place against real repositories in a scratch dir, real GNU make and
+# util-linux script: app, whose submodules lib1 and lib2 are listed in its
+# .projects, each cloned from a bare remote, with app's remote one commit ahead
+# of the clone. lib1 and app declare upgrade and build, lib2 build alone; a
+# recipe logs the target, the project and whether its stdout is a tty, and fails
+# where the project holds a file named fail. A post-merge hook in app logs that
+# the pull reached it. Only app has a compose file, and docker is faked on PATH:
+# compose config --services prints web, compose pull --ignore-buildable logs
+# "images" and the project, compose up logs "start" and the project and exits
+# FAKE_UP_RC, compose stop logs "stop" and the project, ps does nothing, and any
+# other call fails. Every case builds its fixture afresh and runs
+# project/upgrade in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-upgrade=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/upgrade
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+upgrade=$root/project/upgrade
 
 # Nothing from the caller's configuration reaches the fixtures. File URLs are
 # refused to submodules by default.
@@ -32,8 +32,7 @@ export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 # The cases match git's messages, which git translates.
 export LC_ALL=C
 
-mkdir "$work/bin"
-cat >"$work/bin/docker" <<'EOF'
+cat >"$test_tmp/path/docker" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -49,14 +48,13 @@ ps) ;;
 *) exit 2 ;;
 esac
 EOF
-chmod +x "$work/bin/docker"
-export PATH=$work/bin:$PATH
+chmod +x "$test_tmp/path/docker"
 unset DC_WAIT_TIMEOUT
 
 # BSD script, which takes no --version and runs its command as arguments. It
 # logs the call and runs the command without a tty.
-mkdir "$work/bsd"
-cat >"$work/bsd/script" <<'EOF'
+mkdir "$test_tmp/bsd"
+cat >"$test_tmp/bsd/script" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -72,7 +70,7 @@ case $* in
 esac
 exit 2
 EOF
-chmod +x "$work/bsd/script"
+chmod +x "$test_tmp/bsd/script"
 
 # The recipe logs the target, the project's directory and whether stdout is a
 # tty. The string is for make, which expands it.
@@ -81,17 +79,6 @@ recipe='\t@test ! -f fail
 \t@if [ -t 1 ]; then t=tty; else t=notty; fi; \\
 \techo "$@ $(notdir $(CURDIR)) $$t" >>"$$FAKE_LOG"\n'
 
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
-failures=0
 n=0
 
 # Creates bare remote $w/$1.git and $w/$1.up, a clone committing to it, whose
@@ -114,7 +101,7 @@ mkrepo() {
 fixture() {
     local sub
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     mkrepo lib1 upgrade build
     mkrepo lib2 build
@@ -147,22 +134,22 @@ check() {
     (cd "$w/app" && "$upgrade" "${@:4}") >"$w/out" 2>"$w/err" </dev/null ||
         rc=$?
     if [ "$rc" != "$2" ]; then
-        fail "$1" "exit $rc, not $2: $(<"$w/err")"
+        test_fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
-        fail "$1" "the log is: $(<"$FAKE_LOG")"
+        test_fail "$1" "the log is: $(<"$FAKE_LOG")"
     fi
 }
 
 # Records a failure of case $1 unless stderr holds $2.
 expect_err() {
     if ! grep -qF -- "$2" "$w/err"; then
-        fail "$1" "stderr lacks $2: $(<"$w/err")"
+        test_fail "$1" "stderr lacks $2: $(<"$w/err")"
     fi
 }
 
 # The stages announced on stderr, one per line.
 stages() {
-    sed -n 's/^upgrade: \([a-z]*\)$/\1/p' "$w/err"
+    sed -n 's|^project/upgrade: \([a-z]*\)$|\1|p' "$w/err"
 }
 
 # Pulls, upgrades under a tty each listed project declaring upgrade and not app
@@ -173,18 +160,18 @@ check whole 0 "$(printf '%s\n' "pull app" "upgrade lib1 tty" \
     "build lib1 notty" "build lib2 notty" "images app" "start app" "stop app")"
 want=$(printf '%s\n' pull upgrade rebuild start stop completed)
 if [ "$(stages)" != "$want" ]; then
-    fail whole "the stages are: $(stages)"
+    test_fail whole "the stages are: $(stages)"
 fi
-if grep -q '^upgrade: ' "$w/out"; then
-    fail whole "stdout carries a stage: $(<"$w/out")"
+if grep -q '^project/upgrade: ' "$w/out"; then
+    test_fail whole "stdout carries a stage: $(<"$w/out")"
 fi
 if grep -qxE '[[:space:]=-]*' "$w/err"; then
-    fail whole "stderr carries a rule or a blank line: $(<"$w/err")"
+    test_fail whole "stderr carries a rule or a blank line: $(<"$w/err")"
 fi
 
 # Under BSD script, the command is passed as arguments.
 fixture
-PATH=$work/bsd:$PATH check bsd-script 0 "$(printf '%s\n' "pull app" \
+PATH=$test_tmp/bsd:$PATH check bsd-script 0 "$(printf '%s\n' "pull app" \
     "script -e /dev/null make upgrade" "upgrade lib1 notty" \
     "build lib1 notty" "build lib2 notty" "images app" "start app" "stop app")"
 
@@ -193,7 +180,7 @@ PATH=$work/bsd:$PATH check bsd-script 0 "$(printf '%s\n' "pull app" \
 fixture
 rm -- "$w/app/.projects"
 check no-list 1 ""
-expect_err no-list "upgrade: $w/app: no .projects, so there is nothing to sweep"
+expect_err no-list "project/upgrade: $w/app: no .projects, so there is nothing to sweep"
 
 # A failed pull stops the run: app has diverged from its remote.
 fixture
@@ -208,7 +195,7 @@ fixture
 touch "$w/app/lib1/fail"
 check upgrade-fails 2 "pull app"
 if [ "$(stages)" != "$(printf '%s\n' pull upgrade)" ]; then
-    fail upgrade-fails "the stages are: $(stages)"
+    test_fail upgrade-fails "the stages are: $(stages)"
 fi
 
 # A failed rebuild stops the run before anything starts.
@@ -228,14 +215,14 @@ fixture
 check from 0 "$(printf '%s\n' "pull app" "build lib1 notty" \
     "build lib2 notty" "images app" "start app" "stop app")" --from lib2
 if [ "$(stages)" != "$want" ]; then
-    fail from "the stages are: $(stages)"
+    test_fail from "the stages are: $(stages)"
 fi
 
-# --from a project not listed stops the run before the pull.
+# --from a project not listed stops the run after the pull, before any upgrade.
 fixture
-check from-unlisted 1 "" --from lib3
-expect_err from-unlisted "upgrade: lib3: not listed in $w/app/.projects, so \
-the sweep cannot resume from it"
+check from-unlisted 1 "pull app" --from lib3
+expect_err from-unlisted "project/each-without-project: lib3: not listed in \
+$w/app/.projects, so the sweep cannot resume from it"
 
 # --skip-upgrade runs no project's upgrade and announces no upgrade stage, while
 # the pull, rebuild, start and stop cover every project.
@@ -244,14 +231,14 @@ check skip-upgrade 0 "$(printf '%s\n' "pull app" "build lib1 notty" \
     "build lib2 notty" "images app" "start app" "stop app")" --skip-upgrade
 want=$(printf '%s\n' pull rebuild start stop completed)
 if [ "$(stages)" != "$want" ]; then
-    fail skip-upgrade "the stages are: $(stages)"
+    test_fail skip-upgrade "the stages are: $(stages)"
 fi
 
 # Any other arguments print the usage and run nothing.
 usage_case() {
     fixture
     check "usage $*" 2 "" "$@"
-    expect_err "usage $*" "Usage: upgrade [--from PROJECT | --skip-upgrade]"
+    expect_err "usage $*" "Usage: project/upgrade [--from PROJECT | --skip-upgrade]"
 }
 usage_case --from
 usage_case --from ""
@@ -262,6 +249,4 @@ usage_case --skip-upgrade extra
 usage_case --skip-upgrade --from lib1
 usage_case --from lib1 --skip-upgrade
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

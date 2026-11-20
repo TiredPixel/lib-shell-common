@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#
+# Prints the version a build stamps: git describe with its first - made a ., so
+# a build past a tag reads as a later version of it. With --exact-match, only a
+# commit that is itself tagged has one, for a store's version field, which takes
+# no between-release form (lint/version-assert cites the stores' references), so
+# an untagged build keeps the project's own default. Prints nothing where no tag
+# answers.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=project/version
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+usage() {
+    echo "Usage: $prog [--exact-match]" >&2
+    exit 2
+}
+
+case $# in
+0) ;;
+1)
+    [ "$1" = --exact-match ] || usage
+    describe_exact_match=1
+    ;;
+*) usage ;;
+esac
+
+source "$dir/../docker/describe"
+
+if [ -n "$describe" ]; then
+    echo "${describe/-/.}"
+fi

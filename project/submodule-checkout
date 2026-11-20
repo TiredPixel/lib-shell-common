@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#
+# Moves the submodule in the current directory to the branch
+# project/upgrade-pull's sweep takes, then brings its own submodules in line
+# through PROJECT_SUBMODULE_INIT. The sweep's git submodule foreach runs it in
+# each submodule, with PROJECT_BRANCH and PROJECT_LISTED set where the sweep
+# takes a branch of its own.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=project/submodule-checkout
+
+usage() {
+    echo "Usage: $prog" >&2
+    exit 2
+}
+
+[ $# -eq 0 ] || usage
+
+# checkout before pull, because a submodule is checked out at a recorded commit
+# and a detached HEAD has nothing to pull into. The branch comes from
+# origin/HEAD rather than a literal, so a project whose default branch is not
+# the usual one still follows its own. git submodule update --remote is not
+# used: it also defaults to the remote HEAD, but under --rebase or --merge acts
+# on whatever branch the submodule already has checked out. Only the remote's
+# name is stripped, since a branch name may itself hold a slash.
+#
+# A listed project on the sweep's branch takes it here, in place of its default
+# branch, so its submodules are brought in line with that branch before foreach
+# descends into them. A new one starts from origin's default branch with no
+# upstream, so a push names its own.
+ref=$(git symbolic-ref --short refs/remotes/origin/HEAD)
+branch=${ref#origin/}
+if [ -n "${PROJECT_BRANCH:-}" ] &&
+    grep -qxF -- "$(pwd -P)" <<<"$PROJECT_LISTED"; then
+    if git show-ref --verify -q "refs/heads/$PROJECT_BRANCH"; then
+        git checkout --no-recurse-submodules "$PROJECT_BRANCH"
+    else
+        git checkout --no-recurse-submodules -b "$PROJECT_BRANCH" \
+            --no-track "origin/$branch"
+    fi
+else
+    git checkout --no-recurse-submodules "$branch"
+    git pull --ff-only --no-recurse-submodules
+fi
+"$PROJECT_SUBMODULE_INIT"

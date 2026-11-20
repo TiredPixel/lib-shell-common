@@ -2,10 +2,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
+prog=docker/build-tags
+
+usage() {
+    echo "Usage: $prog" >&2
     exit 2
-fi
+}
+
+[ $# -eq 0 ] || usage
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
@@ -33,11 +37,6 @@ add_tag() {
 
 add_tag "$TAG"
 
-# Docker's tag grammar, its letters written out as docker/init's are. Only the
-# release is checked, since each prefix of a valid release is valid too.
-alnum=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
-tag_grammar="^[${alnum}_][${alnum}_.-]{0,127}\$"
-
 # A plain version is digits and dots with an optional leading v. Only it gives
 # its prefixes, since cutting anything else at its dots, such as v1.4.2-rc.1,
 # would push v1.4 and v1 for a prerelease.
@@ -45,11 +44,6 @@ digits=0123456789
 plain_version="^v?[$digits]+(\\.[$digits]+)*\$"
 
 if [ "$version" = "$release" ]; then
-    if ! [[ $release =~ $tag_grammar ]]; then
-        echo "${0##*/}: $release: release is not a valid image tag" >&2
-        exit 1
-    fi
-
     prefix=$release
     add_tag "$prefix"
 
@@ -78,5 +72,5 @@ docker build \
 
 for tag in "${tags[@]}"; do
     docker push "$REPO:$tag"
-    echo "${0##*/}: pushed $REPO:$tag" >&2
+    echo "$prog: pushed $REPO:$tag" >&2
 done

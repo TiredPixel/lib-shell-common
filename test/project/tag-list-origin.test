@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 #
-# Tests project/tag-list-origin against a real repository in a scratch dir, app,
-# with a bare origin. A fake timeout on PATH expires at once where FAKE_EXPIRE
-# is set, else runs the command. Every case builds its fixture afresh.
-#
-# Run: test/project/tag-list-origin.test. Exits 1 naming each case that failed.
+# Runs against a real repository in a scratch dir, app, with a bare origin. A
+# fake timeout on PATH expires at once where FAKE_EXPIRE is set, else runs the
+# command. Every case builds its fixture afresh.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-list=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/tag-list-origin
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/bin"
+list=$root/project/tag-list-origin
+
 # Insists on --foreground, which keeps a prompt answerable, and on the bound.
-cat >"$work/bin/timeout" <<'EOF'
+cat >"$test_tmp/path/timeout" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -27,29 +26,16 @@ if [ -n "${FAKE_EXPIRE:-}" ]; then
 fi
 exec "${@:3}"
 EOF
-chmod +x "$work/bin/timeout"
-export PATH=$work/bin:$PATH
+chmod +x "$test_tmp/path/timeout"
 
 # Nothing from the caller's configuration reaches the fixtures, and nothing
 # above the scratch dir is taken for a repository.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
-export GIT_CEILING_DIRECTORIES=$work
+export GIT_CEILING_DIRECTORIES=$test_tmp
 export GIT_CONFIG_COUNT=3
 export GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=test
 export GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=test@example.com
 export GIT_CONFIG_KEY_2=init.defaultBranch GIT_CONFIG_VALUE_2=main
-
-failures=0
-
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
 
 n=0
 
@@ -58,7 +44,7 @@ n=0
 # is not.
 fixture() {
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     git init -q --bare "$w/app.git"
     git init -q "$w/app"
@@ -76,13 +62,13 @@ check() {
     local name=$1 status=$2 want=$3 err=${4:-} rc=0
     (cd "$w/app" && "$list") >"$w/out" 2>"$w/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$w/err")"
+        test_fail "$name" "exit $rc, not $status: $(<"$w/err")"
     fi
     if [ "$(<"$w/out")" != "$want" ]; then
-        fail "$name" "listed: $(<"$w/out")"
+        test_fail "$name" "listed: $(<"$w/out")"
     fi
     if [ -n "$err" ] && ! grep -qF -- "$err" "$w/err"; then
-        fail "$name" "stderr lacks '$err': $(<"$w/err")"
+        test_fail "$name" "stderr lacks '$err': $(<"$w/err")"
     fi
 }
 
@@ -96,24 +82,17 @@ check lists 0 "$(printf '%s\trefs/tags/%s\n' \
 # An origin that does not answer in time fails, saying so.
 fixture
 FAKE_EXPIRE=1 check expired 124 "" \
-    "tag-list-origin: $w/app: origin did not answer within 60 s"
+    "project/tag-list-origin: $w/app: origin did not answer within 60 s"
 
 # An origin that cannot be reached fails with git's status, not as an expiry.
 fixture
 git -C "$w/app" remote set-url origin "$w/missing.git"
 check unreachable 128 ""
 if grep -qF "did not answer" "$w/err"; then
-    fail unreachable "reported as an expiry: $(<"$w/err")"
+    test_fail unreachable "reported as an expiry: $(<"$w/err")"
 fi
 
 # Any argument is a usage error.
-rc=0
-"$list" x >"$work/out" 2>"$work/err" || rc=$?
-if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
-    [ "$(<"$work/err")" != "Usage: tag-list-origin" ]; then
-    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
-fi
+test_usage argument project/tag-list-origin "$list" x
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

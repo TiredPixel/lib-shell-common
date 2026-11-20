@@ -1,15 +1,54 @@
 #!/usr/bin/env bash
+#
+# Moves each provider of the configuration here to the newest version its
+# constraints admit, with no backend, so no credentials are needed, and locks
+# it for each PLATFORM, so the lock serves every platform named rather than
+# only the running one. Prints PROVIDER OLD -> NEW on stdout for each provider
+# that moved, OLD none where the lock lacked it and NEW none where it now does;
+# Terraform's own output goes to stderr.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
-    exit 2
-fi
+prog=terraform/upgrade
 
-# No call to HashiCorp's Checkpoint service, which Terraform otherwise makes in
-# the background to ask for a newer release, unless its answer from the last 48
-# hours is cached.
+usage() {
+    echo "Usage: $prog PLATFORM..." >&2
+    exit 2
+}
+
+[ $# -ge 1 ] || usage
 export CHECKPOINT_DISABLE=1
 
-terraform init -upgrade
+# Sets versions[PROVIDER] for each provider block in .terraform.lock.hcl, as
+# Terraform writes it: provider "ADDRESS" { then a version = "VERSION" line.
+read_lock() {
+    local line provider='' block='^provider "([^"]+)" \{'
+    local version='^[[:space:]]+version[[:space:]]+= "([^"]+)"'
+    versions=()
+    [ -e .terraform.lock.hcl ] || return 0
+    while IFS= read -r line; do
+        if [[ $line =~ $block ]]; then
+            provider=${BASH_REMATCH[1]}
+        elif [ -n "$provider" ] && [[ $line =~ $version ]]; then
+            versions[$provider]=${BASH_REMATCH[1]}
+            provider=
+        fi
+    done <.terraform.lock.hcl
+}
+
+declare -A versions old
+read_lock
+for provider in "${!versions[@]}"; do
+    old[$provider]=${versions[$provider]}
+done
+terraform init -upgrade -backend=false -input=false >&2
+terraform providers lock "${@/#/-platform=}" >&2
+read_lock
+
+for provider in "${!old[@]}" "${!versions[@]}"; do
+    printf '%s\n' "$provider"
+done | LC_ALL=C sort -u | while IFS= read -r provider; do
+    was=${old[$provider]:-none}
+    now=${versions[$provider]:-none}
+    [ "$was" = "$now" ] || echo "$provider $was -> $now"
+done

@@ -9,8 +9,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=project/tag-create
+
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-prog=${0##*/}
+
+usage() {
+    echo "Usage: $prog [--check | --no-push] TAG" >&2
+    exit 2
+}
 
 mode=
 case ${1:-} in
@@ -23,8 +29,7 @@ esac
 # A TAG beginning with - is refused, since git creates no such tag, so that the
 # other mode given as well, as in --check --no-push, is never taken for one.
 if [ $# -ne 1 ] || [ -z "$1" ] || [[ $1 == -* ]]; then
-    echo "Usage: $prog [--check | --no-push] TAG" >&2
-    exit 2
+    usage
 fi
 tag=$1
 

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/project/version
+
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_CEILING_DIRECTORIES=$test_tmp
+export GIT_CONFIG_COUNT=2
+export GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=test
+export GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=test@example.com
+
+test_usage argument 'project/version [--exact-match]' "$script" x
+test_usage two 'project/version [--exact-match]' "$script" --exact-match x
+
+mkdir -- "$test_tmp/none"
+cd -- "$test_tmp/none"
+test_check no-repository 1 '' \
+    "fatal: not a git repository (or any of the parent directories): .git
+project/version: git describe failed" "$script"
+
+git init -q "$test_tmp/r"
+cd -- "$test_tmp/r"
+git commit -q --allow-empty -m one
+test_check untagged 0 '' '' "$script"
+test_check untagged-exact 0 '' '' "$script" --exact-match
+
+git tag -a -m 1.2 1.2
+test_check tagged 0 1.2 '' "$script"
+test_check tagged-exact 0 1.2 '' "$script" --exact-match
+
+git commit -q --allow-empty -m two
+test_check past 0 "1.2.1-g$(git rev-parse --short HEAD)" '' "$script"
+test_check past-exact 0 '' '' "$script" --exact-match
+
+test_finish

@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+#
+# Runs in scratch trees whose bin/settings defines the sets a case needs, with
+# every tool faked, the library's own lint/ and ansible/ scripts running for
+# real over them. Each fake also appends its name to order.calls and exits 7
+# where FAKE_FAIL names it; yq and jq print the file they are given, so it reads
+# as already in form, and ansible-lint logs the ANSIBLE_CONFIG it sees.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/runner/lint
+order=$test_tmp/order.calls
+
+# Fakes command $1, or $2 after --stdin, running the shell code after it once
+# the shared lines have.
+fake() {
+    local -a stdin=()
+    if [ "$1" = --stdin ]; then
+        stdin=(--stdin)
+        shift
+    fi
+    test_stub "${stdin[@]}" "$1" "echo $1 >>$(printf %q "$order")
+[ \"\${FAKE_FAIL-}\" != $1 ] || exit 7
+${2-}"
+}
+
+tools=(shellcheck shfmt dockerfmt hadolint docker-compose checkmake yamllint
+    actionlint taplo mdformat dotenv-linter ruff semistandard prettier extra)
+for tool in "${tools[@]}"; do
+    fake "$tool"
+done
+# shellcheck disable=SC2016 # The fake expands it.
+fake yq 'cat -- "${!#}"'
+# shellcheck disable=SC2016 # The fake expands it.
+fake jq 'cat -- "${!#}"'
+fake --stdin kubeconform
+calls=$(printf %q "$test_tmp/ansible-lint.calls")
+fake ansible-lint "echo \"ANSIBLE_CONFIG=\${ANSIBLE_CONFIG-}\" >>$calls"
+: >"$order"
+
+# Makes a tree at $test_tmp/$1 with one workflow, and prints its path; each case
+# writes the tree's bin/settings.
+tree() {
+    local t=$test_tmp/$1
+    mkdir -p -- "$t/bin" "$t/.github/workflows"
+    echo 'on: push' >"$t/.github/workflows/build.yml"
+    echo "$t"
+}
+
+t=$(tree full)
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+shell_files() { printf '%s\0' 's/a b' s/c; }
+envrc_files() { printf '%s\0' .envrc; }
+docker_files() { printf '%s\0' Dockerfile; }
+compose_files() { printf '%s\0' c1.yml c2.yml; }
+make_files() { printf '%s\0' Makefile; }
+yaml_files() { printf '%s\0' a.yml; }
+yaml_unsorted_files() { printf '%s\0' u.yml; }
+yaml_lint_files() { printf '%s\0' l.yml; }
+kube_files() { printf '%s\0' k.yaml; }
+json_files() { printf '%s\0' a.json; }
+json_ordered_files() { printf '%s\0' o.json; }
+toml_files() { printf '%s\0' a.toml; }
+md_files() { printf '%s\0' README.md; }
+dotenv_files() { printf '%s\0' .env.example; }
+python_files() { printf '%s\0' a.py; }
+js_files() { printf '%s\0' a.js; }
+css_files() { printf '%s\0' a.css; }
+html_files() { printf '%s\0' a.html; }
+ansible_files() { printf '%s\0' play 'p q'; }
+ansible_env=(ANSIBLE_CONFIG=play/ansible.cfg)
+lint_extra() {
+    check extra extra
+}
+EOF
+echo 'FROM scratch' >"$t/Dockerfile"
+for f in a.yml u.yml a.json o.json; do
+    echo '{}' >"$t/$f"
+done
+echo 'kind: Pod' >"$t/k.yaml"
+
+progress='lint: checking 2 shell file(s)
+lint: checking 1 direnv file(s)
+lint: checking 1 Dockerfile(s)
+lint: checking 2 Compose file(s)
+lint: checking 1 Makefile(s)
+lint: checking 2 sorted YAML file(s)
+lint/yaml-keys: checked 2 file(s)
+lint: checking 1 unsorted YAML file(s)
+lint/yaml-keys: checked 1 file(s)
+lint: checking 4 YAML file(s) with yamllint
+lint: checking 1 workflow(s)
+lint: checking 1 Kubernetes manifest(s)
+lint/kubernetes: checked 1 file(s)
+lint: checking 1 JSON file(s)
+lint/json-keys: checked 1 file(s)
+lint: checking 1 ordered JSON file(s)
+lint/json-keys: checked 1 file(s)
+lint: checking 1 TOML file(s)
+lint: checking 1 Markdown file(s)
+lint: checking 1 dotenv file(s)
+lint: checking 1 Python file(s)
+lint: checking 1 JavaScript file(s)
+lint: checking 2 CSS and HTML file(s)
+lint: checking Ansible'
+
+passes=(shellcheck shfmt shellcheck shfmt dockerfmt hadolint docker-compose
+    docker-compose checkmake yq yq yq yamllint actionlint kubeconform jq jq
+    taplo taplo mdformat dotenv-linter ruff ruff semistandard prettier
+    ansible-lint extra)
+
+test_check full 0 '' "$progress" env -C "$t" "$script"
+test_calls full order "${passes[@]}"
+test_calls full shellcheck "s/a\\ b s/c" '-s bash .envrc'
+test_calls full shfmt "-i 4 -d s/a\\ b s/c" '-i 4 -ln bash -d .envrc'
+test_calls full dockerfmt '--newline --check Dockerfile'
+test_calls full hadolint Dockerfile
+test_calls full docker-compose "-f c1.yml --profile \\* config -q" \
+    "-f c2.yml --profile \\* config -q"
+test_calls full checkmake Makefile
+test_calls full yq "-P sort_keys\\(..\\) a.yml" \
+    "-P sort_keys\\(..\\) .github/workflows/build.yml" '-P . u.yml'
+test_calls full yamllint \
+    '--strict -- a.yml u.yml l.yml .github/workflows/build.yml'
+test_calls full actionlint .github/workflows/build.yml
+test_calls full kubeconform \
+    "-strict -schema-location /opt/kube-schemas/\\{\\{.ResourceKind\\}\\}-\\{\\{.Group\\}\\}-\\{\\{.ResourceAPIVersion\\}\\}.json -"
+test_calls full jq '--sort-keys . a.json' '. o.json'
+test_calls full taplo 'fmt --check --diff a.toml' 'lint a.toml'
+test_calls full mdformat '--check README.md'
+test_calls full dotenv-linter 'check .env.example'
+test_calls full ruff 'check a.py' 'format --diff a.py'
+test_calls full semistandard a.js
+test_calls full prettier '--check a.css a.html'
+test_calls full ansible-lint \
+    "--offline --project-dir . --strict --exclude lib/ --exclude group_vars/\\*/\\*vault.yml -- play p\\ q" \
+    ANSIBLE_CONFIG=play/ansible.cfg
+test_calls full extra ''
+if [ "$(<"$test_tmp/kubeconform.stdin")" != 'kind: Pod' ]; then
+    test_fail full "kubeconform read: $(<"$test_tmp/kubeconform.stdin")"
+fi
+
+# Runs the full tree with FAKE_FAIL=$2 and fails case $1 unless it exits 1,
+# every pass still runs, and the last line of stderr is $3.
+fails() {
+    local case=$1 rc=0 last
+    env -C "$t" FAKE_FAIL="$2" "$script" </dev/null >/dev/null \
+        2>"$test_tmp/err" || rc=$?
+    last=$(tail -n 1 -- "$test_tmp/err")
+    if [ "$rc" != 1 ]; then
+        test_fail "$case" "exit $rc, not 1: $(<"$test_tmp/err")"
+    elif [ "$last" != "$3" ]; then
+        test_fail "$case" "stderr ends: $last"
+    fi
+    test_calls "$case" order "${passes[@]}"
+}
+
+# A failing check names its pass, once however many calls failed, and every
+# later pass still runs.
+declare -A names=(
+    [shellcheck]=shellcheck [shfmt]=shfmt [dockerfmt]=dockerfmt
+    [hadolint]=hadolint ["docker-compose"]=compose [checkmake]=checkmake
+    [yq]='yaml-keys yaml-layout' [yamllint]=yamllint [actionlint]=actionlint
+    [kubeconform]=kubeconform [jq]='json-keys json-layout'
+    [taplo]='taplo-fmt taplo-lint' [mdformat]=mdformat
+    ["dotenv-linter"]=dotenv-linter [ruff]='ruff ruff-format'
+    [semistandard]=semistandard [prettier]=prettier
+    ["ansible-lint"]=ansible-lint [extra]=extra
+)
+for tool in "${!names[@]}"; do
+    fails "fails-$tool" "$tool" "lint: failed: ${names[$tool]}"
+done
+
+echo 'RUN pip install x' >>"$t/Dockerfile"
+fails fails-dockerfile-locks '' 'lint: failed: dockerfile-locks'
+echo 'FROM scratch' >"$t/Dockerfile"
+
+test_usage usage lint env -C "$t" "$script" x
+
+# A defined set naming nothing is a setup fault, so the run stops at once.
+t=$(tree empty)
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+shell_files() { printf '%s\0' a; }
+docker_files() { :; }
+EOF
+test_check empty 1 '' $'lint: checking 1 shell file(s)\nlint: bin/settings: docker_files names nothing' \
+    env -C "$t" "$script"
+test_calls empty order shellcheck shfmt
+
+# With only an Ansible set, printing nothing, ansible-lint gets no path, and the
+# workflows still go through each YAML check and actionlint, which reads a
+# config only where one is named.
+t=$(tree bare)
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+ansible_files() { :; }
+EOF
+test_check bare 0 '' 'lint: checking 1 sorted YAML file(s)
+lint/yaml-keys: checked 1 file(s)
+lint: checking 1 YAML file(s) with yamllint
+lint: checking 1 workflow(s)
+lint: checking Ansible' env -C "$t" "$script"
+test_calls bare order yq yamllint actionlint ansible-lint
+test_calls bare actionlint .github/workflows/build.yml
+test_calls bare ansible-lint \
+    "--offline --project-dir . --strict --exclude lib/ --exclude group_vars/\\*/\\*vault.yml --" \
+    ANSIBLE_CONFIG=
+: >"$t/.github/actionlint.yaml"
+test_check actionlint-config 0 '' 'lint: checking 1 sorted YAML file(s)
+lint/yaml-keys: checked 1 file(s)
+lint: checking 1 YAML file(s) with yamllint
+lint: checking 1 workflow(s)
+lint: checking Ansible' env -C "$t" "$script"
+test_calls actionlint-config actionlint \
+    '-config-file .github/actionlint.yaml .github/workflows/build.yml'
+
+test_finish

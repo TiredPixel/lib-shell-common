@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+#
+# Runs in scratch trees of fake tests, under the program name gate. Each fake
+# test logs "start" and "end" with its name, prints its name and any line it
+# can read from stdin, and exits with the status in its own name, as in
+# test/a/fail3.test. Where FAKE_GATES is set, between start and end it reads a
+# line from the FIFO there named after its file, so the case decides when it
+# ends.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/testing/run
+
+export FAKE_LOG=$test_tmp/log
+
+# Makes a tree at $test_tmp/$1 holding a fake test at each of the remaining
+# paths, and prints its path.
+tree() {
+    local t=$test_tmp/$1 f
+    shift
+    mkdir -p "$t/test"
+    for f in "$@"; do
+        mkdir -p "$t/$(dirname "$f")"
+        cat >"$t/$f" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+echo "start $0" >>"$FAKE_LOG"
+if [ -n "${FAKE_GATES-}" ]; then
+    read -r _ <"$FAKE_GATES/${0##*/}"
+fi
+echo "end $0" >>"$FAKE_LOG"
+echo "said $0"
+if read -r line; then
+    echo "read $line"
+fi
+[[ $0 =~ fail([0-9]+) ]] && exit "${BASH_REMATCH[1]}"
+exit 0
+EOF
+        chmod +x "$t/$f"
+    done
+    echo "$t"
+}
+
+# Runs the script as gate with the remaining arguments in tree $2, with a line
+# on stdin that no test may read, and checks its status is $3, it prints nothing
+# on stdout, and its stderr holds each line of $4 and nothing else but tests'
+# headings and output. Returns 1 where a check failed, so the caller checks the
+# log only after a run as expected.
+check() {
+    local name=$1 t=$2 status=$3 said=$4 rc=0 line summary
+    shift 4
+    : >"$FAKE_LOG"
+    env -C "$t" "$script" gate "$@" <<<input >"$test_tmp/out" \
+        2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        test_fail "$name" "exit $rc, not $status"$'\n'"$(<"$test_tmp/err")"
+        return 1
+    fi
+    if [ -s "$test_tmp/out" ]; then
+        test_fail "$name" "stdout is not empty"$'\n'"$(<"$test_tmp/out")"
+        return 1
+    fi
+    while IFS= read -r line <&3; do
+        if [ -n "$line" ] && ! grep -qxF -- "$line" "$test_tmp/err"; then
+            test_fail "$name" "stderr lacks '$line'"$'\n'"$(<"$test_tmp/err")"
+            return 1
+        fi
+    done 3<<<"$said"
+    summary='^gate: (.* failed|[0-9]+ of [0-9]+ passed|running .*)$'
+    # grep -c prints 0 and exits 1 on no match.
+    if [ "$(grep -cE "$summary" "$test_tmp/err" || [ $? -eq 1 ])" != \
+        "$(grep -cE "$summary" <<<"$said" || [ $? -eq 1 ])" ]; then
+        test_fail "$name" "stderr has other summary lines"$'\n'"$(<"$test_tmp/err")"
+        return 1
+    fi
+    # Beyond those, only a test's heading and its output, and no blank line.
+    while IFS= read -r line <&3; do
+        if [[ $line =~ ^gate:\ test/[^\ ]+\.test$ ||
+            $line =~ ^said\ \./test/[^\ ]+\.test$ ]]; then
+            continue
+        fi
+        if [ -z "$line" ] || ! grep -qxF -- "$line" <<<"$said"; then
+            test_fail "$name" "stderr has '$line'"$'\n'"$(<"$test_tmp/err")"
+            return 1
+        fi
+    done 3< <(cat -- "$test_tmp/err")
+}
+
+# Checks, for case $1, that the script's stderr shows the line $3 directly after
+# the line $2.
+follows() {
+    if [ "$(grep -A 1 -xF -- "$2" "$test_tmp/err" | tail -n 1)" != "$3" ]; then
+        test_fail "$1" "'$3' does not follow '$2'"$'\n'"$(<"$test_tmp/err")"
+    fi
+}
+
+# Checks the log of case $1 is $2.
+logged() {
+    if [ "$(<"$FAKE_LOG")" != "$2" ]; then
+        test_fail "$1" "the log is:"$'\n'"$(<"$FAKE_LOG")"
+    fi
+}
+
+# Checks the log of case $1 is each test in the rest starting and ending, in any
+# order, since they run in parallel.
+ran() {
+    local name=$1 want
+    shift
+    want=$(
+        printf 'end ./%s\n' "$@"
+        printf 'start ./%s\n' "$@"
+    )
+    if [ "$(sort -- "$FAKE_LOG")" != "$(sort <<<"$want")" ]; then
+        test_fail "$name" "the log is:"$'\n'"$(<"$FAKE_LOG")"
+    fi
+}
+
+test_usage usage 'testing/run PROGRAM [test/PATH.test...]' "$script"
+
+# Found at any depth.
+t=$(tree all-pass test/a/one.test test/b/two.test test/c/d/three.test)
+if check all-pass "$t" 0 "gate: running 3 shell test(s)"$'\n'"said ./test/a/one.test"$'\n'"said ./test/b/two.test"$'\n'"said ./test/c/d/three.test"$'\n'"gate: 3 of 3 passed"; then
+    follows all-pass "gate: test/a/one.test" "said ./test/a/one.test"
+    follows all-pass "gate: test/c/d/three.test" "said ./test/c/d/three.test"
+    ran all-pass test/a/one.test test/b/two.test test/c/d/three.test
+fi
+
+if check named "$t" 0 "gate: running 2 shell test(s)"$'\n'"said ./test/b/two.test"$'\n'"said ./test/c/d/three.test"$'\n'"gate: 2 of 2 passed" \
+    test/b/two.test test/c/d/three.test; then
+    ran named test/b/two.test test/c/d/three.test
+fi
+
+for args in test/a/one one.test a/one.test test/a/missing.test test/c \
+    ./test/a/one.test "test/a/one.test b/two"; do
+    read -r -a names <<<"$args"
+    if check "refused $args" "$t" 2 "Usage: gate [test/PATH.test...]" \
+        "${names[@]}"; then
+        logged "refused $args" ""
+    fi
+done
+
+t=$(tree one-fails test/a/one.test test/b/fail3.test test/c/three.test)
+if check one-fails "$t" 1 "gate: running 3 shell test(s)"$'\n'"said ./test/a/one.test"$'\n'"said ./test/b/fail3.test"$'\n'"said ./test/c/three.test"$'\n'"gate: test/b/fail3.test failed"$'\n'"gate: 2 of 3 passed"; then
+    follows one-fails "gate: test/b/fail3.test" "said ./test/b/fail3.test"
+    ran one-fails test/a/one.test test/b/fail3.test test/c/three.test
+fi
+
+if check named-fails "$t" 1 "gate: running 1 shell test(s)"$'\n'"said ./test/b/fail3.test"$'\n'"gate: test/b/fail3.test failed"$'\n'"gate: 0 of 1 passed" \
+    test/b/fail3.test; then
+    ran named-fails test/b/fail3.test
+fi
+
+t=$(tree two-fail test/a/fail2.test test/b/one.test test/c/fail4.test)
+if check two-fail "$t" 1 "gate: running 3 shell test(s)"$'\n'"gate: test/a/fail2.test failed"$'\n'"gate: test/c/fail4.test failed"$'\n'"gate: 1 of 3 passed"; then
+    ran two-fail test/a/fail2.test test/b/one.test test/c/fail4.test
+fi
+
+# A file not under test/ or not named *.test is not a test.
+t=$(tree no-tests test/a/one.tests a/one.test)
+if check no-tests "$t" 1 "gate: no test/**/*.test found"; then
+    logged no-tests ""
+fi
+
+# The gated cases hold each test until released, so once the script has started
+# some and the kernel shows it blocked waiting for a child, it has started every
+# test it will before one ends, and its children are exactly those, whatever the
+# timing. Each gate is held open read-write on the fd gate_fd names, so a
+# release is buffered for a test not yet started rather than blocking.
+declare -A gate_fd=([one.test]=4 [two.test]=5 [three.test]=6)
+
+# Runs the script in the background in tree $2, with the worker count $3 and its
+# tests held at gates in $test_tmp/gates-$1, and sets pid.
+gated() {
+    local gates=$test_tmp/gates-$1 f
+    mkdir "$gates"
+    for f in "${!gate_fd[@]}"; do
+        mkfifo "$gates/$f"
+    done
+    exec 4<>"$gates/one.test" 5<>"$gates/two.test" 6<>"$gates/three.test"
+    : >"$FAKE_LOG"
+    (cd "$2" && PYTEST_XDIST_AUTO_NUM_WORKERS=$3 FAKE_GATES=$gates \
+        exec "$script" gate 4>&- 5>&- 6>&-) </dev/null >"$test_tmp/out" \
+        2>"$test_tmp/err" &
+    pid=$!
+}
+
+# Waits until $2 tests have started and the script is blocked waiting for a
+# child, or else records that case $1 never got there and returns 1. Bounded so
+# a script that never settles fails the case rather than hanging; the sleep only
+# paces the polling, and no result depends on it.
+settled() {
+    local _
+    for _ in {1..3000}; do
+        if [ "$(grep -c '^start ' "$FAKE_LOG" || [ $? -eq 1 ])" -ge "$2" ] &&
+            [ -r "/proc/$pid/wchan" ] &&
+            [ "$(<"/proc/$pid/wchan")" = do_wait ]; then
+            return 0
+        fi
+        sleep 0.01
+    done
+    test_fail "$1" "never waited with $2 test(s) started:"$'\n'"$(<"$FAKE_LOG")"
+    return 1
+}
+
+# Checks, for case $1, that the script has $2 children. Counted from the parent
+# field of each process's /proc/<pid>/stat, which every Linux kernel provides,
+# where /proc/<pid>/task/<pid>/children needs CONFIG_PROC_CHILDREN. The fields
+# after the last ) are state, then parent. A process that exits mid-scan is
+# skipped.
+children() {
+    local n=0 stat line fields
+    for stat in /proc/[0-9]*/stat; do
+        read -r line 2>/dev/null <"$stat" || continue
+        read -r -a fields <<<"${line##*) }"
+        if [ "${fields[1]}" = "$pid" ]; then
+            n=$((n + 1))
+        fi
+    done
+    if [ "$n" -ne "$2" ]; then
+        test_fail "$1" "$n tests ran at once, not $2"
+    fi
+}
+
+# Releases every gate, waits for the script and closes the gates. Returns 1,
+# recording case $1's failure, unless the script passed all three tests.
+ungated() {
+    local rc=0
+    echo >&4
+    echo >&5
+    echo >&6
+    wait "$pid" || rc=$?
+    exec 4>&- 5>&- 6>&-
+    if [ "$rc" -ne 0 ] || ! grep -qxF "gate: 3 of 3 passed" "$test_tmp/err"; then
+        test_fail "$1" "exit $rc:"$'\n'"$(<"$test_tmp/err")"
+        return 1
+    fi
+}
+
+# One at a time, each test ends before the next starts, in sorted order: at
+# each point, the test started last is the script's only child.
+t=$(tree serial test/b/two.test test/a/one.test test/c/three.test)
+gated serial "$t" 1
+n=0
+for f in test/a/one.test test/b/two.test test/c/three.test; do
+    n=$((n + 1))
+    settled serial "$n" || break
+    last=$(grep '^start ' "$FAKE_LOG" | tail -n 1)
+    if [ "$last" != "start ./$f" ]; then
+        test_fail serial "$f did not start next:"$'\n'"$(<"$FAKE_LOG")"
+        break
+    fi
+    children serial 1
+    echo >&"${gate_fd[${f##*/}]}"
+done
+if ungated serial; then
+    logged serial "$(printf 'start ./%s\nend ./%s\n' \
+        test/a/one.test test/a/one.test test/b/two.test test/b/two.test test/c/three.test test/c/three.test)"
+fi
+
+# Two at a time, no third test starts before one ends.
+t=$(tree capped test/a/one.test test/b/two.test test/c/three.test)
+gated capped "$t" 2
+if settled capped 2; then
+    children capped 2
+fi
+if ungated capped; then
+    ran capped test/a/one.test test/b/two.test test/c/three.test
+fi
+
+test_finish

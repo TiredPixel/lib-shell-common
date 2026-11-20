@@ -2,13 +2,16 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-prog=${0##*/}
+prog=project/each
 
-if [ $# -eq 0 ]; then
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+usage() {
     echo "Usage: $prog COMMAND [ARG...]" >&2
     exit 2
-fi
+}
+
+[ $# -gt 0 ] || usage
 
 # At the top level, where project/each-without-project sweeps from, so the
 # command runs in this project rather than in whichever directory of it this is

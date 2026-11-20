@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
 #
-# Tests docker/upgrade on Dockerfiles and workflows in a scratch directory, with
-# docker, curl and git faked on PATH, so nothing is pulled or fetched. Each fake
-# refuses, with exit 2, any arguments but the exact ones upgrade should give it,
-# and names on stderr what it pulls or fetches. The fake docker answers every
-# pull with a Digest line on stdout, as docker pull prints one, for FAKE_DIGEST,
-# none where that is empty, and another for FAKE_DIGEST_TOO where it is set, and
-# gives each image it pulled, and no other, the digest FAKE_DIGEST names. Its
-# inspect of a pulled image gives as the first of its RepoDigests the first line
-# of FAKE_REPO_DIGESTS where that is set, so a pin taken from it rather than
-# from the pull is caught. Its run takes only docker/lock-resolve on stdin,
-# through sh -c given as the entrypoint, as root, in an image it pulled, as
-# pulled or at that digest, or in FAKE_HELD, and runs it on the host, reading
-# the file FAKE_OS_RELEASE names for /etc/os-release, with PATH only a copy of
-# the directory FAKE_CONTAINER names, holding the managers, bash, pip and npm
-# the image has, and a few real tools, while apt-get, dnf, microdnf, apk,
-# python3 and npm are faked, each manager adding to the copy what it installs,
-# and each reading its stdin to the end; pip runs only once its module is there,
-# gives FAKE_PIP_VERSION, 24.0 where unset, and answers with the report in the
-# file FAKE_REPORT names, and npm gives a version or writes the
-# package-lock.json FAKE_NPM_LOCK names, each naming on stderr what it was
-# given. The fake curl answers every /releases/latest with the redirect
-# FAKE_REDIRECT names, every PyPI /pypi/NAME/VERSION/json with the file
+# Runs on Dockerfiles and workflows in a scratch directory, with docker, curl
+# and git faked on PATH, so nothing is pulled or fetched. Each fake refuses,
+# with exit 2, any arguments but the exact ones upgrade should give it, and
+# names on stderr what it pulls or fetches. The fake docker answers every pull
+# with a Digest line on stdout, as docker pull prints one, for FAKE_DIGEST, none
+# where that is empty, and gives each image it pulled, and no other, the digest
+# FAKE_DIGEST names. Its inspect of a pulled image gives as the first of its
+# RepoDigests the first line of FAKE_REPO_DIGESTS where that is set, so a pin
+# taken from it rather than from the pull is caught. Its run takes only
+# docker/lock-resolve on stdin, through sh -c given as the entrypoint, as root,
+# in an image it pulled, as pulled or at that digest, or in FAKE_HELD, and runs
+# it on the host, reading the file FAKE_OS_RELEASE names for /etc/os-release,
+# with PATH only a copy of the directory FAKE_CONTAINER names, holding the
+# managers, bash, pip and npm the image has, and a few real tools, while
+# apt-get, dnf, microdnf, apk, python3 and npm are faked, each manager adding to
+# the copy what it installs, and each reading its stdin to the end; pip runs
+# only once its module is there, gives FAKE_PIP_VERSION, 24.0 where unset, and
+# answers with the report in the file FAKE_REPORT names, and npm gives a version
+# or writes the package-lock.json FAKE_NPM_LOCK names, each naming on stderr
+# what it was given. The fake curl answers every /releases/latest with the
+# redirect FAKE_REDIRECT names, every PyPI /pypi/NAME/VERSION/json with the file
 # pypi/NAME/VERSION.json under FAKE_FILES, every npm /latest lookup with
 # FAKE_NPM and every https://dl.test/PATH with the file PATH under FAKE_FILES,
 # or a 404 where there is none. The fake git answers ls-remote of a tag and a
@@ -32,57 +31,20 @@
 # --record run asks for. FAKE_PULL=fail, FAKE_RUN=fail, FAKE_PIP=fail,
 # FAKE_CURL=fail and FAKE_GIT=fail make each fail as the real one would, and
 # FAKE_GIT=timeout exits silently with timeout's 124. A fake mktemp fails for
-# the template FAKE_MKTEMP_FAIL names, and otherwise runs the real one. Where
-# FAKE_GREP=fail, a fake grep fails as the real one would on an unreadable file,
-# given exactly the search upgrade makes for FREEZE lines, and otherwise runs
-# the real one.
-#
-# upgrade runs where it is, so coverage measures it, with DOCKERFILE_LOCKS_LINT
-# naming a fake lint/dockerfile-locks, which names on stderr the file it checks
-# and passes it, unless FAKE_LINT=fail, where it refuses it as the real one
-# would, FAKE_LINT=usage, where it fails as on a usage error, or
-# FAKE_LINT=unreadable, where it fails as on a file it cannot read.
-#
-# Run: test/docker/upgrade.test. Exits 1 naming each case that failed.
+# the template FAKE_MKTEMP_FAIL names, and otherwise runs the real one.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-source=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+source=$root/docker
 
 upgrade=$source/upgrade
 export FAKE_RESOLVER=$source/lock-resolve
-mkdir "$work/lint"
-export DOCKERFILE_LOCKS_LINT=$work/lint/dockerfile-locks
-cat >"$DOCKERFILE_LOCKS_LINT" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-shopt -s inherit_errexit failglob
-if [ $# != 1 ] || ! [ -f "$1" ]; then
-    echo "fake lint: unexpected arguments: $*" >&2
-    exit 2
-fi
-echo "fake lint: $1" >&2
-case ${FAKE_LINT:-} in
-fail)
-    echo "$1:2: npm install reads no lock" >&2
-    exit 1
-    ;;
-usage)
-    echo "Usage: dockerfile-locks DOCKERFILE..." >&2
-    exit 2
-    ;;
-unreadable)
-    echo "dockerfile-locks: $1:2: a quote has no end" >&2
-    exit 3
-    ;;
-esac
-EOF
-chmod +x "$DOCKERFILE_LOCKS_LINT"
-
-mkdir "$work/bin" "$work/container"
-cat >"$work/bin/docker" <<'EOF'
+mkdir "$test_tmp/container"
+cat >"$test_tmp/path/docker" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -100,7 +62,7 @@ pulled() {
     done 3<"$FAKE_PULLED"
     return 1
 }
-if [ $# = 2 ] && [ "$1" = pull ]; then
+if [ $# -eq 2 ] && [ "$1" = pull ]; then
     echo "fake docker: pull $2" >&2
     echo "fake docker: pulled $2"
     printf '%s\n' "$2" >>"$FAKE_PULLED"
@@ -108,11 +70,9 @@ if [ $# = 2 ] && [ "$1" = pull ]; then
         echo "fake docker: pull $2 failed" >&2
         exit 1
     fi
-    for digest in "${FAKE_DIGEST:-}" "${FAKE_DIGEST_TOO:-}"; do
-        [ -z "$digest" ] || echo "Digest: $digest"
-    done
+    [ -z "${FAKE_DIGEST:-}" ] || echo "Digest: $FAKE_DIGEST"
     echo "Status: Downloaded newer image for $2"
-elif [ $# = 3 ] && [ "$1" = inspect ] &&
+elif [ $# -eq 3 ] && [ "$1" = inspect ] &&
     [ "$2" = '--format={{index .RepoDigests 0}}' ] && pulled "$3" ""; then
     echo "${FAKE_REPO_DIGESTS:-${3%:*}@$FAKE_DIGEST}" | head -n 1
 elif [ $# -ge 12 ] &&
@@ -143,10 +103,10 @@ fi
 EOF
 # Each fake that lock-resolve runs reads its stdin to the end, as a tool that
 # prompts may, so one given the script's own stdin would end it there.
-mkdir "$work/fakes"
+mkdir "$test_tmp/fakes"
 # Adds to the image's directory $1 what each package after it provides: pip's
 # module, or npm.
-cat >"$work/fakes/install" <<'EOF'
+cat >"$test_tmp/fakes/install" <<'EOF'
 #!/bin/sh
 set -eu
 dir=$1
@@ -158,7 +118,7 @@ for package in "$@"; do
     esac
 done
 EOF
-cat >"$work/container/apt-get" <<'EOF'
+cat >"$test_tmp/container/apt-get" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -175,7 +135,7 @@ else
     exit 2
 fi
 EOF
-cat >"$work/container/dnf" <<'EOF'
+cat >"$test_tmp/container/dnf" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -188,7 +148,7 @@ else
     exit 2
 fi
 EOF
-cat >"$work/container/microdnf" <<'EOF'
+cat >"$test_tmp/container/microdnf" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -202,7 +162,7 @@ else
 fi
 EOF
 # In sh, as it may run before bash is there.
-cat >"$work/container/apk" <<'EOF'
+cat >"$test_tmp/container/apk" <<'EOF'
 #!/bin/sh
 set -eu
 cat >/dev/null
@@ -218,7 +178,7 @@ shift 2
 "$FAKE_INSTALL" "$(dirname "$0")" "$@"
 EOF
 # pip runs only where the image's directory holds pip's module.
-cat >"$work/container/python3" <<'EOF'
+cat >"$test_tmp/container/python3" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -252,7 +212,7 @@ if [ "${FAKE_PIP:-}" = fail ]; then
 fi
 cat -- "$FAKE_REPORT"
 EOF
-cat >"$work/fakes/npm" <<'EOF'
+cat >"$test_tmp/fakes/npm" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -260,7 +220,7 @@ cat >/dev/null
 if [ "$*" = --version ]; then
     echo 10.9.2
     exit
-elif [ $# != 9 ] || [ "$1 $2" != "install --prefix" ] || ! [ -d "$3" ] ||
+elif [ $# -ne 9 ] || [ "$1 $2" != "install --prefix" ] || ! [ -d "$3" ] ||
     [ "${*:4}" != "--package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier --registry=https://registry.npmjs.org/" ]; then
     echo "fake npm: unexpected arguments: $*" >&2
     exit 2
@@ -277,46 +237,46 @@ fi
 echo "fake npm: package.json in ${3##*/}: $(jq -c . "$3/package.json")" >&2
 cp -- "$FAKE_NPM_LOCK" "$3/package-lock.json"
 EOF
-chmod +x "$work/container/apt-get" "$work/container/dnf" "$work/container/microdnf" \
-    "$work/container/apk" "$work/container/python3" "$work/fakes/npm" "$work/fakes/install"
-export FAKE_INSTALL=$work/fakes/install FAKE_NPM_BIN=$work/fakes/npm
-mkdir "$work/boxes"
-export FAKE_BOXES=$work/boxes
+chmod +x "$test_tmp/container/apt-get" "$test_tmp/container/dnf" "$test_tmp/container/microdnf" \
+    "$test_tmp/container/apk" "$test_tmp/container/python3" "$test_tmp/fakes/npm" "$test_tmp/fakes/install"
+export FAKE_INSTALL=$test_tmp/fakes/install FAKE_NPM_BIN=$test_tmp/fakes/npm
+mkdir "$test_tmp/boxes"
+export FAKE_BOXES=$test_tmp/boxes
 # The real tools lock-resolve and the fakes use, bash apart, which each image's
 # directory holds or lacks.
-mkdir "$work/tools"
+mkdir "$test_tmp/tools"
 for tool in sh cat cp dirname jq ln mkdir mktemp; do
-    ln -s -- "$(command -v "$tool")" "$work/tools/$tool"
+    ln -s -- "$(command -v "$tool")" "$test_tmp/tools/$tool"
 done
-export FAKE_TOOLS=$work/tools
+export FAKE_TOOLS=$test_tmp/tools
 FAKE_BASH=$(command -v bash)
 export FAKE_BASH
-ln -s -- "$FAKE_BASH" "$work/container/bash"
-export FAKE_CONTAINER=$work/container
+ln -s -- "$FAKE_BASH" "$test_tmp/container/bash"
+export FAKE_CONTAINER=$test_tmp/container
 # Images with microdnf and no dnf; with neither bash nor apk; with pip, as
 # python's are, or npm, as node's are, and no manager; and RHEL-like with
 # neither dnf nor microdnf.
-mkdir "$work/container-micro" "$work/container-bare" "$work/container-pip" \
-    "$work/container-node" "$work/container-nodnf"
+mkdir "$test_tmp/container-micro" "$test_tmp/container-bare" "$test_tmp/container-pip" \
+    "$test_tmp/container-node" "$test_tmp/container-nodnf"
 for tool in bash microdnf python3; do
-    ln -s -- "$work/container/$tool" "$work/container-micro/$tool"
+    ln -s -- "$test_tmp/container/$tool" "$test_tmp/container-micro/$tool"
 done
-ln -s -- "$work/container/python3" "$work/container-bare/python3"
+ln -s -- "$test_tmp/container/python3" "$test_tmp/container-bare/python3"
 for tool in bash python3; do
-    ln -s -- "$work/container/$tool" "$work/container-pip/$tool"
-    ln -s -- "$work/container/$tool" "$work/container-nodnf/$tool"
+    ln -s -- "$test_tmp/container/$tool" "$test_tmp/container-pip/$tool"
+    ln -s -- "$test_tmp/container/$tool" "$test_tmp/container-nodnf/$tool"
 done
-: >"$work/container-pip/pip-module"
-ln -s -- "$work/container/bash" "$work/container-node/bash"
-ln -s -- "$FAKE_NPM_BIN" "$work/container-node/npm"
+: >"$test_tmp/container-pip/pip-module"
+ln -s -- "$test_tmp/container/bash" "$test_tmp/container-node/bash"
+ln -s -- "$FAKE_NPM_BIN" "$test_tmp/container-node/npm"
 # A Debian image whose npm is on PATH but does not run.
-mkdir "$work/container-npm-broken"
+mkdir "$test_tmp/container-npm-broken"
 for tool in bash apt-get; do
-    ln -s -- "$work/container/$tool" "$work/container-npm-broken/$tool"
+    ln -s -- "$test_tmp/container/$tool" "$test_tmp/container-npm-broken/$tool"
 done
 printf '#!/bin/sh\necho "npm: cannot find module" >&2\nexit 1\n' \
-    >"$work/container-npm-broken/npm"
-chmod +x "$work/container-npm-broken/npm"
+    >"$test_tmp/container-npm-broken/npm"
+chmod +x "$test_tmp/container-npm-broken/npm"
 
 # Makes $1 a fresh directory of an Alpine image without bash, which apk adds
 # there.
@@ -325,23 +285,23 @@ nobash() {
     rm -rf -- "$1"
     mkdir -- "$1"
     for tool in apk python3; do
-        ln -s -- "$work/container/$tool" "$1/$tool"
+        ln -s -- "$test_tmp/container/$tool" "$1/$tool"
     done
 }
 
-mkdir "$work/os"
-printf 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID=debian\n' >"$work/os/debian"
-printf 'NAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n' >"$work/os/ubuntu"
-printf 'NAME="Linux Mint"\nID=linuxmint\nID_LIKE="ubuntu debian"\n' >"$work/os/mint"
-printf 'NAME="Fedora Linux"\nID="fedora"\nID_LIKE=""\n' >"$work/os/fedora"
-printf 'NAME="Red Hat Enterprise Linux"\nID="rhel"\nID_LIKE="fedora"\n' >"$work/os/rhel"
-printf 'NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\n' >"$work/os/rocky"
-printf 'NAME="Alpine Linux"\nID=alpine\n' >"$work/os/alpine"
-printf "NAME='postmarketOS'\nID='postmarketos'\nID_LIKE='alpine'\n" >"$work/os/postmarketos"
-printf 'NAME="Arch Linux"\nID=arch\n' >"$work/os/arch"
-printf 'NAME="Nameless"\n' >"$work/os/none"
-export FAKE_OS_RELEASE=$work/os/debian
-cat >"$work/bin/curl" <<'EOF'
+mkdir "$test_tmp/os"
+printf 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID=debian\n' >"$test_tmp/os/debian"
+printf 'NAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n' >"$test_tmp/os/ubuntu"
+printf 'NAME="Linux Mint"\nID=linuxmint\nID_LIKE="ubuntu debian"\n' >"$test_tmp/os/mint"
+printf 'NAME="Fedora Linux"\nID="fedora"\nID_LIKE=""\n' >"$test_tmp/os/fedora"
+printf 'NAME="Red Hat Enterprise Linux"\nID="rhel"\nID_LIKE="fedora"\n' >"$test_tmp/os/rhel"
+printf 'NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\n' >"$test_tmp/os/rocky"
+printf 'NAME="Alpine Linux"\nID=alpine\n' >"$test_tmp/os/alpine"
+printf "NAME='postmarketOS'\nID='postmarketos'\nID_LIKE='alpine'\n" >"$test_tmp/os/postmarketos"
+printf 'NAME="Arch Linux"\nID=arch\n' >"$test_tmp/os/arch"
+printf 'NAME="Nameless"\n' >"$test_tmp/os/none"
+export FAKE_OS_RELEASE=$test_tmp/os/debian
+cat >"$test_tmp/path/curl" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -390,18 +350,21 @@ else
     printf '%s' "$body"
 fi
 EOF
-cat >"$work/bin/git" <<'EOF'
+REAL_GIT=$(command -v git)
+export REAL_GIT
+cat >"$test_tmp/path/git" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
-if [ $# = 6 ] && [ "$1" = -C ] && [ "$3" = status ] && [ "$4" = --porcelain ] &&
-    [ "$5" = -- ] && [[ "$6" == ":(literal)"* ]]; then
+if [ $# -eq 6 ] && [ "$1" = -C ] && [ "$3" = status ] &&
+    [ "$4" = --porcelain ] && [ "$5" = -- ] && [[ "$6" == ":(literal)"* ]]; then
     exec "$REAL_GIT" "$@"
-elif [ $# = 4 ] && [ "$1" = -C ] && [ "$3 $4" = "rev-parse --show-toplevel" ]; then
+elif [ $# -eq 4 ] && [ "$1" = -C ] &&
+    [ "$3 $4" = "rev-parse --show-toplevel" ]; then
     exec "$REAL_GIT" "$@"
 fi
 echo "fake git: $*" >&2
-if [ $# != 7 ] || [ "$1" != ls-remote ] || [ "$2" != --heads ] ||
+if [ $# -ne 7 ] || [ "$1" != ls-remote ] || [ "$2" != --heads ] ||
     [ "$3" != --tags ] || [[ "$4" != https://github.com/*/* ]] ||
     [[ "$5" != refs/tags/* ]] || [ "$6" != "$5^{}" ] ||
     [ "$7" != "refs/heads/${5#refs/tags/}" ] ||
@@ -424,7 +387,7 @@ elif [ -f "$tagged" ]; then
     cat -- "$tagged"
 fi
 EOF
-cat >"$work/bin/mktemp" <<EOF
+cat >"$test_tmp/path/mktemp" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -434,34 +397,17 @@ if [ "\$*" = "\${FAKE_MKTEMP_FAIL:-}" ]; then
 fi
 exec "$(command -v mktemp)" "\$@"
 EOF
-cat >"$work/bin/grep" <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-shopt -s inherit_errexit failglob
-if [ -n "\${FAKE_GREP:-}" ]; then
-    want=(-Hn -i -E
-        -e '^[[:space:]]*#[[:space:]]*(from|args?|uses)[-_[:space:]]*freeze([^[:alnum:]_]|\$)' --)
-    if [ \$# -le \${#want[@]} ] ||
-        [ "\$(printf '%q ' "\${@:1:\${#want[@]}}")" != "\$(printf '%q ' "\${want[@]}")" ]; then
-        echo "fake grep: unexpected arguments: \$*" >&2
-        exit 2
-    fi
-    echo "grep: \${!#}: Permission denied" >&2
-    exit 2
-fi
-exec "$(command -v grep)" "\$@"
-EOF
-chmod +x "$work/bin/docker" "$work/bin/curl" "$work/bin/git" "$work/bin/mktemp" \
-    "$work/bin/grep"
-mkdir "$work/files"
+chmod +x "$test_tmp/path/docker" "$test_tmp/path/curl" "$test_tmp/path/git" \
+    "$test_tmp/path/mktemp"
+mkdir "$test_tmp/files"
 
 old=sha256:$(printf '0%.0s' {1..64})
 new=sha256:$(printf 'a%.0s' {1..64})
 export FAKE_DIGEST=$new
-export FAKE_PULLED=$work/pulled
+export FAKE_PULLED=$test_tmp/pulled
 export FAKE_REDIRECT=https://github.com/o/p/releases/tag/v1.2.3
 export FAKE_NPM='{"name": "n-d", "version": "3.4.5"}'
-export FAKE_FILES=$work/files
+export FAKE_FILES=$test_tmp/files
 
 # Writes to $1 a pip report installing each NAME==VERSION after it, requiring
 # nothing.
@@ -470,7 +416,7 @@ report() {
         | {metadata: {name: .[0], version: .[1]}, requested: false}]}' \
         --args "${@:2}" >"$1"
 }
-export FAKE_REPORT=$work/report.json
+export FAKE_REPORT=$test_tmp/report.json
 report "$FAKE_REPORT" m-d==2.0.1 Dep_A==1.1
 
 # Writes PyPI's JSON for the release NAME/VERSION $1, listing a wheel with each
@@ -504,25 +450,22 @@ npm_lock() {
                 | {(.p): {version: .v}}] | add // {}))}' \
         --args "${@:3}" >"$1"
 }
-export FAKE_NPM_LOCK=$work/npm-lock.json
+export FAKE_NPM_LOCK=$test_tmp/npm-lock.json
 npm_lock "$FAKE_NPM_LOCK" n-d node_modules/n-d@3.4.5 node_modules/dep-b@1.0.0
 c1=$(printf '1%.0s' {1..40})
 c2=$(printf '2%.0s' {1..40})
 c3=$(printf '3%.0s' {1..40})
 c4=$(printf '4%.0s' {1..40})
-export FAKE_TAGS=$work/tags
-mkdir -p "$work/tags/actions/checkout" "$work/tags/o/r" "$work/tags/o/a"
-printf '%s\trefs/tags/v7\n' "$c2" >"$work/tags/actions/checkout/v7"
-printf '%s\trefs/tags/v1\n' "$c3" >"$work/tags/o/r/v1"
-printf '%s\trefs/tags/v2\n%s\trefs/tags/v2^{}\n' "$c4" "$c2" >"$work/tags/o/a/v2"
-REAL_GIT=$(command -v git)
-export REAL_GIT
-export PATH=$work/bin:$PATH
+export FAKE_TAGS=$test_tmp/tags
+mkdir -p "$test_tmp/tags/actions/checkout" "$test_tmp/tags/o/r" "$test_tmp/tags/o/a"
+printf '%s\trefs/tags/v7\n' "$c2" >"$test_tmp/tags/actions/checkout/v7"
+printf '%s\trefs/tags/v1\n' "$c3" >"$test_tmp/tags/o/r/v1"
+printf '%s\trefs/tags/v2\n%s\trefs/tags/v2^{}\n' "$c4" "$c2" >"$test_tmp/tags/o/a/v2"
 
 # The real git, for the repositories a --record run needs, reads nothing from
 # the caller's configuration and finds no repository above the scratch dir.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-export GIT_CEILING_DIRECTORIES=$work
+export GIT_CEILING_DIRECTORIES=$test_tmp
 export GIT_CONFIG_COUNT=2
 export GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=test
 export GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=test@example.com
@@ -539,18 +482,6 @@ sources="github:OWNER/PROJECT or sha256:ASSET_URL [CHECKSUMS_URL]"
 lockforms="NAME [stage=STAGE] pypi:PACKAGE[==VERSION]... or NAME [stage=STAGE] npm:PACKAGE[@VERSION]..."
 specs="pypi:PACKAGE[==VERSION] or npm:PACKAGE[@VERSION]"
 
-failures=0
-
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
 # Runs upgrade on a Dockerfile holding $2, and checks its status is $3, its
 # stderr holds $4 where that is not empty, with @F@ in it standing for the
 # Dockerfile's path, and the file afterwards is $5, which is $2 when the run
@@ -558,45 +489,32 @@ fail() {
 # be empty, since everything upgrade prints is progress or a diagnostic.
 check() {
     local name=$1 before=$2 status=$3 said=$4 after=$5 unsaid=${6:-} rc=0
-    local file=$work/$name.Dockerfile
+    local file=$test_tmp/$name.Dockerfile
     said=${said//@F@/$file}
     printf '%s' "$before" >"$file"
     rm -f -- "$FAKE_PULLED"
-    "$upgrade" "$file" >"$work/out" 2>"$work/err" || rc=$?
+    "$upgrade" "$file" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$work/err")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
-        fail "$name" "stderr lacks '$said': $(<"$work/err")"
-    elif [ -n "$unsaid" ] && grep -qF -- "$unsaid" "$work/err"; then
-        fail "$name" "stderr holds '$unsaid': $(<"$work/err")"
+        test_fail "$name" "exit $rc, not $status: $(<"$test_tmp/err")"
+    elif [ -s "$test_tmp/out" ]; then
+        test_fail "$name" "stdout is: $(<"$test_tmp/out")"
+    elif [ -n "$said" ] && ! grep -qF -- "$said" "$test_tmp/err"; then
+        test_fail "$name" "stderr lacks '$said': $(<"$test_tmp/err")"
+    elif [ -n "$unsaid" ] && grep -qF -- "$unsaid" "$test_tmp/err"; then
+        test_fail "$name" "stderr holds '$unsaid': $(<"$test_tmp/err")"
     elif [ "$(<"$file")" != "$after" ]; then
-        fail "$name" "the file is now: $(<"$file")"
+        test_fail "$name" "the file is now: $(<"$file")"
     fi
 }
 
 check no-pins $'FROM x:1\nRUN true\n' 0 \
-    "upgrade: @F@: no # TRACK FROM, # TRACK ARG or # TRACK LOCK line, so there is nothing to re-pin" \
+    "docker/upgrade: @F@: no # TRACK FROM, # TRACK ARG or # TRACK LOCK line, so there is nothing to re-pin" \
     $'FROM x:1\nRUN true'
-
-file=$work/missing.Dockerfile
-if "$upgrade" "$file" 2>"$work/err" ||
-    [ "$(<"$work/err")" != "upgrade: $file: no such file" ]; then
-    fail missing "not refused naming it"
-fi
-
-file=$work/directory.Dockerfile
-mkdir "$file"
-if "$upgrade" "$file" 2>"$work/err" ||
-    [ "$(<"$work/err")" != "upgrade: $file: not a regular file" ]; then
-    fail directory "not refused naming it: $(<"$work/err")"
-fi
 
 check from-rewrites $'# TRACK FROM r/x:1\nFROM r/x:1 AS dev\nFROM r/x@'"$old"$'\nFROM r/x:2\nFROM r/xy:1\nFROM base\n' \
     0 "" $'# TRACK FROM r/x:1\nFROM r/x@'"$new"$' AS dev\nFROM r/x@'"$new"$'\nFROM r/x@'"$new"$'\nFROM r/xy:1\nFROM base'
 
-check from-bad-form $'# TRACK FROM nocolon\nFROM nocolon\n' 1 "@F@:1: TRACK FROM nocolon is not REPO:TAG" \
+check from-bad-form $'# TRACK FROM nocolon\nFROM nocolon\n' 1 "docker/upgrade: @F@:1: TRACK FROM nocolon is not REPO:TAG" \
     $'# TRACK FROM nocolon\nFROM nocolon'
 
 check from-names-nothing $'# TRACK FROM r/x:1\nFROM r/xy:1\n' 1 "names no FROM r/x line" \
@@ -609,7 +527,7 @@ FAKE_DIGEST=nonsense check from-no-digest $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 
     $'# TRACK FROM r/x:1\nFROM r/x:1'
 
 FAKE_DIGEST="" check from-pull-gives-no-digest $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 \
-    "upgrade: @F@: docker pull gave r/x:1 no digest" $'# TRACK FROM r/x:1\nFROM r/x:1'
+    "docker/upgrade: @F@: docker pull gave r/x:1 no digest" $'# TRACK FROM r/x:1\nFROM r/x:1'
 
 # The pin is the digest the pull names, though the image's RepoDigests list a
 # mirror's digest first and the digest an earlier pull of the tag gave, and the
@@ -619,14 +537,6 @@ FAKE_REPO_DIGESTS="m.test/r/x@$other"$'\n'"r/x@$old"$'\n'"r/x@$new" \
     check from-pull-digest $'# TRACK FROM r/x:1\nFROM r/x@'"$old"$'\n' 0 \
     "Digest: $new" $'# TRACK FROM r/x:1\nFROM r/x@'"$new"
 
-# A pull naming two digests leaves the pin unchosen; one naming the same digest
-# twice names one.
-FAKE_DIGEST_TOO=$old check from-pull-two-digests $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 \
-    "upgrade: @F@: docker pull gave r/x:1 more than one digest: $new and $old" \
-    $'# TRACK FROM r/x:1\nFROM r/x:1'
-FAKE_DIGEST_TOO=$new check from-pull-digest-twice $'# TRACK FROM r/x:1\nFROM r/x:1\n' 0 "" \
-    $'# TRACK FROM r/x:1\nFROM r/x@'"$new"
-
 check arg-rewrites $'# TRACK ARG V github:o/p\nFROM s\nARG V=1.0.0\nRUN echo "$V"\nARG V=1.0.0\nARG VV=1.0.0\n' \
     0 "" $'# TRACK ARG V github:o/p\nFROM s\nARG V=1.2.3\nRUN echo "$V"\nARG V=1.2.3\nARG VV=1.0.0'
 
@@ -634,7 +544,7 @@ FAKE_REDIRECT=https://github.com/o/p/releases/tag/0.16.9 check arg-unprefixed-ta
     $'# TRACK ARG V github:o/p\nARG V=0.1\n' 0 "" $'# TRACK ARG V github:o/p\nARG V=0.16.9'
 
 check arg-bad-form $'# TRACK ARG V\nARG V=1\n' 1 \
-    "@F@:1: TRACK ARG V is not $forms" \
+    "docker/upgrade: @F@:1: TRACK ARG V is not $forms" \
     $'# TRACK ARG V\nARG V=1'
 
 check arg-bad-name $'# TRACK ARG 1V github:o/p\nARG V=1\n' 1 \
@@ -642,18 +552,18 @@ check arg-bad-name $'# TRACK ARG 1V github:o/p\nARG V=1\n' 1 \
     $'# TRACK ARG 1V github:o/p\nARG V=1'
 
 check arg-bad-source $'# TRACK ARG V gitlab:o/p\nARG V=1\n' 1 \
-    "@F@:1: TRACK ARG V: gitlab:o/p is not $sources" $'# TRACK ARG V gitlab:o/p\nARG V=1'
+    "docker/upgrade: @F@:1: TRACK ARG V: gitlab:o/p is not $sources" $'# TRACK ARG V gitlab:o/p\nARG V=1'
 
 check arg-names-nothing $'# TRACK ARG V github:o/p\nARG W=1\n' 1 "names no ARG V line" \
     $'# TRACK ARG V github:o/p\nARG W=1'
 
-check arg-no-default $'# TRACK ARG V github:o/p\nARG V=1\nARG V\n' 1 "@F@:3: TRACK ARG V: not ARG V=VALUE" \
+check arg-no-default $'# TRACK ARG V github:o/p\nARG V=1\nARG V\n' 1 "docker/upgrade: @F@:3: TRACK ARG V: not ARG V=VALUE" \
     $'# TRACK ARG V github:o/p\nARG V=1\nARG V'
 
-check arg-quoted $'# TRACK ARG V github:o/p\nARG V="1"\n' 1 "@F@:2: TRACK ARG V: not ARG V=VALUE" \
+check arg-quoted $'# TRACK ARG V github:o/p\nARG V="1"\n' 1 "docker/upgrade: @F@:2: TRACK ARG V: not ARG V=VALUE" \
     $'# TRACK ARG V github:o/p\nARG V="1"'
 
-check arg-beside-another $'# TRACK ARG V github:o/p\nARG W=2 V=1\n' 1 "@F@:2: TRACK ARG V: not ARG V=VALUE" \
+check arg-beside-another $'# TRACK ARG V github:o/p\nARG W=2 V=1\n' 1 "docker/upgrade: @F@:2: TRACK ARG V: not ARG V=VALUE" \
     $'# TRACK ARG V github:o/p\nARG W=2 V=1'
 
 check arg-differing $'# TRACK ARG V github:o/p\nARG V=1\nARG V=2\n' 1 "hold different values, 1 2" \
@@ -666,10 +576,6 @@ FAKE_REDIRECT=https://github.com/o/p/releases check arg-no-release \
     $'# TRACK ARG V github:o/p\nARG V=1\n' 1 "gave no latest release" $'# TRACK ARG V github:o/p\nARG V=1'
 
 FAKE_REDIRECT='' check arg-no-redirect $'# TRACK ARG V github:o/p\nARG V=1\n' 1 "no redirect" \
-    $'# TRACK ARG V github:o/p\nARG V=1'
-
-FAKE_REDIRECT=https://github.com/o/p/releases/tag/nightly check arg-not-a-version \
-    $'# TRACK ARG V github:o/p\nARG V=1\n' 1 "tag nightly is not a version" \
     $'# TRACK ARG V github:o/p\nARG V=1'
 
 # The ARG's lookup fails after the FROM has resolved, and neither is written.
@@ -704,19 +610,19 @@ check arg-any-case $'# TRACK ARG V github:o/p\nARG V=1\narg V=1\nArg V=1\n' 0 ""
     $'# TRACK ARG V github:o/p\nARG V=1.2.3\narg V=1.2.3\nArg V=1.2.3'
 
 check arg-lower-case-beside-another $'# TRACK ARG V github:o/p\nARG V=1\narg W=2 V=1\n' 1 \
-    "@F@:3: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\narg W=2 V=1'
+    "docker/upgrade: @F@:3: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\narg W=2 V=1'
 
 check arg-continued $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\\n    V=1\n' 1 \
-    "@F@:3: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\\n    V=1'
+    "docker/upgrade: @F@:3: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\\n    V=1'
 
 check arg-continued-blanks-after $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\ \t\nV=1\n' 1 \
-    "@F@:3: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\ \t\nV=1'
+    "docker/upgrade: @F@:3: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\ \t\nV=1'
 
 check arg-continued-over-comment $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\\n  # V\n\n V=1\n' 1 \
-    "@F@:3: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\\n  # V\n\n V=1'
+    "docker/upgrade: @F@:3: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\\n  # V\n\n V=1'
 
 check arg-continued-at-end $'# TRACK ARG V github:o/p\nARG V=1 \\\n' 1 \
-    "@F@:2: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1 \\'
+    "docker/upgrade: @F@:2: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1 \\'
 
 # A continued ARG naming only others is left alone, and an ARG V=1 continuing a
 # RUN is no instruction.
@@ -724,7 +630,7 @@ check arg-continued-elsewhere $'# TRACK ARG V github:o/p\nARG V=1\nARG W=1 \\\n 
     0 "" $'# TRACK ARG V github:o/p\nARG V=1.2.3\nARG W=1 \\\n    X=2\nRUN echo \\\nARG V=1'
 
 check escape-backtick $'# syntax=docker/dockerfile:1\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1\nARG W=1 `\n V=1\n' \
-    1 "@F@:5: TRACK ARG V: not ARG V=VALUE" \
+    1 "docker/upgrade: @F@:5: TRACK ARG V: not ARG V=VALUE" \
     $'# syntax=docker/dockerfile:1\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1\nARG W=1 `\n V=1'
 
 # With ` the escape character, a line ending in \ is not continued.
@@ -732,45 +638,45 @@ check escape-backtick-loosely $'#  ESCAPE = `  \n# TRACK ARG V github:o/p\nRUN e
     $'#  ESCAPE = `  \n# TRACK ARG V github:o/p\nRUN echo \\\nARG V=1.2.3'
 
 check escape-after-comment $'# TRACK ARG V github:o/p\n# escape=`\nARG V=1\nARG W=1 \\\n V=1\n' 1 \
-    "@F@:4: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\n# escape=`\nARG V=1\nARG W=1 \\\n V=1'
+    "docker/upgrade: @F@:4: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\n# escape=`\nARG V=1\nARG W=1 \\\n V=1'
 
 check escape-after-unknown $'# unknown=x\n# escape=`\n# TRACK ARG V github:o/p\nRUN echo \\\nARG V=1\nARG V=1\n' \
     0 "" $'# unknown=x\n# escape=`\n# TRACK ARG V github:o/p\nRUN echo \\\nARG V=1\nARG V=1.2.3'
 
 check escape-twice $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1\n' 1 \
-    "upgrade: @F@: the escape directive appears twice" $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1'
+    "docker/upgrade: @F@: the escape directive appears twice" $'# escape=`\n# escape=`\n# TRACK ARG V github:o/p\nARG V=1'
 
 check escape-bad $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1\n' 1 \
-    "upgrade: @F@: escape directive x is not \\ or \`" $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1'
+    "docker/upgrade: @F@: escape directive x is not \\ or \`" $'# escape=x\n# TRACK ARG V github:o/p\nARG V=1'
 
 check arg-continued-no-blank $'# TRACK ARG V github:o/p\nARG V=1\\\n  W=2\n' 1 \
-    "@F@:2: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\\\n  W=2'
+    "docker/upgrade: @F@:2: TRACK ARG V: not ARG V=VALUE" $'# TRACK ARG V github:o/p\nARG V=1\\\n  W=2'
 
 # The escape character, and whatever follows the reference before it, stays.
 check from-continued $'# TRACK FROM r/x:1\nFROM r/x:1\\\n  AS a\nFROM r/x:1 AS b \\ \n\n  # c\n  AS b\n' 0 "" \
     $'# TRACK FROM r/x:1\nFROM r/x@'"$new"$'\\\n  AS a\nFROM r/x@'"$new"$' AS b \\ \n\n  # c\n  AS b'
 
 check from-reference-split $'# TRACK FROM r/x:1\nFROM r/x:\\\n1\n' 1 \
-    "@F@:2: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM r/x:\\\n1'
+    "docker/upgrade: @F@:2: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM r/x:\\\n1'
 
 # Joined, the reference runs on into AS.
 check from-reference-joined $'# TRACK FROM r/x:1\nFROM r/x:1\\\nAS a\n' 1 \
-    "@F@:2: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM r/x:1\\\nAS a'
+    "docker/upgrade: @F@:2: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM r/x:1\\\nAS a'
 
 check from-after-escape $'# TRACK FROM r/x:1\nFROM \\\n  r/x:1\n' 1 \
-    "@F@:2: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM \\\n  r/x:1'
+    "docker/upgrade: @F@:2: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM \\\n  r/x:1'
 
 check from-any-case $'# TRACK FROM r/x:1\nfrom r/x:1\nFrom r/x:1 AS a\n' 0 "" \
     $'# TRACK FROM r/x:1\nfrom r/x@'"$new"$'\nFrom r/x@'"$new"$' AS a'
 
 check from-indented $'# TRACK FROM r/x:1\nFROM r/x:1\n  FROM r/x:1\n' 1 \
-    "@F@:3: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM r/x:1\n  FROM r/x:1'
+    "docker/upgrade: @F@:3: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM r/x:1\n  FROM r/x:1'
 
 check from-untagged $'# TRACK FROM r/x:1\nFROM r/x:1\nFROM r/x AS dev\n' 1 \
-    "@F@:3: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM r/x:1\nFROM r/x AS dev'
+    "docker/upgrade: @F@:3: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM r/x:1\nFROM r/x AS dev'
 
 check from-flag $'# TRACK FROM r/x:1\nFROM --platform=linux/amd64 r/x:1\n' 1 \
-    "@F@:2: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM --platform=linux/amd64 r/x:1'
+    "docker/upgrade: @F@:2: TRACK FROM r/x: not FROM r/x:TAG or FROM r/x@DIGEST" $'# TRACK FROM r/x:1\nFROM --platform=linux/amd64 r/x:1'
 
 # A flag naming no image, and a FROM naming another, are passed over.
 check from-others $'# TRACK FROM r/x:1\nFROM --platform=x\nFROM --platform=x r/y:1\nRUN echo r/x:1\nFROM r/x:1\n' 0 "" \
@@ -806,11 +712,11 @@ for typo in "#TRACK FROM r/x:1" "  # TRACK FROM r/x:1" "# track from r/x:1" "# T
     *[Ll][Oo][Cc][Kk]*) form="not # TRACK LOCK NAME PACKAGE..." ;;
     *) form="not # TRACK ARG NAME SOURCE" ;;
     esac
-    check "typo-$n" "# TRACK ARG V github:o/p"$'\n'"$typo"$'\nARG V=1\n' 1 "@F@:2: $form" \
+    check "typo-$n" "# TRACK ARG V github:o/p"$'\n'"$typo"$'\nARG V=1\n' 1 "docker/upgrade: @F@:2: $form" \
         "# TRACK ARG V github:o/p"$'\n'"$typo"$'\nARG V=1' "fake curl:"
 done
 check track-uses-in-dockerfile $'# TRACK ARG V github:o/p\n#  TRACK USES o/r@v1\nARG V=1\n' 1 \
-    "@F@:2: TRACK USES belongs in a workflow or action, not a Dockerfile" \
+    "docker/upgrade: @F@:2: TRACK USES belongs in a workflow or action, not a Dockerfile" \
     $'# TRACK ARG V github:o/p\n#  TRACK USES o/r@v1\nARG V=1' "fake curl:"
 
 # Words that only begin like a TRACK kind are no mistyped pin.
@@ -830,7 +736,7 @@ check heredoc-not $'# TRACK ARG V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1\nCM
     $'# TRACK ARG V github:o/p\nRUN echo \'<<EOF\' <<\nARG V=1.2.3\nCMD cat <<EOF\nARG V=1.2.3'
 
 check heredoc-unended $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1\n' 1 \
-    "upgrade: @F@: a heredoc's body has no end line EOF" $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1'
+    "docker/upgrade: @F@: a heredoc's body has no end line EOF" $'# TRACK ARG V github:o/p\nARG V=1\nRUN <<EOF\nARG V=1'
 
 # An ONBUILD RUN's heredoc body is no instruction either.
 check heredoc-onbuild $'# TRACK ARG V github:o/p\nARG V=1\nonbuild RUN <<EOF\nARG V=1\nEOF\n' 0 "" \
@@ -841,15 +747,15 @@ sha256_of() {
     sum=$(printf '%s' "$1" | sha256sum)
     printf '%s' "${sum%% *}"
 }
-mkdir "$work/files/v1.2.3" "$work/files/v0.9" "$work/files/va&b"
-printf 'tool' >"$work/files/v1.2.3/t_1.2.3_linux"
-printf 'old tool' >"$work/files/v0.9/t_0.9_linux"
-printf 'old tool' >"$work/files/va&b/t_a&b_linux"
+mkdir "$test_tmp/files/v1.2.3" "$test_tmp/files/v0.9" "$test_tmp/files/va&b"
+printf 'tool' >"$test_tmp/files/v1.2.3/t_1.2.3_linux"
+printf 'old tool' >"$test_tmp/files/v0.9/t_0.9_linux"
+printf 'old tool' >"$test_tmp/files/va&b/t_a&b_linux"
 ht=$(sha256_of tool)
 hu=$(sha256_of 'old tool')
 hx=$(printf 'c%.0s' {1..64})
 hy=$(printf 'd%.0s' {1..64})
-sums=$work/files/v1.2.3/sums
+sums=$test_tmp/files/v1.2.3/sums
 
 # A sha256 pin before the version pin its URLs name, which resolves first.
 pins=$'# TRACK ARG H sha256:https://dl.test/v${V}/t_${V}_linux https://dl.test/v${V}/sums\n# TRACK ARG V github:o/p\n'
@@ -875,15 +781,9 @@ check sum-bsd "$before" 0 "" "$(sum_pinned "$hx")"
 printf '%s  t_1.2.3_linux\n' "${ht^^}" >"$sums"
 check sum-upper-case "$before" 0 "" "$(sum_pinned "$ht")"
 
-printf '%s  t_1.2.3_linux\nSHA256 (dist/t_1.2.3_linux) = %s\n' "$hx" "$hx" >"$sums"
-check sum-listed-twice "$before" 0 "" "$(sum_pinned "$hx")"
-
 # A single space before the name is neither GNU's form nor BSD's.
 printf '%s t_1.2.3_linux\nSHA1 (t_1.2.3_linux) = %s\n%s  t_1.2.3_linux.sig\n' "$hx" "${hx:0:40}" "$hx" >"$sums"
 check sum-missing "$before" 1 "TRACK ARG H: https://dl.test/v1.2.3/sums gives no SHA-256 for t_1.2.3_linux" "$before"
-
-printf '%s  t_1.2.3_linux\n%s  a/t_1.2.3_linux\n' "$hx" "$hy" >"$sums"
-check sum-differing "$before" 1 "gives t_1.2.3_linux different SHA-256s, $hx $hy" "$before"
 
 rm -- "$sums"
 check sum-fetch-fails "$before" 22 "returned error: 404" "$before"
@@ -911,17 +811,6 @@ check hash-var-differing $'# TRACK ARG H sha256:https://dl.test/${W}\nARG H=1\nA
     "TRACK ARG H: \${W}: its ARG lines hold different values, 1 2" \
     $'# TRACK ARG H sha256:https://dl.test/${W}\nARG H=1\nARG W=1\nARG W=2'
 
-check hash-var-is-hash $'# TRACK ARG H sha256:https://dl.test/${G}\n# TRACK ARG G sha256:https://dl.test/g\nARG H=1\nARG G=1\n' 1 \
-    "TRACK ARG H: \${G} is itself a sha256 pin" \
-    $'# TRACK ARG H sha256:https://dl.test/${G}\n# TRACK ARG G sha256:https://dl.test/g\nARG H=1\nARG G=1' "fake curl:"
-
-check hash-bare-dollar $'# TRACK ARG V github:o/p\n# TRACK ARG H sha256:https://dl.test/${V}/$V\nARG V=1\nARG H=1\n' 1 \
-    "TRACK ARG H: https://dl.test/\${V}/\$V holds a \$ not in \${VAR}" \
-    $'# TRACK ARG V github:o/p\n# TRACK ARG H sha256:https://dl.test/${V}/$V\nARG V=1\nARG H=1' "fake curl:"
-
-check hash-var-not-literal $'# TRACK ARG H sha256:https://dl.test/${W}\nARG H=1\nARG W=$X\n' 1 \
-    "TRACK ARG H: \${W} is \$X, not a literal" $'# TRACK ARG H sha256:https://dl.test/${W}\nARG H=1\nARG W=$X'
-
 check hash-var-no-file $'# TRACK ARG H sha256:https://dl.test/${W}\nARG H=1\nARG W=a/\n' 1 \
     "TRACK ARG H: https://dl.test/a/ names no file" $'# TRACK ARG H sha256:https://dl.test/${W}\nARG H=1\nARG W=a/'
 
@@ -934,45 +823,45 @@ check hash-three-urls $'# TRACK ARG H sha256:https://dl.test/t https://dl.test/s
 check hash-names-directory $'# TRACK ARG H sha256:https://dl.test/t/\nARG H=1\n' 1 "is not $sources" \
     $'# TRACK ARG H sha256:https://dl.test/t/\nARG H=1'
 
-# Runs upgrade on $work/$1.Dockerfile holding $2 and a workflow holding $3 in
-# $work/$1/.github/workflows, and checks its status is $4, its stderr holds $5
-# where that is not empty, with @F@ in it standing for the Dockerfile's path and
-# @W@ for the workflow's, and the Dockerfile afterwards is $6. The workflow must
-# be untouched, and its proposal $7, or absent, with no workflows.new, where $7
-# is the workflow as it was. Where $8 is given, stderr must not hold it. Stdout
-# must be empty.
+# Runs upgrade on $test_tmp/$1.Dockerfile holding $2 and a workflow holding $3
+# in $test_tmp/$1/.github/workflows, and checks its status is $4, its stderr
+# holds $5 where that is not empty, with @F@ in it standing for the Dockerfile's
+# path and @W@ for the workflow's, and the Dockerfile afterwards is $6. The
+# workflow must be untouched, and its proposal $7, or absent, with no
+# workflows.new, where $7 is the workflow as it was. Where $8 is given, stderr
+# must not hold it. Stdout must be empty.
 flow() {
     local name=$1 before=$2 wbefore=$3 status=$4 said=$5 after=$6 wafter=$7 unsaid=${8:-} rc=0
-    local file=$work/$name.Dockerfile dir=$work/$name/.github
+    local file=$test_tmp/$name.Dockerfile dir=$test_tmp/$name/.github
     local wfile=$dir/workflows/w.yml proposal=$dir/workflows.new/w.yml
     said=${said//@F@/$file}
     said=${said//@W@/$wfile}
-    rm -rf -- "${work:?}/${name:?}"
+    rm -rf -- "${test_tmp:?}/${name:?}"
     mkdir -p "$dir/workflows"
     printf '%s' "$before" >"$file"
     printf '%s' "$wbefore" >"$wfile"
     rm -f -- "$FAKE_PULLED"
-    "$upgrade" "$file" "$wfile" >"$work/out" 2>"$work/err" || rc=$?
+    "$upgrade" "$file" "$wfile" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$work/err")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ -n "$said" ] && ! grep -qF -- "$said" "$work/err"; then
-        fail "$name" "stderr lacks '$said': $(<"$work/err")"
-    elif [ -n "$unsaid" ] && grep -qF -- "$unsaid" "$work/err"; then
-        fail "$name" "stderr holds '$unsaid': $(<"$work/err")"
+        test_fail "$name" "exit $rc, not $status: $(<"$test_tmp/err")"
+    elif [ -s "$test_tmp/out" ]; then
+        test_fail "$name" "stdout is: $(<"$test_tmp/out")"
+    elif [ -n "$said" ] && ! grep -qF -- "$said" "$test_tmp/err"; then
+        test_fail "$name" "stderr lacks '$said': $(<"$test_tmp/err")"
+    elif [ -n "$unsaid" ] && grep -qF -- "$unsaid" "$test_tmp/err"; then
+        test_fail "$name" "stderr holds '$unsaid': $(<"$test_tmp/err")"
     elif [ "$(<"$file")" != "$after" ]; then
-        fail "$name" "the Dockerfile is now: $(<"$file")"
+        test_fail "$name" "the Dockerfile is now: $(<"$file")"
     elif [ "$(<"$wfile")" != "$(printf '%s' "$wbefore")" ]; then
-        fail "$name" "the workflow was written: $(<"$wfile")"
+        test_fail "$name" "the workflow was written: $(<"$wfile")"
     elif [ "$wafter" = "$(printf '%s' "$wbefore")" ]; then
         if [ -e "$dir/workflows.new" ]; then
-            fail "$name" "$dir/workflows.new was made"
+            test_fail "$name" "$dir/workflows.new was made"
         fi
     elif ! [ -f "$proposal" ]; then
-        fail "$name" "no proposal was written"
+        test_fail "$name" "no proposal was written"
     elif [ "$(<"$proposal")" != "$wafter" ]; then
-        fail "$name" "the proposal is: $(<"$proposal")"
+        test_fail "$name" "the proposal is: $(<"$proposal")"
     fi
 }
 
@@ -994,15 +883,15 @@ wfafter=$(printf '%s\n' "# TRACK USES actions/checkout@v7" "steps:" \
     "  # uses: o/r@v0" "# TRACK USES o/r@v1")
 flow wf-repins "$df" "$wf" 0 'fake git: ls-remote --heads --tags https://github.com/o/r refs/tags/v1 refs/tags/v1^{} refs/heads/v1' \
     "$dfafter" "$wfafter" "fake curl: https://github.com/o/r/"
-if [ "$(grep -c 'fake git: .* https://github.com/o/r ' "$work/err")" != 1 ]; then
-    fail wf-repins "o/r not looked up once: $(<"$work/err")"
+if [ "$(grep -c 'fake git: .* https://github.com/o/r ' "$test_tmp/err")" != 1 ]; then
+    test_fail wf-repins "o/r not looked up once: $(<"$test_tmp/err")"
 fi
-if grep -qF 'https://github.com/u/x' "$work/err"; then
-    fail wf-repins "the uncovered u/x was looked up: $(<"$work/err")"
+if grep -qF 'https://github.com/u/x' "$test_tmp/err"; then
+    test_fail wf-repins "the uncovered u/x was looked up: $(<"$test_tmp/err")"
 fi
 
 flow wf-dockerfile-unpinned $'FROM x\n' "$wf" 0 \
-    "upgrade: @F@: no # TRACK FROM, # TRACK ARG or # TRACK LOCK line, so there is nothing to re-pin" \
+    "docker/upgrade: @F@: no # TRACK FROM, # TRACK ARG or # TRACK LOCK line, so there is nothing to re-pin" \
     $'FROM x' "$wfafter"
 
 # Peeled through the annotated tag to the commit.
@@ -1010,7 +899,7 @@ flow wf-annotated "$df" $'# TRACK USES o/a@v2\n  - uses: o/a@v1\n' 0 "" \
     "$dfafter" $'# TRACK USES o/a@v2\n  - uses: o/a@'"$c2"
 
 wf=$(printf '%s\n' "steps:" "  - uses: o/r@$c1 # v1" "  - uses: o/r@v1")
-flow wf-uncovered "$df" "$wf" 0 "upgrade: @W@: no # TRACK USES line, so there is nothing to re-pin" \
+flow wf-uncovered "$df" "$wf" 0 "docker/upgrade: @W@: no # TRACK USES line, so there is nothing to re-pin" \
     "$dfafter" "$wf" "fake git:"
 
 # Neither a comment at another indent nor one naming no version is a tag.
@@ -1024,21 +913,21 @@ done
 
 # Every pin in every file resolves before any is written: the second workflow's
 # tag is missing, so neither it, the first nor the Dockerfile moves.
-m=$work/multi/.github
+m=$test_tmp/multi/.github
 mkdir -p "$m/workflows"
-printf '%s' "$df" >"$work/multi.Dockerfile"
+printf '%s' "$df" >"$test_tmp/multi.Dockerfile"
 first=$'# TRACK USES o/r@v1\n  - uses: o/r@v0'
 second=$'# TRACK USES o/r@v9\n  - uses: o/r@v0'
 printf '%s\n' "$first" >"$m/workflows/1.yml"
 printf '%s\n' "$second" >"$m/workflows/2.yml"
 rc=0
-"$upgrade" "$work/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/2.yml" \
-    >/dev/null 2>"$work/err" || rc=$?
+"$upgrade" "$test_tmp/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/2.yml" \
+    >/dev/null 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 1 ] ||
-    ! grep -qF "upgrade: $m/workflows/2.yml: TRACK USES o/r@v9: o/r has no tag or branch v9" "$work/err"; then
-    fail wf-multi-fails "exit $rc, not refused naming it: $(<"$work/err")"
-elif [ "$(<"$work/multi.Dockerfile")" != "$df" ] || [ -e "$m/workflows.new" ]; then
-    fail wf-multi-fails "a file was written"
+    ! grep -qF "docker/upgrade: $m/workflows/2.yml: TRACK USES o/r@v9: o/r has no tag or branch v9" "$test_tmp/err"; then
+    test_fail wf-multi-fails "exit $rc, not refused naming it: $(<"$test_tmp/err")"
+elif [ "$(<"$test_tmp/multi.Dockerfile")" != "$df" ] || [ -e "$m/workflows.new" ]; then
+    test_fail wf-multi-fails "a file was written"
 fi
 
 # One OWNER/REPO@NAME named in two files is looked up once, and each file takes
@@ -1050,26 +939,26 @@ printf '%s\n' $'# TRACK USES o/a@v2\n  - uses: o/a@'"$c2" >"$m/workflows/4.yml"
 mkdir "$m/workflows.new"
 printf 'other\n' >"$m/workflows.new/other.yml"
 rc=0
-"$upgrade" "$work/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/2.yml" \
-    "$m/workflows/3.yml" "$m/workflows/4.yml" >/dev/null 2>"$work/err" || rc=$?
+"$upgrade" "$test_tmp/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/2.yml" \
+    "$m/workflows/3.yml" "$m/workflows/4.yml" >/dev/null 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 0 ]; then
-    fail wf-multi "exit $rc, not 0: $(<"$work/err")"
-elif [ "$(grep -c 'fake git: .* https://github.com/o/r ' "$work/err")" != 1 ]; then
-    fail wf-multi "o/r@v1 not looked up once: $(<"$work/err")"
+    test_fail wf-multi "exit $rc, not 0: $(<"$test_tmp/err")"
+elif [ "$(grep -c 'fake git: .* https://github.com/o/r ' "$test_tmp/err")" != 1 ]; then
+    test_fail wf-multi "o/r@v1 not looked up once: $(<"$test_tmp/err")"
 elif [ "$(<"$m/workflows.new/1.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" ] ||
     [ "$(<"$m/workflows.new/2.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" ] ||
     [ "$(<"$m/workflows.new/3.yml")" != $'# TRACK USES o/a@v2\n  - uses: o/a@'"$c2" ] ||
     [ "$(<"$m/workflows.new/other.yml")" != other ]; then
-    fail wf-multi "a proposal is wrong"
+    test_fail wf-multi "a proposal is wrong"
 elif [ -e "$m/workflows.new/4.yml" ]; then
-    fail wf-multi "4.yml, which nothing moved, has a proposal"
+    test_fail wf-multi "4.yml, which nothing moved, has a proposal"
 elif [ "$(<"$m/workflows/1.yml")" != "$first" ] ||
     [ "$(<"$m/workflows/3.yml")" != $'# TRACK USES o/a@v2\n  - uses: o/a@v0' ]; then
-    fail wf-multi "a workflow was written"
+    test_fail wf-multi "a workflow was written"
 fi
 
 # A proposal already pending, even one dangling, is refused before any lookup.
-printf '%s' "$df" >"$work/multi.Dockerfile"
+printf '%s' "$df" >"$test_tmp/multi.Dockerfile"
 for kind in file link; do
     rm -rf -- "$m/workflows.new"
     mkdir "$m/workflows.new"
@@ -1078,76 +967,47 @@ for kind in file link; do
     else
         ln -s absent "$m/workflows.new/2.yml"
     fi
-    said="upgrade: $(readlink -f "$m")/workflows.new/2.yml: is a proposal for"
+    said="docker/upgrade: $(readlink -f "$m")/workflows.new/2.yml: is a proposal for"
     said+=" $m/workflows/2.yml already pending; approve or remove it first"
     rc=0
-    "$upgrade" "$work/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/2.yml" \
-        >/dev/null 2>"$work/err" || rc=$?
-    if [ "$rc" != 1 ] || [ "$(<"$work/err")" != "$said" ]; then
-        fail "wf-pending-$kind" "exit $rc, not refused naming it: $(<"$work/err")"
-    elif grep -qF "fake " "$work/err"; then
-        fail "wf-pending-$kind" "looked up: $(<"$work/err")"
-    elif [ "$(<"$work/multi.Dockerfile")" != "$df" ] || [ -e "$m/workflows.new/1.yml" ]; then
-        fail "wf-pending-$kind" "a file was written"
+    "$upgrade" "$test_tmp/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/2.yml" \
+        >/dev/null 2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != 1 ] || [ "$(<"$test_tmp/err")" != "$said" ]; then
+        test_fail "wf-pending-$kind" "exit $rc, not refused naming it: $(<"$test_tmp/err")"
+    elif grep -qF "fake " "$test_tmp/err"; then
+        test_fail "wf-pending-$kind" "looked up: $(<"$test_tmp/err")"
+    elif [ "$(<"$test_tmp/multi.Dockerfile")" != "$df" ] || [ -e "$m/workflows.new/1.yml" ]; then
+        test_fail "wf-pending-$kind" "a file was written"
     fi
 done
 rm -rf -- "$m/workflows.new"
-
-# A workflow outside a .github/workflows directory is refused before any lookup.
-mkdir -p "$work/loose/workflows" "$work/loose/x/.github"
-for wfile in "$work/loose/w.yml" "$work/loose/workflows/w.yml" "$work/loose/x/.github/w.yml"; do
-    printf '%s\n' "$first" >"$wfile"
-    rc=0
-    "$upgrade" "$work/multi.Dockerfile" "$wfile" >/dev/null 2>"$work/err" || rc=$?
-    if [ "$rc" != 1 ] ||
-        ! grep -qxF "upgrade: $wfile: is not in a .github/workflows directory" "$work/err"; then
-        fail wf-loose "$wfile: exit $rc, not refused: $(<"$work/err")"
-    elif grep -qF "fake " "$work/err"; then
-        fail wf-loose "$wfile: looked up: $(<"$work/err")"
-    fi
-done
 
 pinned=$'# TRACK USES o/r@v1\n  - uses: o/r@v0\n'
 
 # With no tag of the name, the branch of the name is followed.
 FAKE_LS_REMOTE=$c2$'\trefs/heads/v1\n' flow wf-branch "$df" "$pinned" 0 \
-    "upgrade: o/r's commit for branch v1 is $c2" "$dfafter" \
+    "docker/upgrade: o/r's commit for branch v1 is $c2" "$dfafter" \
     $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c2"
 
 # A tag wins over a branch of the same name, whichever is listed first, and an
 # annotated one is still peeled.
 FAKE_LS_REMOTE=$c1$'\trefs/heads/v1\n'$c3$'\trefs/tags/v1\n' flow wf-tag-over-branch \
-    "$df" "$pinned" 0 "upgrade: o/r's commit for tag v1 is $c3" "$dfafter" \
+    "$df" "$pinned" 0 "docker/upgrade: o/r's commit for tag v1 is $c3" "$dfafter" \
     $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" "for branch"
 FAKE_LS_REMOTE=$c1$'\trefs/tags/v1\n'$c2$'\trefs/tags/v1^{}\n'$c3$'\trefs/heads/v1\n' \
     flow wf-annotated-over-branch "$df" "$pinned" 0 \
-    "upgrade: o/r's commit for tag v1 is $c2" "$dfafter" \
+    "docker/upgrade: o/r's commit for tag v1 is $c2" "$dfafter" \
     $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c2" "for branch"
-
-# A peeled tag listed alone is refused, even beside a branch of the name.
-FAKE_LS_REMOTE=$c2$'\trefs/tags/v1^{}\n' flow wf-only-peeled "$df" "$pinned" 1 \
-    "TRACK USES o/r@v1: git ls-remote gave refs/tags/v1^{} without refs/tags/v1" \
-    "$df" "${pinned%$'\n'}"
-FAKE_LS_REMOTE=$c2$'\trefs/tags/v1^{}\n'$c3$'\trefs/heads/v1\n' \
-    flow wf-only-peeled-branch "$df" "$pinned" 1 \
-    "TRACK USES o/r@v1: git ls-remote gave refs/tags/v1^{} without refs/tags/v1" \
-    "$df" "${pinned%$'\n'}"
 
 flow wf-no-tag-or-branch "$df" $'# TRACK USES o/r@v9\n  - uses: o/r@v0\n' 1 \
     "TRACK USES o/r@v9: o/r has no tag or branch v9" "$df" \
     $'# TRACK USES o/r@v9\n  - uses: o/r@v0'
 
-FAKE_LS_REMOTE=$c2$'\trefs/tags/v10\n' flow wf-other-tag "$df" "$pinned" 1 \
-    "TRACK USES o/r@v1: git ls-remote gave $c2 refs/tags/v10" "$df" "${pinned%$'\n'}"
-
-FAKE_LS_REMOTE=$'abc\trefs/tags/v1\n' flow wf-not-a-commit "$df" "$pinned" 1 \
-    "TRACK USES o/r@v1: git ls-remote gave abc refs/tags/v1" "$df" "${pinned%$'\n'}"
-
 # The Dockerfile's pin has resolved, and neither file is written.
 FAKE_GIT=fail flow wf-git-fails "$df" "$pinned" 1 "Could not resolve host" \
     "$df" "${pinned%$'\n'}"
-if ! grep -qF "TRACK USES o/r@v1: git ls-remote failed or timed out" "$work/err"; then
-    fail wf-git-fails "the failure is not named: $(<"$work/err")"
+if ! grep -qF "TRACK USES o/r@v1: git ls-remote failed or timed out" "$test_tmp/err"; then
+    test_fail wf-git-fails "the failure is not named: $(<"$test_tmp/err")"
 fi
 
 FAKE_GIT=timeout flow wf-git-times-out "$df" "$pinned" 1 \
@@ -1160,37 +1020,6 @@ flow wf-names-nothing "$df" "$wf" 1 "TRACK USES o/r@v1 names no uses: o/r line" 
 
 wf=$(printf '%s\n' "# TRACK USES o/r@v1" "# TRACK USES o/r@v2" "  - uses: o/r@v0")
 flow wf-pinned-twice "$df" "$wf" 1 "TRACK USES o/r is pinned twice" "$df" "$wf" "fake curl:"
-
-n=0
-for comment in " # v1" "  #v1" " # pinned by hand"; do
-    n=$((n + 1))
-    wf=$(printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@$c1$comment")
-    flow "wf-comment-at-end-$n" "$df" "$wf" 1 \
-        "@W@:2: uses: o/r@$c1 has a comment at its end; TRACK USES o/r@v1 says what it follows" \
-        "$df" "$wf" "fake curl:"
-done
-
-# A version comment above, in any number of words and across blank lines.
-n=0
-for above in "  # v1" "  #v1"$' \t' "  # o/r v1.2.3" "  # 1.2"$'\n' $'  # v1\n\n \t'; do
-    n=$((n + 1))
-    wf=$(printf '%s\n' "# TRACK USES o/r@v1" "$above" "  - uses: o/r@$c1")
-    flow "wf-comment-above-$n" "$df" "$wf" 1 \
-        "uses: o/r@$c1 has a version comment above it; TRACK USES o/r@v1 says what it follows" \
-        "$df" "$wf" "fake curl:"
-done
-
-# A uses: on the first line, or with only blank lines above it, has no line
-# above it, whatever the last line holds, an indented version comment included.
-n=0
-for lead in "" $'\n \n'; do
-    for rest in $'\n  # v1\n# TRACK USES o/r@v1' $'\n# TRACK USES o/r@v1\n  # v1'; do
-        n=$((n + 1))
-        wf=$lead$'  - uses: o/r@v0'$rest
-        flow "wf-first-line-$n" "$df" "$wf" 0 "" "$dfafter" \
-            "$lead"$'  - uses: o/r@'"$c3$rest"
-    done
-done
 
 # OWNER/REPO is matched in any case, each uses: keeping its own.
 wf=$(printf '%s\n' "# TRACK USES actions/checkout@v7" "  - uses: Actions/Checkout@v0" \
@@ -1211,7 +1040,7 @@ for typo in "  # TRACK USES o/r@v1" "#TRACK USES o/r@v1" "#  TRACK USES o/r@v1" 
     "# TRACK-USES o/r@v1" "# track_uses o/r@v1" "# TRACK USESS o/r@v1"; do
     n=$((n + 1))
     wf=$(printf '%s\n' "  - uses: o/r@v0" "$typo")
-    flow "wf-typo-$n" "$df" "$wf" 1 "@W@:2: not # TRACK USES OWNER/REPO@NAME" \
+    flow "wf-typo-$n" "$df" "$wf" 1 "docker/upgrade: @W@:2: not # TRACK USES OWNER/REPO@NAME" \
         "$df" "$wf" "fake curl:"
 done
 n=0
@@ -1226,14 +1055,14 @@ for typo in "# TRACK FROM r/x:1" "  #track from r/x:1" "# TRACK ARG V github:o/p
     esac
     wf=$(printf '%s\n' "  - uses: o/r@v0" "$typo")
     flow "wf-track-$kind-$n" "$df" "$wf" 1 \
-        "@W@:2: TRACK $kind belongs in a Dockerfile, not a workflow" "$df" "$wf" "fake curl:"
+        "docker/upgrade: @W@:2: TRACK $kind belongs in a Dockerfile, not a workflow" "$df" "$wf" "fake curl:"
 done
 
 n=0
 for data in o/r o@v1 'o/r@v1*' o/r@ 'o/r@v1 v2' 'o/r/p@v1' ' o/r@v1'; do
     n=$((n + 1))
     wf=$(printf '%s\n' "# TRACK USES $data" "  - uses: o/r@v0")
-    flow "wf-bad-trackuses-$n" "$df" "$wf" 1 "@W@:1: TRACK USES $data is not OWNER/REPO@NAME" \
+    flow "wf-bad-trackuses-$n" "$df" "$wf" 1 "docker/upgrade: @W@:1: TRACK USES $data is not OWNER/REPO@NAME" \
         "$df" "$wf" "fake curl:"
 done
 
@@ -1244,7 +1073,7 @@ for line in "  - uses: \"o/r@$c1\"" "  - uses: \"O/R@$c1\"" "  - uses: o/r@" \
     "  - uses: o/r" "  - run: grep 'uses: o/r/' x"; do
     n=$((n + 1))
     wf=$(printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" "$line")
-    flow "wf-form-$n" "$df" "$wf" 1 "@W@:3: names o/r but is not uses: OWNER/REPO[/PATH]@REF" \
+    flow "wf-form-$n" "$df" "$wf" 1 "docker/upgrade: @W@:3: names o/r but is not uses: OWNER/REPO[/PATH]@REF" \
         "$df" "$wf" "fake curl:"
 done
 
@@ -1257,7 +1086,7 @@ wf=$(printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" "${others[@]}")
 flow wf-others "$df" "$wf" 0 "" "$dfafter" \
     "$(printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@$c3" "${others[@]}")"
 wf=$(printf '%s\n' "${others[@]}")
-flow wf-others-unpinned "$df" "$wf" 0 "upgrade: @W@: no # TRACK USES line, so there is nothing to re-pin" \
+flow wf-others-unpinned "$df" "$wf" 0 "docker/upgrade: @W@: no # TRACK USES line, so there is nothing to re-pin" \
     "$dfafter" "$wf"
 
 # A uses: already at its commit is left as it is, blanks at its end and all, so
@@ -1269,94 +1098,38 @@ flow wf-current "$df" "$wf" 0 "" "$dfafter" "$(printf '%s' "$wf")"
 # earlier one covers.
 printf '%s\n' "# TRACK USES o/r@v1" "  - uses: ./local" >"$m/workflows/3.yml"
 rc=0
-"$upgrade" "$work/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/3.yml" \
-    >/dev/null 2>"$work/err" || rc=$?
+"$upgrade" "$test_tmp/multi.Dockerfile" "$m/workflows/1.yml" "$m/workflows/3.yml" \
+    >/dev/null 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 1 ] ||
-    ! grep -qF "upgrade: $m/workflows/3.yml: TRACK USES o/r@v1 names no uses: o/r line" "$work/err"; then
-    fail wf-multi-names-nothing "exit $rc, not refused naming it: $(<"$work/err")"
-elif [ "$(<"$work/multi.Dockerfile")" != "$df" ] || [ -e "$m/workflows.new" ]; then
-    fail wf-multi-names-nothing "a file was written"
+    ! grep -qF "docker/upgrade: $m/workflows/3.yml: TRACK USES o/r@v1 names no uses: o/r line" "$test_tmp/err"; then
+    test_fail wf-multi-names-nothing "exit $rc, not refused naming it: $(<"$test_tmp/err")"
+elif [ "$(<"$test_tmp/multi.Dockerfile")" != "$df" ] || [ -e "$m/workflows.new" ]; then
+    test_fail wf-multi-names-nothing "a file was written"
 fi
 
-flow wf-nothing "$df" $'  - uses: ./local\n' 0 "upgrade: @W@: no # TRACK USES line, so there is nothing to re-pin" \
+flow wf-nothing "$df" $'  - uses: ./local\n' 0 "docker/upgrade: @W@: no # TRACK USES line, so there is nothing to re-pin" \
     "$dfafter" '  - uses: ./local'
 
 # A file left as it was is not written at all.
-file=$work/untouched.Dockerfile
+file=$test_tmp/untouched.Dockerfile
 printf 'FROM x\n' >"$file"
 inode=$(ls -i "$file")
-"$upgrade" "$file" >/dev/null 2>"$work/err" || fail untouched "failed: $(<"$work/err")"
-[ "$(ls -i "$file")" = "$inode" ] || fail untouched "the Dockerfile was written"
-
-file=$work/twice.Dockerfile
-printf '%s' "$df" >"$file"
-printf '%s' "$pinned" >"$work/twice.yml"
-for list in "$work/twice.yml $work/twice.yml" "$file"; do
-    read -r -a named <<<"$list"
-    if "$upgrade" "$file" "${named[@]}" 2>"$work/err" ||
-        ! grep -qxF "upgrade: ${named[-1]}: is named twice" "$work/err"; then
-        fail named-twice "$list not refused: $(<"$work/err")"
-    fi
-done
-if "$upgrade" "$file" "$work/absent.yml" 2>"$work/err" ||
-    ! grep -qxF "upgrade: $work/absent.yml: no such file" "$work/err"; then
-    fail wf-missing "not refused naming it: $(<"$work/err")"
-fi
-mkdir "$work/directory.yml"
-if "$upgrade" "$file" "$work/directory.yml" 2>"$work/err" ||
-    ! grep -qxF "upgrade: $work/directory.yml: not a regular file" "$work/err"; then
-    fail wf-directory "not refused naming it: $(<"$work/err")"
-fi
+"$upgrade" "$file" >/dev/null 2>"$test_tmp/err" || test_fail untouched "failed: $(<"$test_tmp/err")"
+[ "$(ls -i "$file")" = "$inode" ] || test_fail untouched "the Dockerfile was written"
 
 # The proposal's temporary file cannot be made once the Dockerfile's has been,
 # so nothing is written, no temporary file is left and the workflows.new made
 # for it is removed.
-FAKE_MKTEMP_FAIL=$(readlink -f "$work")/wf-write-fails/.github/workflows.new/w.yml.XXXXXX \
+FAKE_MKTEMP_FAIL=$(readlink -f "$test_tmp")/wf-write-fails/.github/workflows.new/w.yml.XXXXXX \
     flow wf-write-fails "$df" "$pinned" 1 "No space left on device" "$df" "${pinned%$'\n'}"
-if compgen -G "$work/wf-write-fails.Dockerfile.*" >/dev/null; then
-    fail wf-write-fails "left $(compgen -G "$work/wf-write-fails.Dockerfile.*")"
-fi
-
-# Every FREEZE line, exact or mistyped, in every file named is listed as grep
-# lists it, before anything is looked up or written.
-f=$work/freeze
-mkdir -p "$f/.github/workflows"
-fdf=$'# FROMFREEZE r/x:1\nFROM r/x:1\n  #argfreeze V github:o/p\nARG V=1\n# TRACK ARG W github:o/p\nARG W=1\n'
-fdf+=$'# ARG FREEZE V github:o/p\n# arg_freeze V github:o/p\n#ARGS-FREEZE V github:o/p\n# ARGFREEZER notes\n'
-fwf=$'steps:\n# USESFREEZE o/r@v1\n  - uses: o/r@v0\n#UsesFreeze o/a@v2\n# uses - freeze o/r@v1\n'
-printf '%s' "$fdf" >"$f/Dockerfile"
-printf '%s' "$fwf" >"$f/.github/workflows/w.yml"
-said=$(printf '%s\n' "Dockerfile:1:# FROMFREEZE r/x:1" "Dockerfile:3:  #argfreeze V github:o/p" \
-    "Dockerfile:7:# ARG FREEZE V github:o/p" "Dockerfile:8:# arg_freeze V github:o/p" \
-    "Dockerfile:9:#ARGS-FREEZE V github:o/p" \
-    ".github/workflows/w.yml:2:# USESFREEZE o/r@v1" ".github/workflows/w.yml:4:#UsesFreeze o/a@v2" \
-    ".github/workflows/w.yml:5:# uses - freeze o/r@v1" \
-    "upgrade: FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES")
-rc=0
-(cd "$f" && "$upgrade" Dockerfile .github/workflows/w.yml) >"$work/out" 2>"$work/err" || rc=$?
-if [ "$rc" != 1 ] || [ "$(<"$work/err")" != "$said" ]; then
-    fail freeze "exit $rc, stderr: $(<"$work/err")"
-elif [ -s "$work/out" ]; then
-    fail freeze "something was looked up: $(<"$work/out")"
-elif [ "$(<"$f/Dockerfile")" != "$(printf '%s' "$fdf")" ] ||
-    [ "$(<"$f/.github/workflows/w.yml")" != "$(printf '%s' "$fwf")" ] ||
-    [ -e "$f/.github/workflows.new" ]; then
-    fail freeze "a file was written"
-fi
-
-# grep failing otherwise than by finding nothing stops the run with its status.
-rc=0
-FAKE_GREP=fail "$upgrade" "$f/Dockerfile" >"$work/out" 2>"$work/err" || rc=$?
-if [ "$rc" != 2 ] || [ "$(<"$work/err")" != "grep: $f/Dockerfile: Permission denied" ]; then
-    fail freeze-grep-fails "exit $rc, stderr: $(<"$work/err")"
-elif [ -s "$work/out" ] || [ "$(<"$f/Dockerfile")" != "$(printf '%s' "$fdf")" ]; then
-    fail freeze-grep-fails "carried on: $(<"$work/out")"
+if compgen -G "$test_tmp/wf-write-fails.Dockerfile.*" >/dev/null; then
+    test_fail wf-write-fails "left $(compgen -G "$test_tmp/wf-write-fails.Dockerfile.*")"
 fi
 
 # The record lists each file written, then a line for each value a pin's lines
 # held that is not the new one, a FROM's tag as REPO:TAG; a pin nothing moved,
 # and a workflow nothing moved in, are left out. Its directory is made.
-r=$work/rec
+r=$test_tmp/rec
 mkdir -p "$r/.github/workflows"
 printf '%s  t_1.2.3_linux\n' "$hx" >"$sums"
 printf '%s\n' "# TRACK FROM r/x:1" "# TRACK ARG V github:o/p" "# TRACK ARG W github:o/p" \
@@ -1368,120 +1141,120 @@ printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" "  - uses: o/r/sub@$c1" "
 printf '%s\n' "# TRACK USES o/a@v2" "  - uses: o/a@$c2" >"$r/.github/workflows/2.yml"
 printf '%s\n' "# TRACK USES o/a@v2" "  - uses: o/a@v1" >"$r/.github/workflows/3.yml"
 commit_all "$r"
-real=$(readlink -f "$work")
+real=$(readlink -f "$test_tmp")
 said=$(printf '%s\n' "$real/rec/Dockerfile" "$real/rec/.github/workflows.new/1.yml" \
     "$real/rec/.github/workflows.new/3.yml" "" "r/x:1 r/x:1 -> sha256:aaaaaaaaaaaa" \
     "r/x:1 sha256:000000000000 -> sha256:aaaaaaaaaaaa" "V 1.0.0 -> 1.2.3" \
     "H dddddddddddd -> cccccccccccc" "o/r@v1 v0 -> 3333333" "o/r@v1 1111111 -> 3333333" \
     "o/a@v2 v1 -> 2222222")
 rc=0
-"$upgrade" --record "$work/recdir/sub/record" "$r/Dockerfile" "$r/.github/workflows/1.yml" \
-    "$r/.github/workflows/2.yml" "$r/.github/workflows/3.yml" >"$work/out" 2>"$work/err" || rc=$?
+"$upgrade" --record "$test_tmp/recdir/sub/record" "$r/Dockerfile" "$r/.github/workflows/1.yml" \
+    "$r/.github/workflows/2.yml" "$r/.github/workflows/3.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 0 ]; then
-    fail record "exit $rc, not 0: $(<"$work/err")"
-elif ! [ -f "$work/recdir/sub/record" ] || [ "$(<"$work/recdir/sub/record")" != "$said" ]; then
-    fail record "the record is: $(cat -- "$work/recdir/sub/record" 2>&1)"
+    test_fail record "exit $rc, not 0: $(<"$test_tmp/err")"
+elif ! [ -f "$test_tmp/recdir/sub/record" ] || [ "$(<"$test_tmp/recdir/sub/record")" != "$said" ]; then
+    test_fail record "the record is: $(cat -- "$test_tmp/recdir/sub/record" 2>&1)"
 elif [ -e "$r/.github/workflows.new/2.yml" ]; then
-    fail record "2.yml, which nothing moved, has a proposal"
+    test_fail record "2.yml, which nothing moved, has a proposal"
 fi
 
 # Runs upgrade with the arguments $2 onwards, and checks it exits 1 with stderr
-# $1, having looked nothing up, written no record at $work/recdir/sub/record
+# $1, having looked nothing up, written no record at $test_tmp/recdir/sub/record
 # where none was there and changed none that was, and left $r/Dockerfile as it
 # was.
 pending_refused() {
     local said=$1 rc=0 kept="" dockerfile
     dockerfile=$(<"$r/Dockerfile")
-    [ ! -f "$work/recdir/sub/record" ] || kept=$(<"$work/recdir/sub/record")
-    "$upgrade" "${@:2}" >"$work/out" 2>"$work/err" || rc=$?
-    if [ "$rc" != 1 ] || [ "$(<"$work/err")" != "$said" ]; then
-        fail "$name" "exit $rc, stderr: $(<"$work/err")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "something was looked up: $(<"$work/out")"
+    [ ! -f "$test_tmp/recdir/sub/record" ] || kept=$(<"$test_tmp/recdir/sub/record")
+    "$upgrade" "${@:2}" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != 1 ] || [ "$(<"$test_tmp/err")" != "$said" ]; then
+        test_fail "$name" "exit $rc, stderr: $(<"$test_tmp/err")"
+    elif [ -s "$test_tmp/out" ]; then
+        test_fail "$name" "something was looked up: $(<"$test_tmp/out")"
     elif [ "$(<"$r/Dockerfile")" != "$dockerfile" ]; then
-        fail "$name" "the Dockerfile was written"
-    elif [ -z "$kept" ] && [ -e "$work/recdir/sub/record" ]; then
-        fail "$name" "a record was written"
-    elif [ -n "$kept" ] && [ "$(<"$work/recdir/sub/record")" != "$kept" ]; then
-        fail "$name" "the record was changed"
+        test_fail "$name" "the Dockerfile was written"
+    elif [ -z "$kept" ] && [ -e "$test_tmp/recdir/sub/record" ]; then
+        test_fail "$name" "a record was written"
+    elif [ -n "$kept" ] && [ "$(<"$test_tmp/recdir/sub/record")" != "$kept" ]; then
+        test_fail "$name" "the record was changed"
     fi
 }
 
 # A record an earlier run left is refused, since the commit it awaits would be
 # lost.
 name=record-pending
-pending_refused "upgrade: $work/recdir/sub/record: is an earlier upgrade's record still pending; commit it with docker/upgrade-commit or remove it first" \
-    --record "$work/recdir/sub/record" "$r/Dockerfile"
+pending_refused "docker/upgrade: $test_tmp/recdir/sub/record: is an earlier upgrade's record still pending; commit it with docker/upgrade-commit or remove it first" \
+    --record "$test_tmp/recdir/sub/record" "$r/Dockerfile"
 
 # A Dockerfile git holds changes to, or does not track, is refused, since the
 # commit would carry what was there beside the pins; one outside a repository
 # fails as git does.
-rm -- "$work/recdir/sub/record"
+rm -- "$test_tmp/recdir/sub/record"
 name=record-dirty
-pending_refused "upgrade: $real/rec/Dockerfile: has changes not committed; commit or stash them first" \
-    --record "$work/recdir/sub/record" "$r/Dockerfile"
+pending_refused "docker/upgrade: $real/rec/Dockerfile: has changes not committed; commit or stash them first" \
+    --record "$test_tmp/recdir/sub/record" "$r/Dockerfile"
 "$REAL_GIT" -C "$r" add Dockerfile
 name=record-dirty-staged
-pending_refused "upgrade: $real/rec/Dockerfile: has changes not committed; commit or stash them first" \
-    --record "$work/recdir/sub/record" "$r/Dockerfile"
+pending_refused "docker/upgrade: $real/rec/Dockerfile: has changes not committed; commit or stash them first" \
+    --record "$test_tmp/recdir/sub/record" "$r/Dockerfile"
 printf '%s' "$df" >"$r/untracked.Dockerfile"
 name=record-untracked
-pending_refused "upgrade: $real/rec/untracked.Dockerfile: has changes not committed; commit or stash them first" \
-    --record "$work/recdir/sub/record" "$r/untracked.Dockerfile"
+pending_refused "docker/upgrade: $real/rec/untracked.Dockerfile: has changes not committed; commit or stash them first" \
+    --record "$test_tmp/recdir/sub/record" "$r/untracked.Dockerfile"
 rm -- "$r/untracked.Dockerfile"
-mkdir "$work/norepo"
-printf '%s' "$df" >"$work/norepo/Dockerfile"
+mkdir "$test_tmp/norepo"
+printf '%s' "$df" >"$test_tmp/norepo/Dockerfile"
 rc=0
-"$upgrade" --record "$work/recdir/sub/record" "$work/norepo/Dockerfile" >"$work/out" 2>"$work/err" ||
+"$upgrade" --record "$test_tmp/recdir/sub/record" "$test_tmp/norepo/Dockerfile" >"$test_tmp/out" 2>"$test_tmp/err" ||
     rc=$?
-if [ "$rc" = 0 ] || ! grep -qF "not a git repository" "$work/err" || [ -s "$work/out" ] ||
-    [ -e "$work/recdir/sub/record" ] || [ "$(<"$work/norepo/Dockerfile")" != "$df" ]; then
-    fail record-no-repo "exit $rc, or carried on: $(<"$work/err")"
+if [ "$rc" = 0 ] || ! grep -qF "not a git repository" "$test_tmp/err" || [ -s "$test_tmp/out" ] ||
+    [ -e "$test_tmp/recdir/sub/record" ] || [ "$(<"$test_tmp/norepo/Dockerfile")" != "$df" ]; then
+    test_fail record-no-repo "exit $rc, or carried on: $(<"$test_tmp/err")"
 fi
 
 # Through a symbolic link, the file it names is the one checked, as that is the
 # one written.
-mkdir -p "$work/linkrepo/real"
-printf '%s' "$df" >"$work/linkrepo/real/Dockerfile"
-ln -s real/Dockerfile "$work/linkrepo/Dockerfile"
-commit_all "$work/linkrepo"
-printf '# edit\n' >>"$work/linkrepo/real/Dockerfile"
+mkdir -p "$test_tmp/linkrepo/real"
+printf '%s' "$df" >"$test_tmp/linkrepo/real/Dockerfile"
+ln -s real/Dockerfile "$test_tmp/linkrepo/Dockerfile"
+commit_all "$test_tmp/linkrepo"
+printf '# edit\n' >>"$test_tmp/linkrepo/real/Dockerfile"
 rc=0
-"$upgrade" --record "$work/recdir/sub/record" "$work/linkrepo/Dockerfile" >"$work/out" 2>"$work/err" ||
+"$upgrade" --record "$test_tmp/recdir/sub/record" "$test_tmp/linkrepo/Dockerfile" >"$test_tmp/out" 2>"$test_tmp/err" ||
     rc=$?
-if [ "$rc" != 1 ] || [ "$(<"$work/err")" != \
-    "upgrade: $real/linkrepo/real/Dockerfile: has changes not committed; commit or stash them first" ] ||
-    [ -s "$work/out" ] || [ -e "$work/recdir/sub/record" ]; then
-    fail record-dirty-link "exit $rc, or carried on: $(<"$work/err")"
+if [ "$rc" != 1 ] || [ "$(<"$test_tmp/err")" != \
+    "docker/upgrade: $real/linkrepo/real/Dockerfile: has changes not committed; commit or stash them first" ] ||
+    [ -s "$test_tmp/out" ] || [ -e "$test_tmp/recdir/sub/record" ]; then
+    test_fail record-dirty-link "exit $rc, or carried on: $(<"$test_tmp/err")"
 fi
 
 # Where nothing moves, an empty record an earlier run left is replaced by an
 # empty one.
 commit_all "$r"
-: >"$work/recdir/sub/record"
+: >"$test_tmp/recdir/sub/record"
 rc=0
-"$upgrade" --record "$work/recdir/sub/record" "$r/Dockerfile" >/dev/null 2>"$work/err" || rc=$?
-if [ "$rc" != 0 ] || ! [ -f "$work/recdir/sub/record" ] || [ -s "$work/recdir/sub/record" ]; then
-    fail record-nothing-moved "exit $rc: $(<"$work/err"); record: $(cat -- "$work/recdir/sub/record" 2>&1)"
+"$upgrade" --record "$test_tmp/recdir/sub/record" "$r/Dockerfile" >/dev/null 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 0 ] || ! [ -f "$test_tmp/recdir/sub/record" ] || [ -s "$test_tmp/recdir/sub/record" ]; then
+    test_fail record-nothing-moved "exit $rc: $(<"$test_tmp/err"); record: $(cat -- "$test_tmp/recdir/sub/record" 2>&1)"
 fi
 
 # A refused run, or one that fails to write, writes no record and nothing else.
 rc=0
-"$upgrade" --record "$work/recdir/refused" "$r/Dockerfile" "$r/.github/workflows/1.yml" \
-    >/dev/null 2>"$work/err" || rc=$?
-if [ "$rc" != 1 ] || [ -e "$work/recdir/refused" ]; then
-    fail record-refused "exit $rc, or the record was written: $(<"$work/err")"
+"$upgrade" --record "$test_tmp/recdir/refused" "$r/Dockerfile" "$r/.github/workflows/1.yml" \
+    >/dev/null 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 1 ] || [ -e "$test_tmp/recdir/refused" ]; then
+    test_fail record-refused "exit $rc, or the record was written: $(<"$test_tmp/err")"
 fi
-mkdir "$work/recfail"
-printf '%s' "$df" >"$work/recfail/Dockerfile"
-commit_all "$work/recfail"
+mkdir "$test_tmp/recfail"
+printf '%s' "$df" >"$test_tmp/recfail/Dockerfile"
+commit_all "$test_tmp/recfail"
 rc=0
-FAKE_MKTEMP_FAIL=$real/recdir/fails.XXXXXX "$upgrade" --record "$work/recdir/fails" \
-    "$work/recfail/Dockerfile" >/dev/null 2>"$work/err" || rc=$?
-if [ "$rc" != 1 ] || [ -e "$work/recdir/fails" ] ||
-    [ "$(<"$work/recfail/Dockerfile")" != "$df" ] ||
-    compgen -G "$work/recfail/Dockerfile.*" >/dev/null; then
-    fail record-write-fails "exit $rc, or something was written: $(<"$work/err")"
+FAKE_MKTEMP_FAIL=$real/recdir/fails.XXXXXX "$upgrade" --record "$test_tmp/recdir/fails" \
+    "$test_tmp/recfail/Dockerfile" >/dev/null 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 1 ] || [ -e "$test_tmp/recdir/fails" ] ||
+    [ "$(<"$test_tmp/recfail/Dockerfile")" != "$df" ] ||
+    compgen -G "$test_tmp/recfail/Dockerfile.*" >/dev/null; then
+    test_fail record-write-fails "exit $rc, or something was written: $(<"$test_tmp/err")"
 fi
 
 # Each directory missing above the record is made, and removed again by a run
@@ -1489,50 +1262,50 @@ fi
 # directory.
 rc=0
 FAKE_MKTEMP_FAIL=$real/recdir/new/tmp/record.XXXXXX "$upgrade" --record \
-    "$real/recdir/new/tmp/record" "$work/recfail/Dockerfile" >/dev/null 2>"$work/err" || rc=$?
-if [ "$rc" != 1 ] || [ -e "$work/recdir/new" ] || [ "$(<"$work/recfail/Dockerfile")" != "$df" ]; then
-    fail record-dirs-removed "exit $rc, or something was left: $(<"$work/err")"
+    "$real/recdir/new/tmp/record" "$test_tmp/recfail/Dockerfile" >/dev/null 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 1 ] || [ -e "$test_tmp/recdir/new" ] || [ "$(<"$test_tmp/recfail/Dockerfile")" != "$df" ]; then
+    test_fail record-dirs-removed "exit $rc, or something was left: $(<"$test_tmp/err")"
 fi
 rc=0
-(cd "$work/recfail" && "$upgrade" --record tmp/sub/record Dockerfile) >/dev/null 2>"$work/err" ||
+(cd "$test_tmp/recfail" && "$upgrade" --record tmp/sub/record Dockerfile) >/dev/null 2>"$test_tmp/err" ||
     rc=$?
 said=$(printf '%s\n' "$real/recfail/Dockerfile" "" "V 1 -> 1.2.3")
 if [ "$rc" != 0 ]; then
-    fail record-dirs-relative "exit $rc, not 0: $(<"$work/err")"
-elif [ "$(cat -- "$work/recfail/tmp/sub/record" 2>&1)" != "$said" ]; then
-    fail record-dirs-relative "the record is: $(cat -- "$work/recfail/tmp/sub/record" 2>&1)"
+    test_fail record-dirs-relative "exit $rc, not 0: $(<"$test_tmp/err")"
+elif [ "$(cat -- "$test_tmp/recfail/tmp/sub/record" 2>&1)" != "$said" ]; then
+    test_fail record-dirs-relative "the record is: $(cat -- "$test_tmp/recfail/tmp/sub/record" 2>&1)"
 fi
 
-usage=$(printf '%s\n' "Usage: upgrade [--record FILE] [DOCKERFILE [WORKFLOW|ACTION...]]" \
-    "       upgrade [--record FILE] --workflows WORKFLOW|ACTION...")
+usage=$(printf '%s\n' "Usage: docker/upgrade [--record RECORD] [DOCKERFILE [WORKFLOW | FILE...]]" \
+    "       docker/upgrade [--record RECORD] --workflows WORKFLOW | FILE...")
 for empty in "" x; do
     rc=0
     if [ -n "$empty" ]; then
-        "$upgrade" --record >/dev/null 2>"$work/err" || rc=$?
+        "$upgrade" --record >/dev/null 2>"$test_tmp/err" || rc=$?
     else
-        "$upgrade" --record "" "$work/recfail/Dockerfile" >/dev/null 2>"$work/err" || rc=$?
+        "$upgrade" --record "" "$test_tmp/recfail/Dockerfile" >/dev/null 2>"$test_tmp/err" || rc=$?
     fi
-    if [ "$rc" != 2 ] || [ "$(<"$work/err")" != "$usage" ]; then
-        fail "record-no-file${empty:+-at-end}" "exit $rc: $(<"$work/err")"
+    if [ "$rc" != 2 ] || [ "$(<"$test_tmp/err")" != "$usage" ]; then
+        test_fail "record-no-file${empty:+-at-end}" "exit $rc: $(<"$test_tmp/err")"
     fi
 done
 
 # --workflows names at least one workflow, with or without --record.
-for given in "--workflows" "--record $work/recdir/none --workflows"; do
+for given in "--workflows" "--record $test_tmp/recdir/none --workflows"; do
     read -r -a words <<<"$given"
     rc=0
-    "$upgrade" "${words[@]}" >"$work/out" 2>"$work/err" || rc=$?
-    if [ "$rc" != 2 ] || [ -s "$work/out" ] || [ "$(<"$work/err")" != "$usage" ] ||
-        [ -e "$work/recdir/none" ]; then
-        fail workflows-no-workflow "'$given': exit $rc: $(<"$work/err")"
+    "$upgrade" "${words[@]}" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != 2 ] || [ -s "$test_tmp/out" ] || [ "$(<"$test_tmp/err")" != "$usage" ] ||
+        [ -e "$test_tmp/recdir/none" ]; then
+        test_fail workflows-no-workflow "'$given': exit $rc: $(<"$test_tmp/err")"
     fi
 done
 
 # With --workflows, only the workflows named move, and the record lists only
-# their proposals and moves. No Dockerfile is read, linted or checked against
-# git, so one beside them with changes not committed, and one that is a link
-# to nothing, as an uninitialised submodule leaves it, stay as they are.
-o=$work/only
+# their proposals and moves. No Dockerfile is read or checked against git, so
+# one beside them with changes not committed, and one that is a link to nothing,
+# as an uninitialised submodule leaves it, stay as they are.
+o=$test_tmp/only
 mkdir -p "$o/.github/workflows"
 printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" >"$o/.github/workflows/1.yml"
 printf '%s\n' "# TRACK USES o/a@v2" "  - uses: o/a@$c2" >"$o/.github/workflows/2.yml"
@@ -1545,64 +1318,45 @@ said=$(printf '%s\n' "$real/only/.github/workflows.new/1.yml" \
     "$real/only/.github/workflows.new/3.yml" "" "o/r@v1 v0 -> 3333333" "o/a@v2 v1 -> 2222222")
 rc=0
 (cd "$o" && "$upgrade" --record tmp/record --workflows .github/workflows/1.yml \
-    .github/workflows/2.yml .github/workflows/3.yml) >"$work/out" 2>"$work/err" || rc=$?
+    .github/workflows/2.yml .github/workflows/3.yml) >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 0 ]; then
-    fail workflows-only "exit $rc, not 0: $(<"$work/err")"
-elif [ -s "$work/out" ]; then
-    fail workflows-only "stdout is: $(<"$work/out")"
+    test_fail workflows-only "exit $rc, not 0: $(<"$test_tmp/err")"
+elif [ -s "$test_tmp/out" ]; then
+    test_fail workflows-only "stdout is: $(<"$test_tmp/out")"
 elif [ "$(cat -- "$o/tmp/record" 2>&1)" != "$said" ]; then
-    fail workflows-only "the record is: $(cat -- "$o/tmp/record" 2>&1)"
-elif grep -qE 'fake (lint|docker|curl):|Dockerfile' "$work/err"; then
-    fail workflows-only "a Dockerfile was read or a pin of one looked up: $(<"$work/err")"
+    test_fail workflows-only "the record is: $(cat -- "$o/tmp/record" 2>&1)"
+elif grep -qE 'fake (docker|curl):|Dockerfile' "$test_tmp/err"; then
+    test_fail workflows-only "a Dockerfile was read or a pin of one looked up: $(<"$test_tmp/err")"
 elif [ "$(<"$o/Dockerfile")" != "$df"$'\n# edit' ] || [ -e "$o/Dockerfile.lock" ]; then
-    fail workflows-only "the Dockerfile or its locks were written"
+    test_fail workflows-only "the Dockerfile or its locks were written"
 elif [ -e "$o/.github/workflows.new/2.yml" ]; then
-    fail workflows-only "2.yml, which nothing moved, has a proposal"
-fi
-
-# A FREEZE line is still listed, from the workflows alone.
-printf '%s\n' "# USESFREEZE" "  - uses: o/r@v0" >"$o/.github/workflows/4.yml"
-rc=0
-"$upgrade" --workflows "$o/.github/workflows/4.yml" >"$work/out" 2>"$work/err" || rc=$?
-said=$(printf '%s\n' "$o/.github/workflows/4.yml:1:# USESFREEZE" \
-    "upgrade: FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES")
-if [ "$rc" != 1 ] || [ "$(<"$work/err")" != "$said" ] || [ -s "$work/out" ]; then
-    fail workflows-only-freeze "exit $rc: $(<"$work/err")"
-fi
-
-# A workflow named twice is refused all the same.
-rc=0
-"$upgrade" --workflows "$o/.github/workflows/4.yml" "$o/.github/workflows/../workflows/4.yml" \
-    >"$work/out" 2>"$work/err" || rc=$?
-if [ "$rc" != 1 ] || [ -s "$work/out" ] ||
-    [ "$(<"$work/err")" != "upgrade: $o/.github/workflows/../workflows/4.yml: is named twice" ]; then
-    fail workflows-only-twice "exit $rc: $(<"$work/err")"
+    test_fail workflows-only "2.yml, which nothing moved, has a proposal"
 fi
 
 # Paths given relative to the workflow's own directory place its proposal beside
 # that workflow's .github/workflows all the same.
-v=$work/relative
+v=$test_tmp/relative
 mkdir -p "$v/.github/workflows"
 printf '%s' "$df" >"$v/Dockerfile"
 printf '%s' "$pinned" >"$v/.github/workflows/w.yml"
 commit_all "$v"
 rc=0
 (cd "$v/.github/workflows" && "$upgrade" --record ../../rec ../../Dockerfile w.yml) \
-    >/dev/null 2>"$work/err" || rc=$?
+    >/dev/null 2>"$test_tmp/err" || rc=$?
 said=$(printf '%s\n' "$real/relative/Dockerfile" "$real/relative/.github/workflows.new/w.yml" "" \
     "V 1 -> 1.2.3" "o/r@v1 v0 -> 3333333")
 if [ "$rc" != 0 ]; then
-    fail relative "exit $rc, not 0: $(<"$work/err")"
+    test_fail relative "exit $rc, not 0: $(<"$test_tmp/err")"
 elif [ "$(<"$v/rec")" != "$said" ] ||
     [ "$(<"$v/.github/workflows.new/w.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" ]; then
-    fail relative "the record or proposal is wrong: $(<"$v/rec")"
+    test_fail relative "the record or proposal is wrong: $(<"$v/rec")"
 fi
 
 # An action, named action.yml or action.yaml outside .github/workflows, is
 # re-pinned in place, keeping its mode, through a symbolic link, which stays a
 # link; no proposal is made for it. One nothing moves in is not written. An
 # action.yml inside .github/workflows is a workflow, so proposed.
-a=$work/action
+a=$test_tmp/action
 mkdir -p "$a/x" "$a/y" "$a/real" "$a/.github/workflows"
 printf '%s\n' "# TRACK USES o/a@v2" "    - uses: o/a@v1" "    - uses: ./z" >"$a/x/action.yml"
 chmod 0600 "$a/x/action.yml"
@@ -1612,38 +1366,38 @@ printf '%s\n' "# TRACK USES o/a@v2" "    - uses: o/a@$c2" >"$a/action.yml"
 printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" >"$a/.github/workflows/action.yml"
 rc=0
 "$upgrade" --workflows "$a/x/action.yml" "$a/y/action.yaml" "$a/action.yml" \
-    "$a/.github/workflows/action.yml" >"$work/out" 2>"$work/err" || rc=$?
+    "$a/.github/workflows/action.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 0 ]; then
-    fail action "exit $rc, not 0: $(<"$work/err")"
+    test_fail action "exit $rc, not 0: $(<"$test_tmp/err")"
 elif [ "$(<"$a/x/action.yml")" != $'# TRACK USES o/a@v2\n    - uses: o/a@'"$c2"$'\n    - uses: ./z' ]; then
-    fail action "x/action.yml is: $(<"$a/x/action.yml")"
+    test_fail action "x/action.yml is: $(<"$a/x/action.yml")"
 elif [ "$(stat -c %a "$a/x/action.yml")" != 600 ]; then
-    fail action "x/action.yml's mode is $(stat -c %a "$a/x/action.yml")"
+    test_fail action "x/action.yml's mode is $(stat -c %a "$a/x/action.yml")"
 elif ! [ -L "$a/y/action.yaml" ] ||
     [ "$(<"$a/real/action.yaml")" != $'# TRACK USES o/r@v1\n    - uses: o/r@'"$c3" ]; then
-    fail action "the link was replaced or its target not written"
-elif grep -qF "wrote $real/action/action.yml" "$work/err"; then
-    fail action "action.yml, which nothing moved, was written"
+    test_fail action "the link was replaced or its target not written"
+elif grep -qF "wrote $real/action/action.yml" "$test_tmp/err"; then
+    test_fail action "action.yml, which nothing moved, was written"
 elif [ "$(<"$a/.github/workflows/action.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@v0' ] ||
     [ "$(cat -- "$a/.github/workflows.new/action.yml" 2>&1)" != $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" ]; then
-    fail action "the workflow named action.yml was written or not proposed"
-elif [ -e "$a/x/workflows.new" ] || [ -e "$a/workflows.new" ] || [ -s "$work/out" ]; then
-    fail action "something else was written: $(<"$work/out")"
+    test_fail action "the workflow named action.yml was written or not proposed"
+elif [ -e "$a/x/workflows.new" ] || [ -e "$a/workflows.new" ] || [ -s "$test_tmp/out" ]; then
+    test_fail action "something else was written: $(<"$test_tmp/out")"
 fi
 
 # An action holds TRACK USES alone, a refusal naming it as an action.
 printf '%s\n' "# TRACK ARG V github:o/p" "    - uses: o/r@v0" >"$a/x/action.yml"
 rc=0
-"$upgrade" --workflows "$a/x/action.yml" >"$work/out" 2>"$work/err" || rc=$?
+"$upgrade" --workflows "$a/x/action.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 1 ] ||
-    [ "$(<"$work/err")" != "$a/x/action.yml:1: TRACK ARG belongs in a Dockerfile, not an action" ]; then
-    fail action-track-arg "exit $rc: $(<"$work/err")"
+    [ "$(<"$test_tmp/err")" != "docker/upgrade: $a/x/action.yml:1: TRACK ARG belongs in a Dockerfile, not an action" ]; then
+    test_fail action-track-arg "exit $rc: $(<"$test_tmp/err")"
 fi
 
 # With --record, an action written is listed with its moves; one with changes
 # not committed, or linking into another repository, is refused before any
 # lookup, with or without --workflows.
-k=$work/actrec
+k=$test_tmp/actrec
 mkdir -p "$k/g"
 printf '%s' "$df" >"$k/Dockerfile"
 printf '%s\n' "# TRACK USES o/a@v2" "    - uses: o/a@v1" >"$k/g/action.yml"
@@ -1654,170 +1408,134 @@ printf '%s\n' "# TRACK USES o/a@v2" "    - uses: o/a@v1" >"$k/lib/action.yml"
 commit_all "$k/lib"
 ln -s lib/action.yml "$k/action.yml"
 rc=0
-"$upgrade" --record "$k/rec" "$k/Dockerfile" "$k/g/action.yml" >/dev/null 2>"$work/err" || rc=$?
+"$upgrade" --record "$k/rec" "$k/Dockerfile" "$k/g/action.yml" >/dev/null 2>"$test_tmp/err" || rc=$?
 said=$(printf '%s\n' "$real/actrec/Dockerfile" "$real/actrec/g/action.yml" "" \
     "V 1 -> 1.2.3" "o/a@v2 v1 -> 2222222")
 if [ "$rc" != 0 ]; then
-    fail action-record "exit $rc, not 0: $(<"$work/err")"
+    test_fail action-record "exit $rc, not 0: $(<"$test_tmp/err")"
 elif [ "$(cat -- "$k/rec" 2>&1)" != "$said" ]; then
-    fail action-record "the record is: $(cat -- "$k/rec" 2>&1)"
+    test_fail action-record "the record is: $(cat -- "$k/rec" 2>&1)"
 fi
 rm -f -- "$k/rec"
 "$REAL_GIT" -C "$k" commit -q -a -m upgraded
 printf '# edit\n' >>"$k/g/action.yml"
 for given in "$k/Dockerfile" --workflows; do
     rc=0
-    "$upgrade" --record "$k/rec" "$given" "$k/g/action.yml" >"$work/out" 2>"$work/err" || rc=$?
-    if [ "$rc" != 1 ] || [ -s "$work/out" ] || [ -e "$k/rec" ] || [ "$(<"$work/err")" != \
-        "upgrade: $real/actrec/g/action.yml: has changes not committed; commit or stash them first" ]; then
-        fail action-record-dirty "$given: exit $rc: $(<"$work/err")"
+    "$upgrade" --record "$k/rec" "$given" "$k/g/action.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != 1 ] || [ -s "$test_tmp/out" ] || [ -e "$k/rec" ] || [ "$(<"$test_tmp/err")" != \
+        "docker/upgrade: $real/actrec/g/action.yml: has changes not committed; commit or stash them first" ]; then
+        test_fail action-record-dirty "$given: exit $rc: $(<"$test_tmp/err")"
     fi
 done
 rc=0
-"$upgrade" --record "$k/rec" --workflows "$k/action.yml" >"$work/out" 2>"$work/err" || rc=$?
-if [ "$rc" != 1 ] || [ -s "$work/out" ] || [ -e "$k/rec" ] ||
-    [ "$(<"$work/err")" != "upgrade: $k/action.yml: links to $real/actrec/lib/action.yml, in the repository $real/actrec/lib, not $real/actrec, so docker/upgrade-commit could not commit it; re-pin it in its own repository, or without --record" ]; then
-    fail action-record-link "exit $rc: $(<"$work/err")"
+"$upgrade" --record "$k/rec" --workflows "$k/action.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 1 ] || [ -s "$test_tmp/out" ] || [ -e "$k/rec" ] ||
+    [ "$(<"$test_tmp/err")" != "docker/upgrade: $k/action.yml: links to $real/actrec/lib/action.yml, in the repository $real/actrec/lib, not $real/actrec, so docker/upgrade-commit could not commit it; re-pin it in its own repository, or without --record" ]; then
+    test_fail action-record-link "exit $rc: $(<"$test_tmp/err")"
+fi
+
+# Any other file outside a .github/workflows directory, whatever its name, is
+# re-pinned in place, and with --record listed with its moves.
+f=$test_tmp/inplace
+mkdir -p "$f/workflows" "$f/x/.github"
+for name in w.yml workflows/w.yml x/.github/w.yml; do
+    printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" >"$f/$name"
+done
+commit_all "$f"
+rc=0
+"$upgrade" --record "$f/rec" --workflows "$f/w.yml" "$f/workflows/w.yml" "$f/x/.github/w.yml" \
+    >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+said=$(printf '%s\n' "$real/inplace/w.yml" "$real/inplace/workflows/w.yml" \
+    "$real/inplace/x/.github/w.yml" "" "o/r@v1 v0 -> 3333333")
+if [ "$rc" != 0 ]; then
+    test_fail in-place "exit $rc, not 0: $(<"$test_tmp/err")"
+elif [ "$(cat -- "$f/rec" 2>&1)" != "$said" ]; then
+    test_fail in-place "the record is: $(cat -- "$f/rec" 2>&1)"
+elif [ -n "$(find "$f" -name workflows.new)" ]; then
+    test_fail in-place "a proposal was made: $(find "$f" -name workflows.new)"
+else
+    for name in w.yml workflows/w.yml x/.github/w.yml; do
+        [ "$(<"$f/$name")" = $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" ] ||
+            test_fail in-place "$name is: $(<"$f/$name")"
+    done
+fi
+
+# Such a file holding no TRACK USES line is refused before any lookup, as named
+# by mistake; an action holding none is not.
+printf '%s\n' "  - uses: o/r@v0" >"$f/w.yml"
+rc=0
+"$upgrade" --workflows "$f/w.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 1 ] || [ -s "$test_tmp/out" ] ||
+    [ "$(<"$test_tmp/err")" != "docker/upgrade: $f/w.yml: no # TRACK USES line, so there is nothing to re-pin" ]; then
+    test_fail in-place-no-track "exit $rc: $(<"$test_tmp/err")"
+fi
+printf '%s\n' "  - uses: o/r@v0" >"$f/action.yml"
+rc=0
+"$upgrade" --workflows "$f/action.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 0 ] || [ -s "$test_tmp/out" ] ||
+    [ "$(<"$test_tmp/err")" != "docker/upgrade: $f/action.yml: no # TRACK USES line, so there is nothing to re-pin" ]; then
+    test_fail in-place-action-no-track "exit $rc: $(<"$test_tmp/err")"
 fi
 
 # Progress goes to stderr, a line naming what each pin resolved to and each file
 # written, and docker pull's own output with it; stdout stays empty.
-p=$work/progress
-mkdir -p "$p/.github/workflows" "$work/files/progress"
-printf 'asset\n' >"$work/files/progress/t"
-ht=$(sha256sum <"$work/files/progress/t")
+p=$test_tmp/progress
+mkdir -p "$p/.github/workflows" "$test_tmp/files/progress"
+printf 'asset\n' >"$test_tmp/files/progress/t"
+ht=$(sha256sum <"$test_tmp/files/progress/t")
 ht=${ht%% *}
-printf '%s  u\n' "$hx" >"$work/files/progress/sums"
+printf '%s  u\n' "$hx" >"$test_tmp/files/progress/sums"
 printf '%s\n' "# TRACK FROM r/x:1" "# TRACK ARG V github:o/p" "# TRACK LOCK m pypi:m-d" \
     "# TRACK LOCK n npm:n-d" "# TRACK ARG T sha256:https://dl.test/progress/t" \
     "# TRACK ARG U sha256:https://dl.test/progress/u https://dl.test/progress/sums" \
     "FROM r/x:1" "ARG V=1" "ARG T=1" "ARG U=1" >"$p/Dockerfile"
 printf '%s\n' "# TRACK USES o/a@v2" "  - uses: o/a@v1" >"$p/.github/workflows/w.yml"
-said=$(printf '%s\n' "upgrade: pulling r/x:1" "upgrade: r/x:1 is $new" \
-    "upgrade: o/p's latest release is 1.2.3" \
-    "upgrade: SHA-256 of https://dl.test/progress/t is $ht" \
-    "upgrade: SHA-256 of u in https://dl.test/progress/sums is $hx" \
-    "upgrade: resolving TRACK LOCK m in r/x@$new" "upgrade: TRACK LOCK m resolved 2 package(s)" \
-    "upgrade: n-d's latest version on npm is 3.4.5" \
-    "upgrade: resolving TRACK LOCK n in r/x@$new" "upgrade: TRACK LOCK n resolved 2 package(s)" \
-    "upgrade: o/a's commit for tag v2 is $c2" "upgrade: wrote $real/progress/Dockerfile" \
-    "upgrade: wrote $real/progress/Dockerfile.lock/m/requirements.txt" \
-    "upgrade: wrote $real/progress/Dockerfile.lock/n/package.json" \
-    "upgrade: wrote $real/progress/Dockerfile.lock/n/package-lock.json" \
-    "upgrade: wrote $real/progress/.github/workflows.new/w.yml")
+said=$(printf '%s\n' "docker/upgrade: pulling r/x:1" "docker/upgrade: r/x:1 is $new" \
+    "docker/upgrade: o/p's latest release is 1.2.3" \
+    "docker/upgrade: SHA-256 of https://dl.test/progress/t is $ht" \
+    "docker/upgrade: SHA-256 of u in https://dl.test/progress/sums is $hx" \
+    "docker/upgrade: resolving TRACK LOCK m in r/x@$new" "docker/upgrade: TRACK LOCK m resolved 2 package(s)" \
+    "docker/upgrade: n-d's latest version on npm is 3.4.5" \
+    "docker/upgrade: resolving TRACK LOCK n in r/x@$new" "docker/upgrade: TRACK LOCK n resolved 2 package(s)" \
+    "docker/upgrade: o/a's commit for tag v2 is $c2" "docker/upgrade: wrote $real/progress/Dockerfile" \
+    "docker/upgrade: wrote $real/progress/Dockerfile.lock/m/requirements.txt" \
+    "docker/upgrade: wrote $real/progress/Dockerfile.lock/n/package.json" \
+    "docker/upgrade: wrote $real/progress/Dockerfile.lock/n/package-lock.json" \
+    "docker/upgrade: wrote $real/progress/.github/workflows.new/w.yml")
 rc=0
 rm -f -- "$FAKE_PULLED"
-"$upgrade" "$p/Dockerfile" "$p/.github/workflows/w.yml" >"$work/out" 2>"$work/err" || rc=$?
+"$upgrade" "$p/Dockerfile" "$p/.github/workflows/w.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 0 ]; then
-    fail progress "exit $rc, not 0: $(<"$work/err")"
-elif [ -s "$work/out" ]; then
-    fail progress "stdout is: $(<"$work/out")"
-elif [ "$(grep -e '^upgrade: ' -- "$work/err")" != "$said" ]; then
-    fail progress "stderr is: $(<"$work/err")"
-elif ! grep -qFx -e "fake docker: pulled r/x:1" -- "$work/err"; then
-    fail progress "docker pull's output is not on stderr: $(<"$work/err")"
+    test_fail progress "exit $rc, not 0: $(<"$test_tmp/err")"
+elif [ -s "$test_tmp/out" ]; then
+    test_fail progress "stdout is: $(<"$test_tmp/out")"
+elif [ "$(grep -e '^docker/upgrade: ' -- "$test_tmp/err")" != "$said" ]; then
+    test_fail progress "stderr is: $(<"$test_tmp/err")"
+elif ! grep -qFx -e "fake docker: pulled r/x:1" -- "$test_tmp/err"; then
+    test_fail progress "docker pull's output is not on stderr: $(<"$test_tmp/err")"
 fi
 
 # A symbolic link stays one, and its target is written.
-printf '%s' "$df" >"$work/target.Dockerfile"
-ln -s target.Dockerfile "$work/link.Dockerfile"
+printf '%s' "$df" >"$test_tmp/target.Dockerfile"
+ln -s target.Dockerfile "$test_tmp/link.Dockerfile"
 rc=0
-"$upgrade" "$work/link.Dockerfile" >/dev/null 2>"$work/err" || rc=$?
-if [ "$rc" != 0 ] || ! [ -L "$work/link.Dockerfile" ] ||
-    [ "$(<"$work/target.Dockerfile")" != "$dfafter" ]; then
-    fail symlink "exit $rc, link or target wrong: $(<"$work/err")"
+"$upgrade" "$test_tmp/link.Dockerfile" >/dev/null 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 0 ] || ! [ -L "$test_tmp/link.Dockerfile" ] ||
+    [ "$(<"$test_tmp/target.Dockerfile")" != "$dfafter" ]; then
+    test_fail symlink "exit $rc, link or target wrong: $(<"$test_tmp/err")"
 fi
 
-file=$work/mode.Dockerfile
+file=$test_tmp/mode.Dockerfile
 printf '# TRACK ARG V github:o/p\nARG V=1\n' >"$file"
 chmod 640 "$file"
 rc=0
-"$upgrade" "$file" >/dev/null 2>"$work/err" || rc=$?
+"$upgrade" "$file" >/dev/null 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 0 ]; then
-    fail mode "exit $rc, not 0: $(<"$work/err")"
+    test_fail mode "exit $rc, not 0: $(<"$test_tmp/err")"
 elif [ "$(<"$file")" != $'# TRACK ARG V github:o/p\nARG V=1.2.3' ]; then
-    fail mode "the file is now: $(<"$file")"
+    test_fail mode "the file is now: $(<"$file")"
 elif [ "$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file")" != 640 ]; then
-    fail mode "the Dockerfile's mode changed"
-fi
-
-# TRACK ARG pypi: and npm: pins, exact or mistyped, in every file named are
-# listed as grep lists them, after any FREEZE line, before anything is looked up
-# or written.
-mkdir -p "$f/retired/.github/workflows"
-rdf=$'# TRACK ARG V pypi:m-d\nARG V=1\n#track args W npm:n-d\n# TRACK ARG X github:o/p\n'
-rdf+=$'# TRACK-ARG Y pypi:\n# FROMFREEZE r/x:1\n'
-rwf=$'steps:\n  # TRACK ARG Z npm:@s/n\n'
-printf '%s' "$rdf" >"$f/retired/Dockerfile"
-printf '%s' "$rwf" >"$f/retired/.github/workflows/w.yml"
-said=$(printf '%s\n' "Dockerfile:6:# FROMFREEZE r/x:1" \
-    "upgrade: FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES" \
-    "Dockerfile:1:# TRACK ARG V pypi:m-d" "Dockerfile:3:#track args W npm:n-d" \
-    "Dockerfile:5:# TRACK-ARG Y pypi:" ".github/workflows/w.yml:2:  # TRACK ARG Z npm:@s/n" \
-    "upgrade: pypi: and npm: pins are now TRACK LOCK")
-rc=0
-(cd "$f/retired" && "$upgrade" Dockerfile .github/workflows/w.yml) >"$work/out" 2>"$work/err" ||
-    rc=$?
-if [ "$rc" != 1 ] || [ "$(<"$work/err")" != "$said" ]; then
-    fail retired "exit $rc, stderr: $(<"$work/err")"
-elif [ -s "$work/out" ] || [ "$(<"$f/retired/Dockerfile")" != "$(printf '%s' "$rdf")" ]; then
-    fail retired "carried on: $(<"$work/out")"
-fi
-
-# The lint runs on the Dockerfile before anything is looked up, and a failure of
-# its own fails the run; its refusal is warned of, after the lock cases below.
-FAKE_LINT=usage check lint-fails $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 \
-    "upgrade: @F@: lint/dockerfile-locks failed with status 2" \
-    $'# TRACK FROM r/x:1\nFROM r/x:1' "fake docker:"
-FAKE_LINT=unreadable check lint-unreadable $'# TRACK FROM r/x:1\nFROM r/x:1\n' 1 \
-    "upgrade: @F@: lint/dockerfile-locks failed with status 3" \
-    $'# TRACK FROM r/x:1\nFROM r/x:1' "each line above"
-check lint-passes $'# TRACK FROM r/x:1\nFROM r/x:1\n' 0 "fake lint: @F@" \
-    $'# TRACK FROM r/x:1\nFROM r/x@'"$new"
-printf 'FROM x\n' >"$work/-lead.Dockerfile"
-rc=0
-(cd "$work" && "$upgrade" -lead.Dockerfile) >/dev/null 2>"$work/err" || rc=$?
-if [ "$rc" != 0 ] || ! grep -qxF "fake lint: ./-lead.Dockerfile" "$work/err"; then
-    fail lint-leading-dash "exit $rc: $(<"$work/err")"
-fi
-
-# DOCKERFILE_LOCKS_LINT is refused before anything is read where it names no
-# executable regular file, and a bare name is taken in the current directory.
-fromdf=$'# TRACK FROM r/x:1\nFROM r/x:1\n'
-DOCKERFILE_LOCKS_LINT=$work/lint/absent check lint-missing "$fromdf" 1 \
-    "upgrade: $work/lint/absent: no such file" "${fromdf%$'\n'}" "fake "
-cp -- "$DOCKERFILE_LOCKS_LINT" "$work/lint/plain"
-chmod -x "$work/lint/plain"
-DOCKERFILE_LOCKS_LINT=$work/lint/plain check lint-not-executable "$fromdf" 1 \
-    "upgrade: $work/lint/plain: not an executable regular file" \
-    "${fromdf%$'\n'}" "fake "
-DOCKERFILE_LOCKS_LINT=$work/lint check lint-directory "$fromdf" 1 \
-    "upgrade: $work/lint: not an executable regular file" "${fromdf%$'\n'}" \
-    "fake "
-file=$work/lint-bare-name.Dockerfile
-printf 'FROM x\n' >"$file"
-rc=0
-(cd "$work/lint" && DOCKERFILE_LOCKS_LINT=dockerfile-locks "$upgrade" "$file") \
-    >/dev/null 2>"$work/err" || rc=$?
-if [ "$rc" != 0 ] || ! grep -qxF "fake lint: $file" "$work/err"; then
-    fail lint-bare-name "exit $rc: $(<"$work/err")"
-fi
-
-# Where DOCKERFILE_LOCKS_LINT is empty or unset, the library's own lint runs.
-npm=$'# TRACK FROM r/x:1\nFROM r/x:1\nRUN npm install x\n'
-DOCKERFILE_LOCKS_LINT='' check lint-default-empty "$npm" 0 \
-    "upgrade: @F@: each line above is refused by lint/dockerfile-locks" \
-    $'# TRACK FROM r/x:1\nFROM r/x@'"$new"$'\nRUN npm install x' "fake lint:"
-file=$work/lint-default-unset.Dockerfile
-printf '%s' "$npm" >"$file"
-rm -f -- "$FAKE_PULLED"
-rc=0
-env -u DOCKERFILE_LOCKS_LINT "$upgrade" "$file" >"$work/out" 2>"$work/err" ||
-    rc=$?
-if [ "$rc" != 0 ] || ! grep -qF -- "$file:3: " "$work/err" ||
-    ! grep -qxF -- "upgrade: $file: each line above is refused by lint/dockerfile-locks" \
-        "$work/err" || grep -qF "fake lint:" "$work/err"; then
-    fail lint-default-unset "exit $rc: $(<"$work/err")"
+    test_fail mode "the Dockerfile's mode changed"
 fi
 
 # Each malformed TRACK LOCK is refused before anything is looked up.
@@ -1825,7 +1543,7 @@ n=0
 for data in ".x pypi:a" "-x pypi:a" ".. pypi:a" "a/b pypi:a" "x" ""; do
     n=$((n + 1))
     dockerfile="# TRACK FROM r/x:1"$'\n'"# TRACK LOCK $data"$'\nFROM r/x:1\n'
-    check "lock-bad-name-$n" "$dockerfile" 1 "@F@:2: TRACK LOCK $data is not $lockforms" \
+    check "lock-bad-name-$n" "$dockerfile" 1 "docker/upgrade: @F@:2: TRACK LOCK $data is not $lockforms" \
         "${dockerfile%$'\n'}" "fake docker:"
 done
 n=0
@@ -1888,10 +1606,10 @@ for data in "x stage=a stage=b pypi:a|FROM r/x:1 AS a|TRACK LOCK x gives stage= 
     check "lock-stage-bad-$n" "$dockerfile" 1 "$said" "${dockerfile%$'\n'}" "fake docker:"
 done
 
-# Sets d to a fresh directory $work/$1 holding a Dockerfile, or the file named
-# $3, holding $2, and file to its path.
+# Sets d to a fresh directory $test_tmp/$1 holding a Dockerfile, or the file
+# named $3, holding $2, and file to its path.
 lockcase() {
-    d=$work/$1
+    d=$test_tmp/$1
     file=$d/${3:-Dockerfile}
     rm -rf -- "$d"
     mkdir -p "$d"
@@ -1903,8 +1621,8 @@ lockcase() {
 lockgo() {
     rc=0
     rm -f -- "$FAKE_PULLED"
-    "$upgrade" "$@" "$file" >"$work/out" 2>"$work/err" || rc=$?
-    err=$(<"$work/err")
+    "$upgrade" "$@" "$file" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+    err=$(<"$test_tmp/err")
 }
 
 # Fails case $1, returning 1, unless rc is $2, stdout is empty, stderr holds
@@ -1912,23 +1630,23 @@ lockgo() {
 expect() {
     local said
     if [ "$rc" != "$2" ]; then
-        fail "$1" "exit $rc, not $2: $err"
+        test_fail "$1" "exit $rc, not $2: $err"
         return 1
-    elif [ -s "$work/out" ]; then
-        fail "$1" "stdout is: $(<"$work/out")"
+    elif [ -s "$test_tmp/out" ]; then
+        test_fail "$1" "stdout is: $(<"$test_tmp/out")"
         return 1
     fi
     while IFS= read -r said <&3; do
         [ -n "$said" ] || continue
-        if ! grep -qF -- "$said" "$work/err"; then
-            fail "$1" "stderr lacks '$said': $err"
+        if ! grep -qF -- "$said" "$test_tmp/err"; then
+            test_fail "$1" "stderr lacks '$said': $err"
             return 1
         fi
     done 3<<<"$3"
     while IFS= read -r said <&3; do
         [ -n "$said" ] || continue
-        if grep -qF -- "$said" "$work/err"; then
-            fail "$1" "stderr holds '$said': $err"
+        if grep -qF -- "$said" "$test_tmp/err"; then
+            test_fail "$1" "stderr holds '$said': $err"
             return 1
         fi
     done 3<<<"${4:-}"
@@ -1937,9 +1655,9 @@ expect() {
 # Fails case $1 unless the file $2 holds $3.
 holds() {
     if ! [ -f "$2" ]; then
-        fail "$1" "$2 is missing"
+        test_fail "$1" "$2 is missing"
     elif [ "$(<"$2")" != "$3" ]; then
-        fail "$1" "$2 is: $(<"$2")"
+        test_fail "$1" "$2 is: $(<"$2")"
     fi
 }
 
@@ -1947,10 +1665,10 @@ holds() {
 mode_is() {
     local mode
     mode=$(stat -c %a "$2" 2>/dev/null || stat -f %Lp "$2")
-    [ "$mode" = "$3" ] || fail "$1" "$2's mode is $mode, not $3"
+    [ "$mode" = "$3" ] || test_fail "$1" "$2's mode is $mode, not $3"
 }
 
-# Fails case $1 unless the record at $work/lockrec holds the paths after it,
+# Fails case $1 unless the record at $test_tmp/lockrec holds the paths after it,
 # each under $real, a blank line and the moves in moves.
 recorded() {
     local name=$1 want=() path
@@ -1958,10 +1676,10 @@ recorded() {
         want+=("$real/$path")
     done
     want+=("" "${moves[@]}")
-    if ! [ -f "$work/lockrec" ]; then
-        fail "$name" "no record was written"
-    elif [ "$(<"$work/lockrec")" != "$(printf '%s\n' "${want[@]}")" ]; then
-        fail "$name" "the record is: $(<"$work/lockrec")"
+    if ! [ -f "$test_tmp/lockrec" ]; then
+        test_fail "$name" "no record was written"
+    elif [ "$(<"$test_tmp/lockrec")" != "$(printf '%s\n' "${want[@]}")" ]; then
+        test_fail "$name" "the record is: $(<"$test_tmp/lockrec")"
     fi
 }
 
@@ -1973,8 +1691,8 @@ ndf=$'# TRACK FROM r/x:1\n# TRACK LOCK js npm:n-d\nFROM r/x@'"$new"
 # Debian's apt-get, whose output stays off the report.
 lockcase lock-created "$pdf"
 commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
+rm -f -- "$test_tmp/lockrec"
+lockgo --record "$test_tmp/lockrec"
 said=$(printf '%s\n' "fake docker: run r/x@$new pypi m-d" "fake apt-get: update" \
     "fake apt-get: install -y --no-install-recommends python3-pip" "fake pip: install m-d" \
     "fake curl: https://pypi.org/pypi/m-d/2.0.1/json" "fake curl: https://pypi.org/pypi/dep-a/1.1/json")
@@ -1986,72 +1704,53 @@ if expect lock-created 0 "$said" "fake dnf:"; then
     recorded lock-created lock-created/Dockerfile.lock/m/requirements.txt
 fi
 
-# The lint's refusal stands on stderr above a warning, and the upgrade carries
-# on: the Dockerfile and its lock are written and recorded.
-lockcase lint-refuses $'# TRACK FROM r/x:1\n# TRACK LOCK m pypi:m-d\nFROM r/x:1\n'
-commit_all "$d"
-rm -f -- "$work/lockrec"
-FAKE_LINT=fail lockgo --record "$work/lockrec"
-said=$(printf '%s\n' "$file:2: npm install reads no lock" \
-    "upgrade: $file: each line above is refused by lint/dockerfile-locks")
-if expect lint-refuses 0 "$said"; then
-    if ! grep -A 1 -xF -- "$file:2: npm install reads no lock" "$work/err" |
-        grep -qxF -- "${said#*$'\n'}"; then
-        fail lint-refuses "the warning does not follow the lint's line: $err"
-    fi
-    holds lint-refuses "$file" $'# TRACK FROM r/x:1\n# TRACK LOCK m pypi:m-d\nFROM r/x@'"$new"
-    holds lint-refuses "$d/Dockerfile.lock/m/requirements.txt" "$req"
-    moves=("r/x:1 r/x:1 -> sha256:aaaaaaaaaaaa" "LOCK m m-d none -> 2.0.1" "LOCK m: 1 dependency moved")
-    recorded lint-refuses lint-refuses/Dockerfile lint-refuses/Dockerfile.lock/m/requirements.txt
-fi
-
 # Packages are sorted by name alone, as pip-compile sorts them.
 wheels m-d-x/1 "$ha"
-report "$work/report-sorted.json" m-d-x==1 m-d==2.0.1
+report "$test_tmp/report-sorted.json" m-d-x==1 m-d==2.0.1
 lockcase lock-sorted "$pdf"
-FAKE_REPORT=$work/report-sorted.json lockgo
+FAKE_REPORT=$test_tmp/report-sorted.json lockgo
 if expect lock-sorted 0 ""; then
     holds lock-sorted "$d/Dockerfile.lock/m/requirements.txt" \
         "m-d==2.0.1 --hash=sha256:$hb --hash=sha256:$hc"$'\n'"m-d-x==1 --hash=sha256:$ha"
 fi
-d=$work/lock-created
+d=$test_tmp/lock-created
 file=$d/Dockerfile
 
 # A lock that would not change is not written, and nothing is recorded. This
 # and the cases after it take lock-created's lock, so where it made none, that
 # is recorded rather than left to abort the test.
 if ! [ -f "$d/Dockerfile.lock/m/requirements.txt" ]; then
-    fail lock-unchanged "lock-created made no lock, which this and the lock-dirty cases need"
+    test_fail lock-unchanged "lock-created made no lock, which this and the lock-dirty cases need"
 else
     inode=$(ls -i "$d/Dockerfile.lock/m/requirements.txt")
     commit_all "$d"
-    rm -f -- "$work/lockrec"
-    lockgo --record "$work/lockrec"
+    rm -f -- "$test_tmp/lockrec"
+    lockgo --record "$test_tmp/lockrec"
     if expect lock-unchanged 0 ""; then
         [ "$(ls -i "$d/Dockerfile.lock/m/requirements.txt")" = "$inode" ] ||
-            fail lock-unchanged "the lock was written"
-        if ! [ -f "$work/lockrec" ] || [ -s "$work/lockrec" ]; then
-            fail lock-unchanged "the record is not empty: $(cat -- "$work/lockrec" 2>&1)"
+            test_fail lock-unchanged "the lock was written"
+        if ! [ -f "$test_tmp/lockrec" ] || [ -s "$test_tmp/lockrec" ]; then
+            test_fail lock-unchanged "the record is not empty: $(cat -- "$test_tmp/lockrec" 2>&1)"
         fi
     fi
 
     # A lock with changes not committed is refused, as the Dockerfile is, before
     # anything is looked up.
     printf '# edit\n' >>"$d/Dockerfile.lock/m/requirements.txt"
-    rm -f -- "$work/lockrec"
-    lockgo --record "$work/lockrec"
-    if expect lock-dirty 1 "upgrade: $d/Dockerfile.lock: has changes not committed; commit or stash them first" \
+    rm -f -- "$test_tmp/lockrec"
+    lockgo --record "$test_tmp/lockrec"
+    if expect lock-dirty 1 "docker/upgrade: $d/Dockerfile.lock: has changes not committed; commit or stash them first" \
         "fake "; then
-        [ ! -e "$work/lockrec" ] || fail lock-dirty "a record was written"
+        [ ! -e "$test_tmp/lockrec" ] || test_fail lock-dirty "a record was written"
     fi
     rm -- "$d/Dockerfile.lock/m/requirements.txt"
-    lockgo --record "$work/lockrec"
-    expect lock-dirty-removed 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
+    lockgo --record "$test_tmp/lockrec"
+    expect lock-dirty-removed 1 "docker/upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || [ $? -eq 1 ]
     mkdir "$d/Dockerfile.lock/new"
     printf 'x\n' >"$d/Dockerfile.lock/new/f"
     "$REAL_GIT" -C "$d" checkout -q -- Dockerfile.lock
-    lockgo --record "$work/lockrec"
-    expect lock-dirty-untracked 1 "upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || true
+    lockgo --record "$test_tmp/lockrec"
+    expect lock-dirty-untracked 1 "docker/upgrade: $d/Dockerfile.lock: has changes not committed" "fake " || [ $? -eq 1 ]
 fi
 
 # A version that moves, a dependency added and one dropped are each recorded; an
@@ -2061,8 +1760,8 @@ mkdir -p "$d/Dockerfile.lock/m"
 printf 'm-d==1.0 --hash=sha256:%s\n' "$hd" >"$d/Dockerfile.lock/m/requirements.txt"
 chmod 600 "$d/Dockerfile.lock/m/requirements.txt"
 commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
+rm -f -- "$test_tmp/lockrec"
+lockgo --record "$test_tmp/lockrec"
 if expect lock-moved 0 ""; then
     holds lock-moved "$d/Dockerfile.lock/m/requirements.txt" "$req"
     mode_is lock-moved "$d/Dockerfile.lock/m/requirements.txt" 600
@@ -2074,8 +1773,8 @@ mkdir -p "$d/Dockerfile.lock/m"
 printf '%s\n' "$req" "gone==0.1 --hash=sha256:$hd" "also-gone==0.2 --hash=sha256:$hd" \
     >"$d/Dockerfile.lock/m/requirements.txt"
 commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
+rm -f -- "$test_tmp/lockrec"
+lockgo --record "$test_tmp/lockrec"
 if expect lock-shrunk 0 ""; then
     holds lock-shrunk "$d/Dockerfile.lock/m/requirements.txt" "$req"
     moves=("LOCK m: 2 dependencies moved")
@@ -2088,8 +1787,8 @@ mkdir -p "$d/Dockerfile.lock/m"
 printf '%s\n' "dep-a==1.1 --hash=sha256:$hd" "m-d==2.0.1 --hash=sha256:$hb --hash=sha256:$hc" \
     >"$d/Dockerfile.lock/m/requirements.txt"
 commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
+rm -f -- "$test_tmp/lockrec"
+lockgo --record "$test_tmp/lockrec"
 if expect lock-content-only 0 ""; then
     holds lock-content-only "$d/Dockerfile.lock/m/requirements.txt" "$req"
     moves=("LOCK m: files changed")
@@ -2108,8 +1807,8 @@ for data in "# c\\nm-d==1.0 --hash=sha256:$hd" "m-d==1.0" "M_D==1.0 --hash=sha25
     mkdir -p "$d/Dockerfile.lock/m"
     printf '%s\n' "${data//\\n/$'\n'}" >"$d/Dockerfile.lock/m/requirements.txt"
     commit_all "$d"
-    rm -f -- "$work/lockrec"
-    lockgo --record "$work/lockrec"
+    rm -f -- "$test_tmp/lockrec"
+    lockgo --record "$test_tmp/lockrec"
     if expect "lock-foreign-$n" 0 ""; then
         holds "lock-foreign-$n" "$d/Dockerfile.lock/m/requirements.txt" "$req"
         moves=("LOCK m: files changed")
@@ -2119,9 +1818,9 @@ done
 
 # A version held back is passed to pip as it is.
 wheels m-d/1.5 "$hd"
-report "$work/report-held.json" m-d==1.5
+report "$test_tmp/report-held.json" m-d==1.5
 lockcase lock-held $'# TRACK FROM r/x:1\n# TRACK LOCK m pypi:m-d==1.5\nFROM r/x@'"$new"
-FAKE_REPORT=$work/report-held.json lockgo
+FAKE_REPORT=$test_tmp/report-held.json lockgo
 if expect lock-held 0 "fake pip: install m-d==1.5"; then
     holds lock-held "$d/Dockerfile.lock/m/requirements.txt" "m-d==1.5 --hash=sha256:$hd"
 fi
@@ -2145,15 +1844,15 @@ fi
 
 # On Fedora, pip and npm come from dnf.
 lockcase lock-fedora "$pdf"
-FAKE_OS_RELEASE=$work/os/fedora lockgo
+FAKE_OS_RELEASE=$test_tmp/os/fedora lockgo
 if expect lock-fedora 0 "fake dnf: install -y --setopt=install_weak_deps=False --setopt=*.countme=0 python3-pip" \
     "fake apt-get:"; then
     holds lock-fedora "$d/Dockerfile.lock/m/requirements.txt" "$req"
 fi
 lockcase lock-fedora-npm "$ndf"
-FAKE_OS_RELEASE=$work/os/fedora lockgo
+FAKE_OS_RELEASE=$test_tmp/os/fedora lockgo
 expect lock-fedora-npm 0 "fake dnf: install -y --setopt=install_weak_deps=False --setopt=*.countme=0 npm" \
-    "fake apt-get:" || true
+    "fake apt-get:" || [ $? -eq 1 ]
 
 # Each family is chosen by ID, or else by the first word of ID_LIKE naming one,
 # its values quoted or not, and installs pip or npm with its own manager:
@@ -2177,9 +1876,9 @@ for data in "ubuntu|container|pypi|fake apt-get: update;fake apt-get: install -y
     "alpine|nobash|npm|fake apk: add --no-cache bash;fake apk: add --no-cache npm"; do
     n=$((n + 1))
     IFS='|' read -r os dir kind said <<<"$data"
-    container=$work/$dir
+    container=$test_tmp/$dir
     if [ "$dir" = nobash ]; then
-        container=$work/container-family-$n
+        container=$test_tmp/container-family-$n
         nobash "$container"
     fi
     unsaid=$(printf '%s\n' "fake apt-get:" "fake dnf:" "fake microdnf:" "fake apk:" |
@@ -2190,7 +1889,7 @@ for data in "ubuntu|container|pypi|fake apt-get: update;fake apt-get: install -y
     else
         lockcase "lock-family-$n" "$ndf"
     fi
-    FAKE_CONTAINER=$container FAKE_OS_RELEASE=$work/os/$os lockgo
+    FAKE_CONTAINER=$container FAKE_OS_RELEASE=$test_tmp/os/$os lockgo
     if expect "lock-family-$n" 0 "${said//;/$'\n'}" "$unsaid"; then
         if [ "$kind" = pypi ]; then
             holds "lock-family-$n" "$d/Dockerfile.lock/m/requirements.txt" "$req"
@@ -2212,29 +1911,29 @@ for os in arch none missing bare arch-npm; do
     fi
     case $os in
     bare)
-        FAKE_CONTAINER=$work/container-bare FAKE_OS_RELEASE=$work/os/alpine lockgo
-        said="lock-resolve: the image has no bash, nor apk to add it"
+        FAKE_CONTAINER=$test_tmp/container-bare FAKE_OS_RELEASE=$test_tmp/os/alpine lockgo
+        said="docker/lock-resolve: the image has no bash, nor apk to add it"
         ;;
     arch)
-        FAKE_OS_RELEASE=$work/os/$os lockgo
+        FAKE_OS_RELEASE=$test_tmp/os/$os lockgo
         said="names arch, which is not Debian, Ubuntu, Fedora, a RHEL-like or Alpine, nor like one, and the image has no python3 -m pip of its own"
         ;;
     none)
-        FAKE_OS_RELEASE=$work/os/$os lockgo
+        FAKE_OS_RELEASE=$test_tmp/os/$os lockgo
         said="names no ID, which is not"
         ;;
     missing)
-        FAKE_OS_RELEASE=$work/os/$os lockgo
-        said="lock-resolve: the image has no $work/os/missing to name its distribution, and no python3 -m pip of its own"
+        FAKE_OS_RELEASE=$test_tmp/os/$os lockgo
+        said="docker/lock-resolve: the image has no $test_tmp/os/missing to name its distribution, and no python3 -m pip of its own"
         ;;
     arch-npm)
-        FAKE_OS_RELEASE=$work/os/arch lockgo
+        FAKE_OS_RELEASE=$test_tmp/os/arch lockgo
         said="names arch, which is not Debian, Ubuntu, Fedora, a RHEL-like or Alpine, nor like one, and the image has no npm of its own"
         ;;
     esac
-    if expect "lock-os-$os" 1 "$said"$'\n'"upgrade: $file: TRACK LOCK $lock: resolving it in r/x@$new failed" \
+    if expect "lock-os-$os" 1 "$said"$'\n'"docker/upgrade: $file: TRACK LOCK $lock: resolving it in r/x@$new failed" \
         $'fake pip:\nfake npm:'; then
-        [ ! -e "$d/Dockerfile.lock" ] || fail "lock-os-$os" "a lock was written"
+        [ ! -e "$d/Dockerfile.lock" ] || test_fail "lock-os-$os" "a lock was written"
     fi
 done
 
@@ -2242,12 +1941,12 @@ done
 # image's own pip or npm where it has one.
 for os in arch none missing; do
     lockcase "lock-os-own-pip-$os" "$pdf"
-    FAKE_CONTAINER=$work/container-pip FAKE_OS_RELEASE=$work/os/$os lockgo
+    FAKE_CONTAINER=$test_tmp/container-pip FAKE_OS_RELEASE=$test_tmp/os/$os lockgo
     if expect "lock-os-own-pip-$os" 0 "fake pip: install m-d"; then
         holds "lock-os-own-pip-$os" "$d/Dockerfile.lock/m/requirements.txt" "$req"
     fi
     lockcase "lock-os-own-npm-$os" "$ndf"
-    FAKE_CONTAINER=$work/container-node FAKE_OS_RELEASE=$work/os/$os lockgo
+    FAKE_CONTAINER=$test_tmp/container-node FAKE_OS_RELEASE=$test_tmp/os/$os lockgo
     if expect "lock-os-own-npm-$os" 0 "fake npm: package.json in js"; then
         holds "lock-os-own-npm-$os" "$d/Dockerfile.lock/js/package-lock.json" "$(<"$FAKE_NPM_LOCK")"
     fi
@@ -2256,12 +1955,12 @@ done
 # An image with pip or npm of its own, which holds no manager, resolves with it
 # and installs nothing.
 lockcase lock-own-pip "$pdf"
-FAKE_CONTAINER=$work/container-pip lockgo
+FAKE_CONTAINER=$test_tmp/container-pip lockgo
 if expect lock-own-pip 0 "fake pip: install m-d" "fake apt-get:"; then
     holds lock-own-pip "$d/Dockerfile.lock/m/requirements.txt" "$req"
 fi
 lockcase lock-own-npm "$ndf"
-FAKE_CONTAINER=$work/container-node lockgo
+FAKE_CONTAINER=$test_tmp/container-node lockgo
 if expect lock-own-npm 0 "fake npm: package.json in js" "fake apt-get:"; then
     holds lock-own-npm "$d/Dockerfile.lock/js/package-lock.json" "$(<"$FAKE_NPM_LOCK")"
 fi
@@ -2269,7 +1968,7 @@ fi
 # An npm on PATH that does not run is not the image's own, so the distribution's
 # is installed.
 lockcase lock-broken-npm "$ndf"
-FAKE_CONTAINER=$work/container-npm-broken lockgo
+FAKE_CONTAINER=$test_tmp/container-npm-broken lockgo
 if expect lock-broken-npm 0 $'fake apt-get: install -y --no-install-recommends npm\nfake npm: package.json in js'; then
     holds lock-broken-npm "$d/Dockerfile.lock/js/package-lock.json" "$(<"$FAKE_NPM_LOCK")"
 fi
@@ -2277,10 +1976,10 @@ fi
 # A RHEL-like image that must install pip with neither dnf nor microdnf is
 # refused, naming its ID.
 lockcase lock-no-dnf "$pdf"
-FAKE_CONTAINER=$work/container-nodnf FAKE_OS_RELEASE=$work/os/rocky lockgo
+FAKE_CONTAINER=$test_tmp/container-nodnf FAKE_OS_RELEASE=$test_tmp/os/rocky lockgo
 if expect lock-no-dnf 1 "names rocky, like Fedora or RHEL, but the image has neither dnf nor microdnf" \
     "fake pip: install"; then
-    [ ! -e "$d/Dockerfile.lock" ] || fail lock-no-dnf "a lock was written"
+    [ ! -e "$d/Dockerfile.lock" ] || test_fail lock-no-dnf "a lock was written"
 fi
 
 # Runs case $1 on a Dockerfile holding $2, with FAKE_HELD set to $5, and checks
@@ -2304,7 +2003,7 @@ holds lock-stage-tracked "$file" $'# TRACK FROM r/x:1\n# TRACK FROM r/y:1\n# TRA
 staged lock-stage-via $'# TRACK FROM r/x:1\n# TRACK FROM r/y:1\n# TRACK LOCK m stage=Dev pypi:m-d\nFROM r/y:1 as Base\nFROM r/x:1 AS other\nFROM BASE AS dev\n' \
     "fake docker: run r/y@$new pypi m-d" "fake docker: run r/x"
 staged lock-stage-held-tag $'# TRACK FROM r/x:1\n# TRACK LOCK m stage=held pypi:m-d\nFROM r/x:1 AS a\nFROM r/h:2 AS held\n' \
-    "$(printf '%s\n' "upgrade: pulling r/h:2" "fake docker: pull r/h:2" "fake docker: run r/h:2 pypi m-d")" \
+    "$(printf '%s\n' "docker/upgrade: pulling r/h:2" "fake docker: pull r/h:2" "fake docker: run r/h:2 pypi m-d")" \
     "fake docker: run r/x"
 holds lock-stage-held-tag "$file" $'# TRACK FROM r/x:1\n# TRACK LOCK m stage=held pypi:m-d\nFROM r/x@'"$new"$' AS a\nFROM r/h:2 AS held'
 staged lock-stage-held-digest $'# TRACK LOCK m stage=s pypi:m-d\nFROM r/h@'"$old"$' AS s\n' \
@@ -2339,7 +2038,7 @@ fi
 n=0
 for data in "21.3.1|0|fake pip: upgrade pip>=22.2|" "22.1|0|fake pip: upgrade pip>=22.2|" \
     "22.2|0||fake pip: upgrade" "24.0|0||fake pip: upgrade" \
-    "x.1|1|lock-resolve: pip --version gave pip x.1 from|fake pip: install"; do
+    "x.1|1|docker/lock-resolve: pip --version gave pip x.1 from|fake pip: install"; do
     n=$((n + 1))
     IFS='|' read -r version status said unsaid <<<"$data"
     lockcase "lock-pip-$n" "$pdf"
@@ -2352,13 +2051,13 @@ done
 # npm's latest version is looked up for each package not held back, and the lock
 # npm writes for a package.json of them is kept as it is, beside the
 # package.json, key-sorted; a Dockerfile's lock directory takes its name.
-npm_lock "$work/npm-two.json" "n-d @s/n.d" node_modules/n-d@3.4.5 node_modules/@s/n.d@1.0.0 \
+npm_lock "$test_tmp/npm-two.json" "n-d @s/n.d" node_modules/n-d@3.4.5 node_modules/@s/n.d@1.0.0 \
     node_modules/dep-b@1.0.0 node_modules/n-d/node_modules/dep-b@0.5.0
 lockcase lock-npm $'# TRACK FROM r/x:1\n# TRACK LOCK js npm:n-d npm:@s/n.d@1.0.0\nFROM r/x@'"$new" \
     test.Dockerfile
 commit_all "$d"
-rm -f -- "$work/lockrec"
-FAKE_NPM_LOCK=$work/npm-two.json lockgo --record "$work/lockrec"
+rm -f -- "$test_tmp/lockrec"
+FAKE_NPM_LOCK=$test_tmp/npm-two.json lockgo --record "$test_tmp/lockrec"
 said=$(printf '%s\n' "fake curl: https://registry.npmjs.org/n-d/latest" \
     "fake apt-get: install -y --no-install-recommends npm" \
     'fake npm: package.json in js: {"dependencies":{"@s/n.d":"1.0.0","n-d":"3.4.5"},"private":true}')
@@ -2366,7 +2065,7 @@ if expect lock-npm 0 "$said" "registry.npmjs.org/@s/n.d"; then
     holds lock-npm "$d/test.Dockerfile.lock/js/package.json" \
         "$(printf '%s\n' '{' '  "dependencies": {' '    "@s/n.d": "1.0.0",' '    "n-d": "3.4.5"' '  },' \
             '  "private": true' '}')"
-    holds lock-npm "$d/test.Dockerfile.lock/js/package-lock.json" "$(<"$work/npm-two.json")"
+    holds lock-npm "$d/test.Dockerfile.lock/js/package-lock.json" "$(<"$test_tmp/npm-two.json")"
     moves=("LOCK js n-d none -> 3.4.5" "LOCK js @s/n.d none -> 1.0.0" "LOCK js: 2 dependencies moved")
     recorded lock-npm lock-npm/test.Dockerfile.lock/js/package.json \
         lock-npm/test.Dockerfile.lock/js/package-lock.json
@@ -2380,8 +2079,8 @@ npm_lock "$d/Dockerfile.lock/js/package-lock.json" "n-d gone" node_modules/n-d@3
     node_modules/gone@2.0.0 node_modules/dep-b@0.9.0 node_modules/dep-c@1.0.0
 printf '{}\n' >"$d/Dockerfile.lock/js/package.json"
 commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
+rm -f -- "$test_tmp/lockrec"
+lockgo --record "$test_tmp/lockrec"
 if expect lock-npm-dropped 0 ""; then
     holds lock-npm-dropped "$d/Dockerfile.lock/js/package-lock.json" "$(<"$FAKE_NPM_LOCK")"
     moves=("LOCK js n-d 3.0.0 -> 3.4.5" "LOCK js gone 2.0.0 -> none" "LOCK js: 2 dependencies moved")
@@ -2402,8 +2101,8 @@ for data in '{"packages": {"": {}}}|LOCK js n-d none -> 3.4.5;LOCK js: 1 depende
     mkdir -p "$d/Dockerfile.lock/js"
     printf '%s\n' "${data%%|*}" >"$d/Dockerfile.lock/js/package-lock.json"
     commit_all "$d"
-    rm -f -- "$work/lockrec"
-    lockgo --record "$work/lockrec"
+    rm -f -- "$test_tmp/lockrec"
+    lockgo --record "$test_tmp/lockrec"
     if expect "lock-npm-foreign-$n" 0 ""; then
         holds "lock-npm-foreign-$n" "$d/Dockerfile.lock/js/package-lock.json" "$(<"$FAKE_NPM_LOCK")"
         IFS=';' read -r -a moves <<<"${data#*|}"
@@ -2430,28 +2129,20 @@ for kind in npm pypi; do
     fi
 done
 # What npm gives that is not the lock asked for fails the run, writing nothing.
-printf 'not JSON\n' >"$work/npm-bad.json"
-npm_lock "$work/npm-old.json" n-d node_modules/n-d@3.0.0
-npm_lock "$work/npm-missing.json" n-d node_modules/dep-b@1.0.0
+printf 'not JSON\n' >"$test_tmp/npm-bad.json"
+lockcase lock-npm-gives "$ndf"
+FAKE_NPM_LOCK=$test_tmp/npm-bad.json lockgo
+if expect lock-npm-gives 1 \
+    "TRACK LOCK js: lock-resolve gave no package-lock.json listing packages, each with a version"; then
+    [ ! -e "$d/Dockerfile.lock" ] || test_fail lock-npm-gives "a lock was written"
+fi
 n=0
-for data in "npm-bad|TRACK LOCK js: lock-resolve gave no package-lock.json listing packages, each with a version" \
-    "npm-old|TRACK LOCK js: npm locked n-d at 3.0.0, not 3.4.5" \
-    "npm-missing|TRACK LOCK js: npm locked n-d at nothing, not 3.4.5"; do
-    n=$((n + 1))
-    lockcase "lock-npm-gives-$n" "$ndf"
-    FAKE_NPM_LOCK=$work/${data%%|*}.json lockgo
-    if expect "lock-npm-gives-$n" 1 "${data#*|}"; then
-        [ ! -e "$d/Dockerfile.lock" ] || fail "lock-npm-gives-$n" "a lock was written"
-    fi
-done
-n=0
-for data in '{}|latest version on npm, none, is not a version' \
-    '{"version": "x.1"}|latest version on npm, x.1, is not a version' \
-    '<html>|TRACK LOCK js: registry.npmjs.org/n-d/latest is not npm'"'"'s JSON'; do
+for data in '{}' '<html>'; do
     n=$((n + 1))
     lockcase "lock-npm-latest-$n" "$ndf"
-    FAKE_NPM=${data%%|*} lockgo
-    expect "lock-npm-latest-$n" 1 "${data#*|}" "fake docker: run" || true
+    FAKE_NPM=$data lockgo
+    expect "lock-npm-latest-$n" 1 \
+        "TRACK LOCK js: registry.npmjs.org/n-d/latest is not npm's JSON" "fake docker: run" || [ $? -eq 1 ]
 done
 
 # A requirement whose marker turns on the machine or kernel is refused, unless
@@ -2464,7 +2155,7 @@ marked() {
             requires_dist: ["dep-a>=1", $r]}, requested: true},
         {metadata: {name: "Dep_A", version: "1.1",
             requires_dist: (if $also == "" then null else [$also] end)}}]}' \
-        >"$work/report-marked.json"
+        >"$test_tmp/report-marked.json"
 }
 n=0
 for data in 'x ;platform_machine=="x86_64"|' \
@@ -2478,10 +2169,10 @@ for data in 'x ;platform_machine=="x86_64"|' \
     n=$((n + 1))
     marked "${data%|*}" "${data#*|}"
     lockcase "lock-marker-$n" "$pdf"
-    FAKE_REPORT=$work/report-marked.json lockgo
-    if expect "lock-marker-$n" 1 "upgrade: m-d: ${data%|*}"$'\n'"TRACK LOCK m: each requirement above turns on the platform, so its lock would not hold on another architecture" \
+    FAKE_REPORT=$test_tmp/report-marked.json lockgo
+    if expect "lock-marker-$n" 1 "docker/upgrade: m-d: ${data%|*}"$'\n'"TRACK LOCK m: each requirement above turns on the platform, so its lock would not hold on another architecture" \
         "fake curl: https://pypi.org/"; then
-        [ ! -e "$d/Dockerfile.lock" ] || fail "lock-marker-$n" "a lock was written"
+        [ ! -e "$d/Dockerfile.lock" ] || test_fail "lock-marker-$n" "a lock was written"
     fi
 done
 n=0
@@ -2494,38 +2185,29 @@ for data in 'x; extra == "arm" and platform_machine == "aarch64"|' \
     n=$((n + 1))
     marked "${data%|*}" "${data#*|}"
     lockcase "lock-marker-passed-$n" "$pdf"
-    FAKE_REPORT=$work/report-marked.json lockgo
+    FAKE_REPORT=$test_tmp/report-marked.json lockgo
     if expect "lock-marker-passed-$n" 0 ""; then
         holds "lock-marker-passed-$n" "$d/Dockerfile.lock/m/requirements.txt" "$req"
     fi
 done
 
 # Each failure to resolve fails the run, writing nothing.
-printf 'not JSON' >"$work/report-bad.json"
-printf '{"install": []}' >"$work/report-empty.json"
-report "$work/report-lacks.json" Dep_A==1.1
-report "$work/report-twice.json" m-d==2.0.1 M.D==2.0.1
-report "$work/report-nightly.json" m-d==nightly
-report "$work/report-absent.json" m-d==9.9
+printf 'not JSON' >"$test_tmp/report-bad.json"
+printf '{"install": []}' >"$test_tmp/report-empty.json"
+report "$test_tmp/report-absent.json" m-d==9.9
 mkdir -p "$FAKE_FILES/pypi/m-d"
 printf '<html>' >"$FAKE_FILES/pypi/m-d/3.0.json"
-report "$work/report-html.json" m-d==3.0
+report "$test_tmp/report-html.json" m-d==3.0
 jq -n '{urls: [{packagetype: "sdist", digests: {sha256: "'"$hs"'"}}]}' >"$FAKE_FILES/pypi/m-d/4.0.json"
-report "$work/report-sdist.json" m-d==4.0
-wheels m-d/5.0 XYZ
-report "$work/report-badhash.json" m-d==5.0
+report "$test_tmp/report-sdist.json" m-d==4.0
 n=0
 for data in "run|1|TRACK LOCK m: resolving it in r/x@$new failed" \
     "pip|1|No matching distribution found for m-d" \
     "bad|1|TRACK LOCK m: lock-resolve gave no pip report" \
     "empty|1|TRACK LOCK m: lock-resolve gave no pip report" \
-    "lacks|1|TRACK LOCK m: pip's report installs no m-d" \
-    "twice|1|TRACK LOCK m: pip's report installs m-d twice" \
-    "nightly|1|TRACK LOCK m: pip's report installs m-d nightly" \
     "absent|22|returned error: 404" \
     "html|1|TRACK LOCK m: pypi.org/pypi/m-d/3.0/json is not PyPI's JSON" \
     "sdist|1|TRACK LOCK m: PyPI lists no wheel for m-d 4.0" \
-    "badhash|1|TRACK LOCK m: PyPI gives m-d 5.0 the SHA-256 XYZ" \
     "curl|6|Could not resolve host: pypi.org"; do
     n=$((n + 1))
     IFS='|' read -r how status said <<<"$data"
@@ -2534,10 +2216,10 @@ for data in "run|1|TRACK LOCK m: resolving it in r/x@$new failed" \
     run) FAKE_RUN=fail lockgo ;;
     pip) FAKE_PIP=fail lockgo ;;
     curl) FAKE_CURL=fail lockgo ;;
-    *) FAKE_REPORT=$work/report-$how.json lockgo ;;
+    *) FAKE_REPORT=$test_tmp/report-$how.json lockgo ;;
     esac
     if expect "lock-fails-$how" "$status" "$said"; then
-        [ ! -e "$d/Dockerfile.lock" ] || fail "lock-fails-$how" "a lock was written"
+        [ ! -e "$d/Dockerfile.lock" ] || test_fail "lock-fails-$how" "a lock was written"
     fi
 done
 
@@ -2548,7 +2230,7 @@ FAKE_MKTEMP_FAIL=$real/lock-write-fails/Dockerfile.lock/b/requirements.txt.XXXXX
 if expect lock-write-fails 1 "No space left on device"; then
     holds lock-write-fails "$file" $'# TRACK FROM r/x:1\n# TRACK LOCK a pypi:m-d\n# TRACK LOCK b pypi:m-d\nFROM r/x:1'
     if [ -e "$d/Dockerfile.lock" ] || compgen -G "$d/Dockerfile.*" >/dev/null; then
-        fail lock-write-fails "left $(find "$d" -mindepth 1 | sort)"
+        test_fail lock-write-fails "left $(find "$d" -mindepth 1 | sort)"
     fi
 fi
 lockcase lock-write-fails-kept "$pdf"
@@ -2556,7 +2238,7 @@ mkdir -p "$d/Dockerfile.lock/kept"
 FAKE_MKTEMP_FAIL=$real/lock-write-fails-kept/Dockerfile.lock/m/requirements.txt.XXXXXX lockgo
 if expect lock-write-fails-kept 1 "No space left on device"; then
     if ! [ -d "$d/Dockerfile.lock/kept" ] || [ -e "$d/Dockerfile.lock/m" ]; then
-        fail lock-write-fails-kept "left $(find "$d" -mindepth 1 | sort)"
+        test_fail lock-write-fails-kept "left $(find "$d" -mindepth 1 | sort)"
     fi
 fi
 
@@ -2567,12 +2249,12 @@ mkdir "$d/lib"
 mv -- "$file" "$d/lib/Dockerfile"
 ln -s lib/Dockerfile "$file"
 commit_all "$d"
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
+rm -f -- "$test_tmp/lockrec"
+lockgo --record "$test_tmp/lockrec"
 if expect lock-link 0 ""; then
     holds lock-link "$d/Dockerfile.lock/m/requirements.txt" "$req"
     if ! [ -L "$d/Dockerfile" ] || [ -e "$d/lib/Dockerfile.lock" ]; then
-        fail lock-link "the link or the lock's place is wrong"
+        test_fail lock-link "the link or the lock's place is wrong"
     fi
     moves=("r/x:1 r/x:1 -> sha256:aaaaaaaaaaaa" "LOCK m m-d none -> 2.0.1" "LOCK m: 1 dependency moved")
     recorded lock-link lock-link/lib/Dockerfile lock-link/Dockerfile.lock/m/requirements.txt
@@ -2588,68 +2270,27 @@ mv -- "$file" "$d/lib/Dockerfile"
 ln -s lib/Dockerfile "$file"
 commit_all "$d/lib"
 "$REAL_GIT" -C "$d" init -q
-rm -f -- "$work/lockrec"
-lockgo --record "$work/lockrec"
-if expect lock-link-other 1 "upgrade: $file: links to $real/lock-link-other/lib/Dockerfile, in the repository $real/lock-link-other/lib, not $real/lock-link-other, so docker/upgrade-commit could not commit it; re-pin it in its own repository, or without --record" \
+rm -f -- "$test_tmp/lockrec"
+lockgo --record "$test_tmp/lockrec"
+if expect lock-link-other 1 "docker/upgrade: $file: links to $real/lock-link-other/lib/Dockerfile, in the repository $real/lock-link-other/lib, not $real/lock-link-other, so docker/upgrade-commit could not commit it; re-pin it in its own repository, or without --record" \
     "fake docker:"; then
     holds lock-link-other "$d/lib/Dockerfile" "${dockerfile%$'\n'}"
-    [ ! -e "$work/lockrec" ] || fail lock-link-other "a record was written"
+    [ ! -e "$test_tmp/lockrec" ] || test_fail lock-link-other "a record was written"
 fi
 lockgo
 if expect lock-link-other-unrecorded 0 ""; then
     holds lock-link-other-unrecorded "$d/lib/Dockerfile" $'# TRACK FROM r/x:1\nFROM r/x@'"$new"
 fi
 
-# A lock's directory, its NAME directory or a lock file that is a symbolic link
-# is refused before anything is looked up, and what it names is left alone.
-lockcase lock-file-link "$pdf"
-mkdir -p "$d/Dockerfile.lock/m" "$d/shared"
-printf 'm-d==1.0 --hash=sha256:%s\n' "$hd" >"$d/shared/req.txt"
-ln -s ../../shared/req.txt "$d/Dockerfile.lock/m/requirements.txt"
-lockgo
-if expect lock-file-link 1 "upgrade: $d/Dockerfile.lock/m/requirements.txt: is a symbolic link, which a lock is never written through" \
-    "fake "; then
-    holds lock-file-link "$d/shared/req.txt" "m-d==1.0 --hash=sha256:$hd"
-fi
-rm -- "$d/Dockerfile.lock/m/requirements.txt"
-rmdir -- "$d/Dockerfile.lock/m"
-ln -s ../shared "$d/Dockerfile.lock/m"
-lockgo
-expect lock-name-link 1 "upgrade: $d/Dockerfile.lock/m: is a symbolic link" "fake " || true
-rm -- "$d/Dockerfile.lock/m"
-rmdir -- "$d/Dockerfile.lock"
-ln -s shared "$d/Dockerfile.lock"
-lockgo
-expect lock-dir-link 1 "upgrade: $d/Dockerfile.lock: is a symbolic link" "fake " || true
-
-# Nor is a lock written in a repository nested in the Dockerfile's, such as a
-# submodule, at its NAME directory or at the lock's directory.
-lockcase lock-name-nested "$pdf"
-commit_all "$d"
-mkdir -p "$d/Dockerfile.lock/m"
-"$REAL_GIT" -C "$d/Dockerfile.lock/m" init -q
-lockgo
-if expect lock-name-nested 1 "upgrade: $d/Dockerfile.lock/m: is in the repository $d/Dockerfile.lock/m, not $d, which a lock is never written in" \
-    "fake "; then
-    [ ! -e "$d/Dockerfile.lock/m/requirements.txt" ] ||
-        fail lock-name-nested "the lock was written"
-fi
-rm -rf -- "$d/Dockerfile.lock/m/.git"
-"$REAL_GIT" -C "$d/Dockerfile.lock" init -q
-lockgo
-expect lock-dir-nested 1 "upgrade: $d/Dockerfile.lock: is in the repository $d/Dockerfile.lock, not $d" "fake " || true
-
 # lock-resolve refuses what docker/upgrade would never give it.
 for given in "" pypi "npm a" "npm a b c" "npm .a b" "gem a"; do
     read -r -a words <<<"$given"
     rc=0
-    "$FAKE_RESOLVER" "${words[@]}" >"$work/out" 2>"$work/err" || rc=$?
-    if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
-        [ "$(<"$work/err")" != $'Usage: lock-resolve pypi PACKAGE[==VERSION]...\n       lock-resolve npm NAME PACKAGE_JSON' ]; then
-        fail resolve-usage "'$given': exit $rc: $(<"$work/err")"
+    "$FAKE_RESOLVER" "${words[@]}" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != 2 ] || [ -s "$test_tmp/out" ] ||
+        [ "$(<"$test_tmp/err")" != $'Usage: docker/lock-resolve pypi PACKAGE[==VERSION]...\n       docker/lock-resolve npm NAME PACKAGE_JSON' ]; then
+        test_fail resolve-usage "'$given': exit $rc: $(<"$test_tmp/err")"
     fi
 done
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

@@ -1,0 +1,110 @@
+# shellcheck shell=bash
+#
+# Sourced by a test after its shell options. It gives the test a scratch
+# directory, $test_tmp, removed on exit, with $test_tmp/path first on PATH for
+# the fakes test_stub writes. The harness owns the EXIT trap, so a test sets
+# none; a test that starts a process outliving it defines test_cleanup, which
+# the trap runs first.
+
+test_exit() {
+    if declare -F test_cleanup >/dev/null; then
+        test_cleanup
+    fi
+    # A case may leave a directory unwritable, which rm alone cannot remove.
+    chmod -R u+rwx -- "$test_tmp"
+    rm -rf -- "$test_tmp"
+}
+
+test_tmp=$(mktemp -d)
+test_failures=0
+trap test_exit EXIT
+mkdir -- "$test_tmp/path"
+PATH=$test_tmp/path:$PATH
+
+# Reports a failure of case $1 at once, each line of $2 under the program and
+# the case, so a later abort cannot hide it.
+test_fail() {
+    local line
+    while IFS= read -r line <&3; do
+        echo "${0##*/}: $1: $line" >&2
+    done 3<<<"$2"
+    test_failures=$((test_failures + 1))
+}
+
+# Writes a fake command $1 that logs each call's arguments, shell-quoted, as a
+# line of $test_tmp/$1.calls, then runs the shell code $2. With --stdin before
+# $1, it also appends its stdin to $test_tmp/$1.stdin; only then, since a fake
+# reading stdin unasked would drain input the real command leaves alone, such
+# as that of a loop which calls it.
+test_stub() {
+    local stdin=
+    if [ "$1" = --stdin ]; then
+        shift
+        stdin="cat >>$(printf %q "$test_tmp/$1.stdin")"
+        : >"$test_tmp/$1.stdin"
+    fi
+    cat >"$test_tmp/path/$1" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+line=
+if [ \$# -gt 0 ]; then
+    printf -v line ' %q' "\$@"
+fi
+echo "\${line# }" >>$(printf %q "$test_tmp/$1.calls")
+$stdin
+${2-}
+EOF
+    chmod +x -- "$test_tmp/path/$1"
+    : >"$test_tmp/$1.calls"
+}
+
+# Fails case $1 unless the calls logged for fake $2 are exactly the lines after
+# it, then empties the log for the next case.
+test_calls() {
+    local case=$1 name=$2 diff
+    shift 2
+    : >"$test_tmp/want"
+    if [ $# -gt 0 ]; then
+        printf '%s\n' "$@" >"$test_tmp/want"
+    fi
+    if ! diff=$(diff -u -- "$test_tmp/want" "$test_tmp/$name.calls"); then
+        test_fail "$case" "calls to $name differ:"$'\n'"$diff"
+    fi
+    : >"$test_tmp/$name.calls"
+}
+
+# Runs $5... with no stdin and fails case $1 unless it exits $2 with stdout $3
+# and stderr $4, each compared whole.
+test_check() {
+    local case=$1 status=$2 out=$3 err=$4 rc=0
+    shift 4
+    "$@" </dev/null >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        test_fail "$case" "exit $rc, not $status: $(<"$test_tmp/err")"
+    elif [ "$(<"$test_tmp/out")" != "$out" ]; then
+        test_fail "$case" "stdout is: $(<"$test_tmp/out")"
+    elif [ "$(<"$test_tmp/err")" != "$err" ]; then
+        test_fail "$case" "stderr is: $(<"$test_tmp/err")"
+    fi
+}
+
+# Fails case $1 unless $3... exits 2 with no stdout, nothing but `Usage: $2` on
+# stderr, and no call to any fake; calls logged before it are emptied first.
+test_usage() {
+    local case=$1 usage=$2 called
+    shift 2
+    find "$test_tmp" -maxdepth 1 -name '*.calls' -exec truncate -s 0 -- {} +
+    test_check "$case" 2 '' "Usage: $usage" "$@"
+    called=$(find "$test_tmp" -maxdepth 1 -name '*.calls' -size +0c)
+    if [ -n "$called" ]; then
+        test_fail "$case" "a fake was called: $called"
+    fi
+}
+
+test_finish() {
+    if [ "$test_failures" -gt 0 ]; then
+        exit 1
+    fi
+    exit 0
+}

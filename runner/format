@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+#
+# Writing counterpart to bin/lint: every pass rewrites, applying each tool's
+# safe fixes, and bin/lint checks the same files. Runs from the root of the
+# repository.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+# shellcheck source=core
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/core"
+
+main() {
+    [ $# -eq 0 ] || usage
+    # Filled by collect, through a nameref ShellCheck cannot follow.
+    local -a shell envrc docker workflow yaml yaml_unsorted json json_ordered \
+        toml md dotenv python js web ansible
+    # Set beside the mounts that carry the writes to the host, as format-host
+    # sets it; without them the run would format the image's copy and throw it
+    # away.
+    if [ "${FORMAT_MOUNTS:-}" != 1 ]; then
+        echo "$prog: the tree is not mounted; run make format" >&2
+        exit 1
+    fi
+    # Outside check, so a guard there stops the run before anything is
+    # rewritten.
+    if defines format_before; then
+        format_before
+    fi
+
+    if defines shell_files; then
+        collect shell shell_files
+        echo "$prog: formatting ${#shell[@]} shell file(s)" >&2
+        for f in "${shell[@]}"; do
+            check shfmt rewrite "$f" shfmt "${shfmt_args[@]}" --filename "$f"
+        done
+    fi
+
+    if defines envrc_files; then
+        collect envrc envrc_files
+        echo "$prog: formatting ${#envrc[@]} direnv file(s)" >&2
+        for f in "${envrc[@]}"; do
+            check shfmt rewrite "$f" shfmt "${shfmt_args[@]}" -ln bash \
+                --filename "$f"
+        done
+    fi
+
+    if defines docker_files; then
+        collect docker docker_files
+        echo "$prog: formatting ${#docker[@]} Dockerfile(s)" >&2
+        check dockerfmt dockerfmt "${dockerfmt_args[@]}" --write "${docker[@]}"
+    fi
+
+    collect workflow workflow_files
+    yaml=()
+    if defines yaml_files; then
+        collect yaml yaml_files
+    fi
+    yaml+=("${workflow[@]}")
+    echo "$prog: formatting ${#yaml[@]} sorted YAML file(s)" >&2
+    for f in "${yaml[@]}"; do
+        check yq rewrite "$f" yq "${yq_args[@]}"
+    done
+    if defines yaml_unsorted_files; then
+        collect yaml_unsorted yaml_unsorted_files
+        echo "$prog: formatting ${#yaml_unsorted[@]} unsorted YAML file(s)" >&2
+        for f in "${yaml_unsorted[@]}"; do
+            check yq rewrite "$f" yq -P .
+        done
+    fi
+
+    if defines json_files; then
+        collect json json_files
+        echo "$prog: formatting ${#json[@]} JSON file(s)" >&2
+        for f in "${json[@]}"; do
+            check jq rewrite "$f" jq "${jq_args[@]}"
+        done
+    fi
+
+    if defines json_ordered_files; then
+        collect json_ordered json_ordered_files
+        echo "$prog: formatting ${#json_ordered[@]} ordered JSON file(s)" >&2
+        for f in "${json_ordered[@]}"; do
+            check jq rewrite "$f" jq .
+        done
+    fi
+
+    if defines toml_files; then
+        collect toml toml_files
+        echo "$prog: formatting ${#toml[@]} TOML file(s)" >&2
+        check taplo taplo fmt "${toml[@]}"
+    fi
+
+    if defines md_files; then
+        collect md md_files
+        echo "$prog: formatting ${#md[@]} Markdown file(s)" >&2
+        check mdformat mdformat "${md[@]}"
+    fi
+
+    if defines dotenv_files; then
+        collect dotenv dotenv_files
+        echo "$prog: formatting ${#dotenv[@]} dotenv file(s)" >&2
+        check dotenv-linter dotenv-linter fix --no-backup "${dotenv[@]}"
+    fi
+
+    if defines python_files; then
+        collect python python_files
+        echo "$prog: formatting ${#python[@]} Python file(s)" >&2
+        # Fixes first, since a fix can leave code the formatter lays out again.
+        check ruff ruff check --fix-only "${python[@]}"
+        check ruff-format ruff format "${python[@]}"
+    fi
+
+    if defines js_files; then
+        collect js js_files
+        echo "$prog: formatting ${#js[@]} JavaScript file(s)" >&2
+        check semistandard semistandard --fix "${js[@]}"
+    fi
+
+    if defines css_files || defines html_files; then
+        files_web web
+        echo "$prog: formatting ${#web[@]} CSS and HTML file(s)" >&2
+        check prettier prettier --write "${web[@]}"
+    fi
+
+    # Empty where the whole tree is the Ansible project: ansible-lint gets no
+    # path.
+    if defines ansible_files; then
+        collect ansible --may-be-empty ansible_files
+        echo "$prog: formatting Ansible" >&2
+        check ansible-lint env "${ansible_env[@]}" "$lib/ansible/format" \
+            "${ansible[@]}"
+    fi
+
+    if defines format_extra; then
+        format_extra
+    fi
+
+    finish
+}
+
+# From a function, so bash has read the whole script before a pass can rewrite
+# it.
+main "$@"
+exit

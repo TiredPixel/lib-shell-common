@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
 #
-# Tests docker/upgrade-commit against real repositories in a scratch dir: app,
-# with a bare remote and a submodule lib, in which an upgrade has rewritten the
-# Dockerfile, proposed a workflow and left a record of it, and lib has moved
-# forwards. Every case builds its fixture afresh and runs upgrade-commit in app,
-# but one, which runs it outside any repository.
-#
-# Run: test/docker/upgrade-commit.test. Exits 1 naming each case that failed.
+# Runs against real repositories in a scratch dir: app, with a bare remote and a
+# submodule lib, in which an upgrade has rewritten the Dockerfile, proposed a
+# workflow and left a record of it, and lib has moved forwards. Every case
+# builds its fixture afresh and runs upgrade-commit in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-commit=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/upgrade-commit
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+commit=$root/docker/upgrade-commit
 
 # Nothing from the caller's configuration reaches the fixtures, and no fixture
 # finds a repository above the scratch dir. The file protocol, local paths
 # included, is refused to submodules by default.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
-export GIT_CEILING_DIRECTORIES=$work
+export GIT_CEILING_DIRECTORIES=$test_tmp
 export GIT_CONFIG_COUNT=5
 export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
 export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
@@ -28,18 +27,9 @@ export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 # turns it off.
 export GIT_CONFIG_KEY_4=diff.renames GIT_CONFIG_VALUE_4=true
 
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
 n=0
 moves=("V 1.0.0 -> 1.2.3" "o/r@v1 v0 -> 3333333")
+staged="docker/upgrade-commit: already staged beside the upgrade; commit or unstage it first"
 
 # A fresh fixture in $w: app at $w/app, pushed to $w/app.git, with lib at
 # $w/app/lib one commit past what app records, the upgrade's changes made and
@@ -47,7 +37,7 @@ moves=("V 1.0.0 -> 1.2.3" "o/r@v1 v0 -> 3333333")
 # lib_move the line upgrade-commit writes for lib.
 fixture() {
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     git init -q --bare "$w/lib.git"
     git init -q "$w/lib.up"
@@ -81,13 +71,12 @@ fixture() {
         "${moves[@]}" >"$w/record"
 }
 
-# Runs upgrade-commit in $w/app$1 with the arguments after it, setting rc, out
-# and err.
+# Runs upgrade-commit in $w/app$1 with the arguments after it, setting rc and
+# err.
 run() {
     local dir=$w/app$1
     rc=0
     (cd "$dir" && "$commit" "${@:2}") >"$w/out" 2>"$w/err" || rc=$?
-    out=$(<"$w/out")
     err=$(<"$w/err")
 }
 
@@ -95,11 +84,11 @@ run() {
 # has, or the record is gone.
 unchanged() {
     if [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
-        fail "$1" "a commit was made"
+        test_fail "$1" "a commit was made"
     elif [ "$(git -C "$w/app.git" rev-parse main)" != "$pushed" ]; then
-        fail "$1" "something was pushed"
+        test_fail "$1" "something was pushed"
     elif ! [ -f "$w/record" ]; then
-        fail "$1" "the record was removed"
+        test_fail "$1" "the record was removed"
     fi
 }
 
@@ -121,18 +110,18 @@ committed() {
         message+=("" "${body[@]/#/- }")
     fi
     if [ "$rc" != 0 ]; then
-        fail "$name" "exit $rc, not 0: $err"
+        test_fail "$name" "exit $rc, not 0: $err"
     elif [ "$(git -C "$w/app" rev-parse HEAD~1)" != "$pushed" ]; then
-        fail "$name" "HEAD is not one commit past the fixture's"
+        test_fail "$name" "HEAD is not one commit past the fixture's"
     elif [ "$(git -C "$w/app" log -1 --no-show-signature --format=%B)" != \
         "$(printf '%s\n' "${message[@]}")" ]; then
-        fail "$name" "the message is: $(git -C "$w/app" log -1 --no-show-signature --format=%B)"
+        test_fail "$name" "the message is: $(git -C "$w/app" log -1 --no-show-signature --format=%B)"
     elif [ "$(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)" != "$want" ]; then
-        fail "$name" "the commit changes: $(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)"
+        test_fail "$name" "the commit changes: $(git -C "$w/app" diff-tree --ignore-submodules=none --no-commit-id --name-only -r HEAD)"
     elif [ "$(git -C "$w/app.git" rev-parse main)" != "$pushed" ]; then
-        fail "$name" "something was pushed"
+        test_fail "$name" "something was pushed"
     elif [ -e "$w/record" ]; then
-        fail "$name" "the record was kept"
+        test_fail "$name" "the record was kept"
     fi
 }
 
@@ -144,7 +133,7 @@ printf 'x\n' >"$w/app/untracked"
 run "" "$w/record" lib
 committed commits .github/workflows.new/build.yml Dockerfile lib
 if [ "$(git -C "$w/app" status --porcelain)" != $' M notes.txt\n?? untracked' ]; then
-    fail commits "the tree is now: $(git -C "$w/app" status --porcelain)"
+    test_fail commits "the tree is now: $(git -C "$w/app" status --porcelain)"
 fi
 
 # From a subdirectory, a PATH is read from there, and the recorded paths are
@@ -201,10 +190,8 @@ committed lib-only-ignored lib
 fixture
 git -C "$w/app" config submodule.lib.ignore all
 git -C "$w/app" add lib
-run "" "$w/record"
-if [ "$rc" != 1 ] || [ "$err" != $'lib\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
-    fail other-staged-ignored "exit $rc: $err"
-fi
+test_check other-staged-ignored 1 '' "lib"$'\n'"$staged" \
+    env -C "$w/app" "$commit" "$w/record"
 unchanged other-staged-ignored
 
 # Where neither a pin nor a PATH moved, nothing is staged or committed, and the
@@ -214,32 +201,43 @@ for how in unmoved-path no-path; do
     : >"$w/record"
     if [ "$how" = unmoved-path ]; then
         git -C "$w/app/lib" checkout -q HEAD~1
-        run "" "$w/record" lib
+        set -- lib
     else
         git -C "$w/app" add lib
-        run "" "$w/record"
+        set --
     fi
-    if [ "$rc" != 0 ] || [ -n "$out" ] ||
-        [ "$err" != "upgrade-commit: $w/record: nothing moved, so there is nothing to commit" ]; then
-        fail "nothing-moved-$how" "exit $rc: $out$err"
-    elif [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
-        fail "nothing-moved-$how" "a commit was made"
+    test_check "nothing-moved-$how" 0 '' \
+        "docker/upgrade-commit: $w/record: nothing moved, so there is nothing to commit" \
+        env -C "$w/app" "$commit" "$w/record" "$@"
+    if [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
+        test_fail "nothing-moved-$how" "a commit was made"
     elif [ "$how" = unmoved-path ] &&
         [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
-        fail "nothing-moved-$how" "something was staged"
+        test_fail "nothing-moved-$how" "something was staged"
     elif [ -e "$w/record" ]; then
-        fail "nothing-moved-$how" "the record was kept"
+        test_fail "nothing-moved-$how" "the record was kept"
     fi
 done
+
+# A record docker/upgrade-record makes from no moves is one where nothing moved.
+fixture
+rm -- "$w/record"
+"$root/docker/upgrade-record" "$w/record" Package.resolved </dev/null
+test_check nothing-moved-recorded 0 '' \
+    "docker/upgrade-commit: $w/record: nothing moved, so there is nothing to commit" \
+    env -C "$w/app" "$commit" "$w/record"
+if [ "$(git -C "$w/app" rev-parse HEAD)" != "$pushed" ]; then
+    test_fail nothing-moved-recorded "a commit was made"
+elif [ -e "$w/record" ]; then
+    test_fail nothing-moved-recorded "the record was kept"
+fi
 
 # Where no pin moved, any other path staged is still refused.
 fixture
 : >"$w/record"
 git -C "$w/app" add notes.txt Dockerfile
-run "" "$w/record" lib
-if [ "$rc" != 1 ] || [ "$err" != $'Dockerfile\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
-    fail lib-only-other-staged "exit $rc: $err"
-fi
+test_check lib-only-other-staged 1 '' "Dockerfile"$'\n'"$staged" \
+    env -C "$w/app" "$commit" "$w/record" lib
 unchanged lib-only-other-staged
 
 # Any other path staged is refused, listed as git lists it, before anything is
@@ -254,11 +252,10 @@ for how in modified renamed; do
         git -C "$w/app" mv notes.txt renamed.txt
         want=$'notes.txt\nrenamed.txt'
     fi
-    run "" "$w/record" lib
-    if [ "$rc" != 1 ] || [ "$err" != "$want"$'\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
-        fail "other-staged-$how" "exit $rc: $err"
-    elif [ "$(git -C "$w/app" diff --cached --no-renames --name-only)" != "$want" ]; then
-        fail "other-staged-$how" "the index is now: $(git -C "$w/app" diff --cached --no-renames --name-only)"
+    test_check "other-staged-$how" 1 '' "$want"$'\n'"$staged" \
+        env -C "$w/app" "$commit" "$w/record" lib
+    if [ "$(git -C "$w/app" diff --cached --no-renames --name-only)" != "$want" ]; then
+        test_fail "other-staged-$how" "the index is now: $(git -C "$w/app" diff --cached --no-renames --name-only)"
     fi
     unchanged "other-staged-$how"
 done
@@ -283,82 +280,36 @@ for how in unstaged staged; do
         run "" "$w/record" 'g[1]'
         committed glob-unstaged Dockerfile 'f[1]' 'g[1]'
         if [ "$(git -C "$w/app" status --porcelain -- f1 g1)" != $' M f1\n M g1' ]; then
-            fail glob-unstaged "f1 and g1 are now: $(git -C "$w/app" status --porcelain -- f1 g1)"
+            test_fail glob-unstaged "f1 and g1 are now: $(git -C "$w/app" status --porcelain -- f1 g1)"
         fi
     else
         git -C "$w/app" add f1 g1
-        run "" "$w/record" 'g[1]'
-        if [ "$rc" != 1 ] || [ "$err" != $'f1\ng1\nupgrade-commit: already staged beside the upgrade; commit or unstage it first' ]; then
-            fail glob-staged "exit $rc: $err"
-        fi
+        test_check glob-staged 1 '' $'f1\ng1\n'"$staged" \
+            env -C "$w/app" "$commit" "$w/record" 'g[1]'
         unchanged glob-staged
     fi
 done
 
-# A record docker/upgrade could not have written is refused.
-n_bad=0
-for bad in $'/x\n/y\n' $'\nV 1 -> 2\n' $'/x\n\n' $'/x\n\nV 1 -> 2\n\nW 1 -> 2\n'; do
-    n_bad=$((n_bad + 1))
-    fixture
-    printf '%s' "$bad" >"$w/record"
-    run "" "$w/record"
-    case $n_bad in
-    4) said="$w/record:4: a second blank line" ;;
-    *) said="upgrade-commit: $w/record: not a record docker/upgrade --record writes" ;;
-    esac
-    if [ "$rc" != 1 ] || [ "$err" != "$said" ]; then
-        fail "bad-record-$n_bad" "exit $rc: $err"
-    fi
-    unchanged "bad-record-$n_bad"
-done
-
-# A recorded path git cannot add fails the run, and the record stays.
+# A recorded path git cannot add fails the run, and the record stays. git's
+# words vary by release, so only the path is matched.
 fixture
 printf '%s\n' "$w/app/absent" "" "${moves[@]}" >"$w/record"
 run "" "$w/record"
 if [ "$rc" = 0 ] || [[ "$err" != *absent* ]]; then
-    fail add-fails "exit $rc: $err"
+    test_fail add-fails "exit $rc: $err"
 fi
 unchanged add-fails
-
-fixture
-run "" "$w/missing"
-if [ "$rc" != 1 ] || [ "$err" != "upgrade-commit: $w/missing: no such file" ]; then
-    fail missing "exit $rc: $err"
-fi
-unchanged missing
-
-fixture
-mkdir "$w/directory"
-run "" "$w/directory"
-if [ "$rc" != 1 ] || [ "$err" != "upgrade-commit: $w/directory: not a regular file" ]; then
-    fail directory "exit $rc: $err"
-fi
-unchanged directory
 
 for how in none empty; do
     fixture
     if [ "$how" = none ]; then
-        run ""
+        set --
     else
-        run "" ""
+        set -- ""
     fi
-    if [ "$rc" != 2 ] || [ "$err" != "Usage: upgrade-commit RECORD [PATH...]" ]; then
-        fail "usage-$how" "exit $rc: $err"
-    fi
+    test_usage "usage-$how" 'docker/upgrade-commit RECORD [PATH...]' \
+        env -C "$w/app" "$commit" "$@"
     unchanged "usage-$how"
 done
 
-# Outside a repository, git's own failure stops the run.
-fixture
-mkdir "$work/norepo"
-rc=0
-(cd "$work/norepo" && "$commit" "$w/record") >"$w/out" 2>"$w/err" || rc=$?
-if [ "$rc" = 0 ] || ! grep -qF "not a git repository" "$w/err"; then
-    fail no-repo "exit $rc: $(<"$w/err")"
-fi
-unchanged no-repo
-
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

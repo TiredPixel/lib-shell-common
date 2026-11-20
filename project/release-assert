@@ -12,10 +12,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
+prog=project/release-assert
+
+usage() {
+    echo "Usage: $prog" >&2
     exit 2
-fi
+}
+
+[ $# -eq 0 ] || usage
 
 # lastpipe so the loop below runs in this shell and keeps what it reads, and so
 # pipefail sees git's status. A process substitution hides it entirely:
@@ -29,21 +33,13 @@ fi
 # the array arrive empty.
 shopt -s lastpipe
 
-prog=${0##*/}
 f_projects=.projects
 
-top=$(git rev-parse --show-toplevel)
-
-# .projects is read from the current directory and only the submodules under it
-# are checked, so below the top level the checks would cover only part of the
-# repository and every submodule would read as missing from .projects, yet the
-# release commit records pointers across the whole repository.
-if [[ ! $PWD -ef $top ]]; then
-    echo "$prog: $PWD: refusing to release from below the top level" >&2
-    echo "$prog: run it from $top" >&2
-
-    exit 1
-fi
+# .projects and the submodule paths are relative to the top level, so the
+# checks cover the whole repository from any directory in it. Assigned on its
+# own, so that errexit sees git fail outside a repository.
+toplevel=$(git rev-parse --show-toplevel)
+cd "$toplevel"
 
 # --ignore-submodules=all hides every submodule change, so whatever is left is
 # by definition work outside them, and no path list is needed to say so.
@@ -112,13 +108,6 @@ for module in "${modules[@]}"; do
     # An empty directory is the other case and is left alone: it is a submodule
     # nobody initialised, so its pointer cannot move, and for a submodule
     # .projects does not name, that is the normal state.
-    if [ ! -d "$module" ]; then
-        echo "$prog: $PWD: $module: not checked out," \
-            "so a release cannot record it" >&2
-
-        exit 1
-    fi
-
     [ -n "$(find "$module" -mindepth 1 -maxdepth 1 -print -quit)" ] || continue
 
     # Repository discovery walks up, so this answers with the containing
@@ -127,7 +116,7 @@ for module in "${modules[@]}"; do
     module_top=$(git -C "$module" rev-parse --show-toplevel 2>/dev/null) ||
         module_top=
 
-    if [[ ! $module_top -ef $module ]]; then
+    if [ ! "$module_top" -ef "$module" ]; then
         echo "$prog: $PWD: $module: has content but is not a repository" \
             "of its own" >&2
         echo "$prog: git reads its pointer as unchanged, so a release would" \

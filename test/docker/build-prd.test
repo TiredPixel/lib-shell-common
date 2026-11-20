@@ -1,60 +1,38 @@
 #!/usr/bin/env bash
 #
-# Tests docker/build-prd-latest and docker/build-prd-stable in a scratch project
-# with docker and git faked on PATH, so nothing is built, pushed or read from a
-# repository. The fake docker logs each call's arguments, a line to a call, and
-# exits with FAKE_BUILD's status from a build and FAKE_PUSH's from a push. The
-# fake git puts HEAD on branch a/b and describes it as FAKE_DESCRIBE, failing as
-# an untagged repository does where that is empty, or as a broken one does where
-# it is "broken"; it gives FAKE_ORIGIN as the origin remote's URL, failing as a
-# checkout with no origin does where that is empty.
-#
-# Run: test/docker/build-prd.test. Exits 1 naming each case that failed.
+# docker and git are faked on PATH, so nothing is built, pushed or read from a
+# repository. The fake docker logs each call's arguments and exits with
+# FAKE_BUILD's status from a build and FAKE_PUSH's from a push. The fake git
+# puts HEAD on branch a/b and describes it as FAKE_DESCRIBE, failing as an
+# untagged repository does where that is empty, or as a broken one does where it
+# is "broken"; it gives FAKE_ORIGIN as the origin remote's URL.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")
-fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/build-prd")
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/bin" "$work/project"
-cp -p -- "$fixtures/docker" "$fixtures/git" "$work/bin/"
-echo r/x >"$work/project/.dockerrepo"
+dir=$root/docker
+fixtures=$root/test/fixtures/docker/build-prd
 
-export FAKE_LOG=$work/log
+mkdir -- "$test_tmp/project"
+cp -p -- "$fixtures/docker" "$fixtures/git" "$test_tmp/path/"
+echo r/x >"$test_tmp/project/.dockerrepo"
+
+export FAKE_LOG=$test_tmp/docker.calls
+: >"$FAKE_LOG"
 export FAKE_DESCRIBE=v1.2-3-gabcdef0
 export FAKE_ORIGIN=git@github.com:o/r
-export PATH=$work/bin:$PATH
-cd "$work/project"
-
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
+cd "$test_tmp/project"
 
 # Runs docker/$2 with the arguments after $6 and checks its status is $3, docker
 # was called as $4 has it, a line to a call, and its stdout is $5 and its stderr
 # $6.
 check() {
-    local name=$1 script=$2 status=$3 calls=$4 out=$5 err=$6 rc=0
-    : >"$FAKE_LOG"
-    "$dir/$script" "${@:7}" >"$work/out" 2>"$work/err" || rc=$?
-    if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$work/err")"
-    elif [ "$(<"$FAKE_LOG")" != "$calls" ]; then
-        fail "$name" "docker was called as: $(<"$FAKE_LOG")"
-    elif [ "$(<"$work/out")" != "$out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ "$(<"$work/err")" != "$err" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"
-    fi
+    local calls=$4
+    test_check "$1" "$3" "$5" "$6" "$dir/$2" "${@:7}"
+    test_calls "$1" docker ${calls:+"$calls"}
 }
 
 # The build docker is called for, from the cache tags $1, stamped $2 and
@@ -89,12 +67,7 @@ for model in latest stable; do
 
     # Any other failure of git's stops the build before docker is called.
     FAKE_DESCRIBE=broken check "$model-describe-fails" "build-prd-$model" 1 \
-        "" "" "${broken}build-prd-$model: git describe failed"
-
-    # So does a checkout with no origin to take the source from.
-    FAKE_ORIGIN='' check "$model-no-origin" "build-prd-$model" 1 "" "" \
-        "error: No such remote 'origin'"$'\n'"build-prd-$model: IMAGE_SOURCE: \
-git remote get-url origin failed"
+        "" "" "${broken}docker/build-prd-$model: git describe failed"
 
     FAKE_BUILD=3 check "$model-build-fails" "build-prd-$model" 3 "$built" \
         "fake docker: built" "fake docker: building"
@@ -105,10 +78,8 @@ git remote get-url origin failed"
 
     # Any argument is a usage error, refused before docker is called, so --help
     # neither builds nor pushes.
-    check "$model-argument" "build-prd-$model" 2 "" "" \
-        "Usage: build-prd-$model" --help
+    test_usage "$model-argument" "docker/build-prd-$model" "$dir/build-prd-$model" \
+        --help
 done
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

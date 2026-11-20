@@ -3,14 +3,10 @@
 # Sourced by docker/upgrade and lint/dockerfile-locks, so the two read a
 # Dockerfile alike. Sets no shell options, since it runs under its caller's.
 
-# Before the first command, so it covers the whole file: ShellCheck takes each
-# variable assigned through a nameref for unused.
-# shellcheck disable=SC2034
-
 # A heredoc's opening word in a RUN, COPY or ADD, <<WORD or <<-WORD, WORD
 # optionally quoted, whose body runs from the next line to one that is WORD,
 # leading tabs dropped after <<- (Dockerfile reference, "Here-Documents",
-# docs.docker.com, checked 2026-11). Words are split at blanks, not shell-lexed.
+# docs.docker.com, read 2026-11-20). Words are split at blanks, not shell-lexed.
 dockerfile_delimiter='[^<"'\''[:space:]]+'
 dockerfile_heredoc="^[0-9]*<<(-?)(\"($dockerfile_delimiter)\"|'($dockerfile_delimiter)'|($dockerfile_delimiter))\$"
 
@@ -38,9 +34,10 @@ dockerfile_parse() {
     fi
 
     # Parser directives open the file, before any comment, blank line or
-    # instruction; an unknown one ends them, as Docker reads it as a comment,
-    # and so does one with no value (Dockerfile reference, "Parser
-    # directives", docs.docker.com, checked 2026-11).
+    # instruction; an unknown one ends them, as Docker reads it as a comment
+    # (Dockerfile reference, "Parser directives", docs.docker.com, read
+    # 2026-11-20), and so does one with no value (directiveRegexp in BuildKit's
+    # frontend/dockerfile/parser/directives.go, read 2026-11-20).
     for dp_line in "${dp_lines[@]}"; do
         [[ $dp_line =~ ^#[[:space:]]*([A-Za-z][A-Za-z0-9]*)[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] ||
             break
@@ -79,6 +76,7 @@ dockerfile_parse() {
             continue
         fi
         if [[ $dp_line =~ ^[[:space:]]*(#.*)?$ ]]; then
+            # shellcheck disable=SC2034 # Assigned through the nameref for the caller.
             [[ $dp_line != *\#* ]] || dp_comments[dp_i]=$dp_line
             continue
         fi
@@ -108,9 +106,11 @@ dockerfile_parse() {
     done
     if [ -n "$dp_start" ]; then
         dp_logical[dp_start]=$dp_text
+        # shellcheck disable=SC2034 # Assigned through the nameref for the caller.
         dp_ends[dp_start]=$((${#dp_lines[@]} - 1))
     fi
     if [ ${#dp_docs[@]} -gt 0 ]; then
+        # shellcheck disable=SC2034 # Assigned through the nameref for the caller.
         dp_error="a heredoc's body has no end line ${dp_docs[0]:1}"
         return 1
     fi

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+#
+# Runs COMMAND in Compose service SERVICE, from the root of the repository, with
+# each top-level entry git lists bound by name over the image's copy of the tree
+# at /home/x/r, so the command's writes reach the host and nothing else of the
+# container does, and with FORMAT_MOUNTS=1, which bin/format needs before it
+# rewrites anything. A directory holding a submodule or an ignored path is
+# descended into, so neither is bound. A symlink, which the image's copy already
+# carries, and a path missing on disk, which a bind would create as a directory,
+# are left out. Each run's container is fresh, so a single-file bind cannot go
+# stale across an editor's save by rename. Each RUN_OPTION, such as --build or
+# -T, goes to docker compose run as given.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=runner/format-host
+root=/home/x/r
+
+usage() {
+    echo "Usage: $prog [RUN_OPTION...] -- SERVICE COMMAND..." >&2
+    exit 2
+}
+
+run_options=()
+while [ $# -gt 0 ] && [ "$1" != -- ]; do
+    run_options+=("$1")
+    shift
+done
+[ $# -ge 3 ] || usage
+service=$2
+shift 2
+
+cd "$(git rev-parse --show-toplevel)"
+
+lists=$(mktemp -d)
+trap 'rm -rf -- "$lists"' EXIT
+
+# Into files rather than through process substitution, whose status bash can
+# lose, so a failed listing stops the run.
+git ls-files -z --cached >"$lists/cached"
+git ls-files -z --others --exclude-standard >"$lists/others"
+git ls-files -z --others --ignored --exclude-standard --directory \
+    >"$lists/ignored"
+git ls-files -z --stage >"$lists/stage"
+
+mapfile -t -d '' cached <"$lists/cached"
+mapfile -t -d '' others <"$lists/others"
+mapfile -t -d '' ignored <"$lists/ignored"
+mapfile -t -d '' stage <"$lists/stage"
+
+declare -A gitlink=() descend=() entries=()
+
+descend_into_parents() {
+    local path=${1%/}
+
+    while [[ $path == */* ]]; do
+        path=${path%/*}
+        descend[$path]=1
+    done
+}
+
+# The entry a listed path is bound through: its first leading directory that is
+# not descended into, or nothing where that is a submodule.
+add_entry() {
+    local rest=${1%/} entry=""
+
+    while :; do
+        entry=${entry:+$entry/}${rest%%/*}
+        [ -n "${descend[$entry]+set}" ] || break
+        [[ $rest == */* ]] || return 0
+        rest=${rest#*/}
+    done
+    [ -z "${gitlink[$entry]+set}" ] || return 0
+    entries[$entry]=1
+}
+
+# --stage lists each entry as MODE OBJECT STAGE, a tab, then the path; 160000 is
+# a gitlink, a submodule's commit.
+for record in "${stage[@]}"; do
+    if [[ $record == 160000\ * ]]; then
+        path=${record#*$'\t'}
+        gitlink[$path]=1
+        descend_into_parents "$path"
+    fi
+done
+for path in "${ignored[@]}"; do
+    descend_into_parents "$path"
+done
+
+for path in "${cached[@]}" "${others[@]}"; do
+    add_entry "$path"
+done
+
+volumes=()
+if [ ${#entries[@]} -gt 0 ]; then
+    printf '%s\0' "${!entries[@]}" >"$lists/entries"
+    LC_ALL=C sort -z -o "$lists/entries" "$lists/entries"
+    mapfile -t -d '' sorted <"$lists/entries"
+    for entry in "${sorted[@]}"; do
+        if [ -L "$entry" ] || ! [ -e "$entry" ]; then
+            continue
+        fi
+        # Absolute, since Docker reads a relative source as a named volume.
+        volumes+=(-v "$PWD/$entry:$root/$entry")
+    done
+fi
+
+# Removed here, since exec replaces the shell before its EXIT trap can run.
+rm -rf -- "$lists"
+trap - EXIT
+
+exec docker compose run --rm "${run_options[@]}" -e FORMAT_MOUNTS=1 \
+    "${volumes[@]}" "$service" "$@"

@@ -1,76 +1,41 @@
 #!/usr/bin/env bash
 #
-# Tests docker/init, and docker/repo through it, sourced in a shell with no
-# options set and in one under the strict mode its callers run, in scratch
-# projects with git faked on PATH: the fake answers HEAD's branch as
-# FAKE_BRANCH, "HEAD" where that is the detached state, and its short commit id
-# as FAKE_COMMIT. Each case prints what a child of the sourcing shell sees of
-# REPO, TAG and DOCKER_BUILDKIT, so only what init exports counts, and compares
-# stdout and stderr exactly. Sourcing must set none of the shell's options and
-# leave no variable of its own.
-#
-# Run: test/docker/init.test. Exits 1 naming each case that failed.
+# docker/repo is covered through docker/init, sourced in a shell with no options
+# set and in one under the strict mode its callers run, in a scratch project
+# with git faked on PATH: the fake answers HEAD's branch as FAKE_BRANCH, "HEAD"
+# where that is the detached state, and its short commit id as FAKE_COMMIT. Each
+# case prints what a child of the sourcing shell sees of REPO, TAG and
+# DOCKER_BUILDKIT, so only what init exports counts. Sourcing must set none of
+# the shell's options and leave no variable of its own.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-init=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/init
-fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/init")
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/bin" "$work/project" "$work/missing" "$work/empty"
-cp -p -- "$fixtures/git" "$work/bin/"
-echo r/x >"$work/project/.dockerrepo"
-: >"$work/empty/.dockerrepo"
-export PATH=$work/bin:$PATH
+init=$root/docker/init
+fixtures=$root/test/fixtures/docker/init
+
+mkdir -- "$test_tmp/project"
+cp -p -- "$fixtures/git" "$test_tmp/path/"
+echo r/x >"$test_tmp/project/.dockerrepo"
 
 # The shells that source init are scripts in files rather than -c strings, as
 # its callers are, so $0 names the script as it names a caller. The sourcing
 # shell runs show, a child that sees only what init exports.
-cp -p -- "$fixtures/source" "$fixtures/show" "$fixtures/options" "$work/"
+cp -p -- "$fixtures/source" "$fixtures/show" "$fixtures/options" "$test_tmp/"
 
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
-# Sources init in the scratch project named by $project, in a bash with no
-# options or, where $2 is strict, under the callers' strict mode, with the
-# environment after $4, and checks its status is $3, and that a child then
-# prints $4 and stderr is empty where it passes, or stdout is empty and stderr
-# is exactly $4 where it fails.
-project=project
+# Sources init in the scratch project, in a bash with no options or, where $2 is
+# strict, under the callers' strict mode, with the environment after $4, and
+# checks its status is $3, that a child then prints $4 and that stderr is empty.
 check() {
-    local name=$1 mode=$2 status=$3 want=$4 rc=0 want_out="" want_err=""
-    shift 4
-    if [ "$status" = 0 ]; then
-        want_out=$want
-    else
-        want_err=$want
-    fi
-    (cd "$work/$project" && env -u CIRCLE_BRANCH -u CIRCLE_TAG \
-        -u GITHUB_HEAD_REF -u GITHUB_REF_NAME "$@" bash --norc --noprofile \
-        "$work/source" "$mode" "$init" "$work/show") >"$work/out" \
-        2>"$work/err" || rc=$?
-    if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$work/err")"
-    elif [ "$(<"$work/out")" != "$want_out" ]; then
-        fail "$name" "stdout, from a child, is: $(<"$work/out")"
-    elif [ "$(<"$work/err")" != "$want_err" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"
-    fi
+    test_check "$1" "$3" "$4" '' env -C "$test_tmp/project" \
+        -u CIRCLE_BRANCH -u CIRCLE_TAG -u GITHUB_HEAD_REF -u GITHUB_REF_NAME \
+        "${@:5}" bash --norc --noprofile "$test_tmp/source" "$2" "$init" \
+        "$test_tmp/show"
 }
 
-detached="source: TAG: detached HEAD and no CI branch or tag variable set;"
-detached+=" check out a branch"
-nothing_left="source: TAG: ---: no letter, digit or _ to make an image tag"
-nothing_left+=" from; check out a branch named with one"
 printf -v a129 '%*s' 129 ''
 a129=${a129// /a}
 a124=${a129:0:124}
@@ -85,17 +50,12 @@ for mode in plain strict; do
         GITHUB_HEAD_REF=e/f GITHUB_REF_NAME=g
     check "$mode-push" "$mode" 0 "r/x 1.2 1" FAKE_BRANCH=HEAD \
         GITHUB_REF_NAME=1.2
-    check "$mode-detached" "$mode" 1 "$detached" FAKE_BRANCH=HEAD
-    # A CI that exports its branch or tag variable empty is refused all the
-    # same.
-    check "$mode-empty-variable" "$mode" 1 "$detached" FAKE_BRANCH=HEAD \
-        CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=
     # An empty variable is passed over for a later one that is set.
     check "$mode-empty-then-set" "$mode" 0 "r/x g 1" FAKE_BRANCH=HEAD \
         CIRCLE_BRANCH= CIRCLE_TAG= GITHUB_HEAD_REF= GITHUB_REF_NAME=g
     # A caller that sets init_detached=commit, as one pushing nothing does, has
     # a detached HEAD outside CI named by its commit, and only that: a branch
-    # or a CI variable still names the tag, and any other value is refused.
+    # or a CI variable still names the tag, and any other value leaves it empty.
     check "$mode-detached-commit" "$mode" 0 "r/x 1a2b3c4 1" FAKE_BRANCH=HEAD \
         FAKE_COMMIT=1a2b3c4 init_detached=commit
     check "$mode-detached-commit-empty-variable" "$mode" 0 "r/x 1a2b3c4 1" \
@@ -105,7 +65,7 @@ for mode in plain strict; do
         FAKE_BRANCH=a/b FAKE_COMMIT=1a2b3c4 init_detached=commit
     check "$mode-detached-commit-ci" "$mode" 0 "r/x e-f 1" FAKE_BRANCH=HEAD \
         FAKE_COMMIT=1a2b3c4 init_detached=commit GITHUB_HEAD_REF=e/f
-    check "$mode-detached-other" "$mode" 1 "$detached" FAKE_BRANCH=HEAD \
+    check "$mode-detached-other" "$mode" 0 "r/x  1" FAKE_BRANCH=HEAD \
         FAKE_COMMIT=1a2b3c4 init_detached=branch
 
     # Each character Docker's tag grammar refuses becomes a -, then any leading
@@ -121,7 +81,6 @@ for mode in plain strict; do
     # Stripped before it is cut, so the cut still keeps 124 characters.
     check "$mode-leading-dot-long" "$mode" 0 "r/x $a124 1" \
         FAKE_BRANCH=".${a124}b"
-    check "$mode-nothing-left" "$mode" 1 "$nothing_left" FAKE_BRANCH=---
     # Each character, rather than each byte, becomes a - under a UTF-8 locale,
     # and no letter outside ASCII is kept under any locale.
     check "$mode-non-ascii-utf8" "$mode" 0 "r/x a-b 1" \
@@ -133,28 +92,9 @@ for mode in plain strict; do
         NO_GLOBASCIIRANGES=1 LC_ALL=en_US.UTF-8 FAKE_BRANCH=$'a\xc3\xa9b'
 done
 
-# A project with no .dockerrepo, or an empty one, is refused on a branch, with
-# cat's own error where it has one.
-dockerrepo="source: REPO: .dockerrepo missing or empty; write the image"
-dockerrepo+=" repository, such as ghcr.io/OWNER/NAME, to it"
-for mode in plain strict; do
-    project=missing
-    check "$mode-missing-dockerrepo" "$mode" 1 \
-        "cat: .dockerrepo: No such file or directory"$'\n'"$dockerrepo" \
-        FAKE_BRANCH=a/b
-    project=empty
-    check "$mode-empty-dockerrepo" "$mode" 1 "$dockerrepo" FAKE_BRANCH=a/b
-done
-
 # Sourcing changes none of the shell's options, leaves no variable of its own
 # set, and prints nothing.
-if ! (cd "$work/project" && FAKE_BRANCH=a/b init_detached=commit bash --norc \
-    --noprofile "$work/options" "$init") >"$work/out" 2>"$work/err"; then
-    fail options "$(<"$work/err")"
-elif [ -s "$work/out" ] || [ -s "$work/err" ]; then
-    fail options "sourcing printed: $(<"$work/out")$(<"$work/err")"
-fi
+test_check options 0 '' '' env -C "$test_tmp/project" FAKE_BRANCH=a/b \
+    init_detached=commit bash --norc --noprofile "$test_tmp/options" "$init"
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

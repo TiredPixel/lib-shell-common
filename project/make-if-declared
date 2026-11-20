@@ -13,18 +13,22 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-prog=${0##*/}
+prog=project/make-if-declared
 
-if [ $# -eq 0 ] || [ -z "$1" ]; then
+usage() {
     echo "Usage: $prog TARGET [COMMAND...]" >&2
     exit 2
+}
+
+if [ $# -eq 0 ] || [ -z "$1" ]; then
+    usage
 fi
 target=$1
 shift
 
 # Defaults to the target just asked about. project/upgrade passes a command
 # instead, because it runs make under `script` to hold a tty.
-if [ "$#" -eq 0 ]; then
+if [ $# -eq 0 ]; then
     set -- make "$target"
 fi
 

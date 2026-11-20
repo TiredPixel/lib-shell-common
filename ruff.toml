@@ -1,0 +1,5 @@
+[lint]
+# Beyond ruff's defaults: E501, since the formatter leaves comments and
+# docstrings to run past the line length; PERF and PT, ruff's performance and
+# pytest rules; RUF100, so an unused suppression fails.
+extend-select = ["E501", "PERF", "PT", "RUF100"]

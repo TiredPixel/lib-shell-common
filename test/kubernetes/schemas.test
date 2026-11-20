@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/kubernetes/schemas
+
+test_usage no-args 'kubernetes/schemas SWAGGER DIR' "$script"
+test_usage one-arg 'kubernetes/schemas SWAGGER DIR' "$script" x
+test_usage three-args 'kubernetes/schemas SWAGGER DIR' "$script" x y z
+
+# Fails case $1 unless jq's filter $3 holds of the JSON file $2.
+holds() {
+    local case=$1 file=$2 filter=$3
+    if ! jq -e "$filter" "$file" >/dev/null; then
+        test_fail "$case" "${file##*/}: $filter"
+    fi
+}
+
+spec=$test_tmp/spec.json
+jq -n '{definitions: {
+    "x.Thing": {
+        "x-kubernetes-group-version-kind": [
+            {group: "", version: "v1", kind: "Thing"}],
+        properties: {
+            spec: {"$ref": "#/definitions/x.Spec"},
+            port: {"$ref": "#/definitions/x.IntOrString"},
+            size: {"$ref": "#/definitions/io.k8s.apimachinery.pkg.api.resource.Quantity"}
+        }
+    },
+    "x.Spec": {
+        properties: {
+            child: {"$ref": "#/definitions/x.Spec"},
+            list: {type: "array", items: {properties: {a: {type: "string"}}}},
+            labels: {type: "object", additionalProperties: {type: "string"}},
+            properties: {type: "string"}
+        },
+        required: ["list"]
+    },
+    "x.IntOrString": {type: "string", format: "int-or-string"},
+    "io.k8s.apimachinery.pkg.api.resource.Quantity": {type: "string"},
+    "x.Widget": {
+        "x-kubernetes-group-version-kind": [
+            {group: "example.io", version: "v2", kind: "Widget"},
+            {group: "example.io", version: "v3", kind: "Widget"}],
+        properties: {a: {type: "string"}}
+    },
+    "x.Unused": {properties: {a: {type: "string"}}}
+}}' >"$spec"
+
+out=$test_tmp/kinds
+mkdir -- "$out"
+test_check kinds 0 '' '' "$script" "$spec" "$out"
+listed=$(cd -- "$out" && find . -type f | LC_ALL=C sort)
+want=$(printf '%s\n' ./thing-v1-v1.json ./widget-example.io-v2.json \
+    ./widget-example.io-v3.json)
+if [ "$listed" != "$want" ]; then
+    test_fail kinds "wrote ${listed@Q}"
+fi
+
+thing=$out/thing-v1-v1.json
+# Only what the kind reaches, so each file stands alone and no larger.
+holds reached "$thing" '.definitions | keys == ["io.k8s.apimachinery.pkg.api.resource.Quantity", "x.IntOrString", "x.Spec", "x.Thing"]'
+# shellcheck disable=SC2016 # $ref is a key in the JSON.
+holds root "$thing" \
+    '.properties.spec == {anyOf: [{"$ref": "#/definitions/x.Spec"}, {type: "null"}]}'
+holds closed-root "$thing" '.additionalProperties == false'
+holds closed-ref "$thing" '.definitions["x.Spec"].additionalProperties == false'
+holds closed-items "$thing" \
+    '.definitions["x.Spec"].properties.list.items.additionalProperties == false'
+# A map's own additionalProperties is its value schema, kept as given.
+holds map "$thing" \
+    '.definitions["x.Spec"].properties.labels.additionalProperties == {type: "string"}'
+# A field named properties is a field, not a schema keyword.
+holds field-named-properties "$thing" \
+    '.definitions["x.Spec"].properties.properties == {type: ["string", "null"]}'
+# Null is taken where a field is optional, and only there.
+holds optional-null "$thing" \
+    '.definitions["x.Spec"].properties.labels.type == ["object", "null"]'
+holds required-not-null "$thing" \
+    '.definitions["x.Spec"].properties.list.type == "array"'
+# shellcheck disable=SC2016 # $ref is a key in the JSON.
+holds recursion "$thing" \
+    '.definitions["x.Spec"].properties.child == {anyOf: [{"$ref": "#/definitions/x.Spec"}, {type: "null"}]}'
+holds int-or-string "$thing" \
+    '.definitions["x.IntOrString"] == {oneOf: [{type: "string"}, {type: "integer"}]}'
+holds quantity "$thing" \
+    '.definitions["io.k8s.apimachinery.pkg.api.resource.Quantity"] == {oneOf: [{type: "string"}, {type: "number"}]}'
+holds widget "$out/widget-example.io-v2.json" \
+    '.definitions | keys == ["x.Widget"]'
+
+nested=$test_tmp/nested.json
+jq -n '{definitions: {
+    "x.Root": {
+        "x-kubernetes-group-version-kind": [
+            {group: "", version: "v1", kind: "Root"}],
+        properties: {
+            all: {allOf: [
+                {"$ref": "#/definitions/x.Part"},
+                {properties: {a: {type: "string"}}}]},
+            any: {anyOf: [{properties: {a: {type: "string"}}}]},
+            one: {oneOf: [{properties: {a: {type: "string"}}}]},
+            open: {properties: {a: {type: "string"}}, additionalProperties: true},
+            map: {type: "object",
+                additionalProperties: {properties: {a: {type: "string"}}}},
+            ext: {"$ref": "https://example.com/x.json"},
+            "$ref": {type: "string"}
+        },
+        required: ["all", "any", "one", "open", "map", "ext", "$ref"]
+    },
+    "x.Part": {properties: {a: {type: "string"}}}
+}}' >"$nested"
+
+out=$test_tmp/nested-out
+mkdir -- "$out"
+test_check nested 0 '' '' "$script" "$nested" "$out"
+root_file=$out/root-v1-v1.json
+holds closed-all-of "$root_file" \
+    '.properties.all.allOf[1].additionalProperties == false'
+holds closed-any-of "$root_file" \
+    '.properties.any.anyOf[0].additionalProperties == false'
+holds closed-one-of "$root_file" \
+    '.properties.one.oneOf[0].additionalProperties == false'
+# An object that sets its own additionalProperties beside properties keeps it.
+holds open-kept "$root_file" '.properties.open.additionalProperties == true'
+holds closed-map-value "$root_file" \
+    '.properties.map.additionalProperties.additionalProperties == false'
+# A $ref under a combinator is reached; one outside the spec is not followed,
+# and a field named $ref is a field, not a reference.
+holds reached-nested "$root_file" '.definitions | keys == ["x.Part", "x.Root"]'
+# shellcheck disable=SC2016 # $ref is a key in the JSON.
+holds external-ref "$root_file" \
+    '.properties.ext == {"$ref": "https://example.com/x.json"}'
+# shellcheck disable=SC2016 # $ref is a key in the JSON.
+holds field-named-ref "$root_file" '.properties["$ref"] == {type: "string"}'
+
+twice=$test_tmp/twice.json
+jq -n '{definitions: {
+    "x.A": {"x-kubernetes-group-version-kind": [{group: "", version: "v1", kind: "A"}]},
+    "x.B": {"x-kubernetes-group-version-kind": [{group: "", version: "v1", kind: "a"}]}
+}}' >"$twice"
+mkdir -- "$test_tmp/twice"
+test_check twice 1 '' \
+    "kubernetes/schemas: $test_tmp/twice/a-v1-v1.json: both x.A and x.B" \
+    "$script" "$twice" "$test_tmp/twice"
+
+test_finish

@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+#
+# Runs, in scratch trees with a bin/settings of the case's own, a driver named
+# lint that sources runner/core and runs its arguments, each NUL it prints made
+# a newline.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+export CORE=$root/runner/core
+driver=$test_tmp/lint
+cat >"$driver" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+source "$CORE"
+"$@" | tr '\0' '\n'
+EOF
+chmod +x -- "$driver"
+
+# Makes a tree at $test_tmp/$1 and prints its path; each case writes the tree's
+# bin/settings.
+tree() {
+    local t=$test_tmp/$1
+    mkdir -p -- "$t/bin"
+    echo "$t"
+}
+
+t=$(tree check)
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+checks() {
+    check a false
+    check b true
+    check c sh -c 'exit 3'
+    check a false
+    echo after
+    finish
+}
+passes() {
+    check b true
+    finish
+}
+EOF
+
+# Every check runs, and each failed name is given once, in the order it first
+# failed.
+test_check check-fails 1 after 'lint: failed: a c' env -C "$t" "$driver" checks
+test_check check-passes 0 '' '' env -C "$t" "$driver" passes
+
+t=$(tree shebang)
+echo '# shellcheck shell=bash' >"$t/bin/settings"
+mkdir -p -- "$t/d/sub" "$t/e" "$t/r/s/u"
+printf '#!/bin/bash\n' >"$t/d/b"
+printf '#!/bin/bash -e\n' >"$t/d/b2"
+printf '# shellcheck shell=bash\ntrue\n' >"$t/d/b3"
+printf '# shellcheck shell=bash x\n' >"$t/d/b4"
+printf '#!/bin/bash' >"$t/d/b5"
+printf '\177ELF\0\0\n\0#!/bin/bash\n' >"$t/d/o"
+printf '#!/usr/bin/env bash\n' >"$t/d/a"
+printf '# shellcheck shell=sh\n' >"$t/d/h"
+printf 'true\n# shellcheck shell=bash\n' >"$t/d/j"
+printf '#!/bin/sh\n' >"$t/d/c"
+printf 'echo no shebang\n#!/usr/bin/env bash\n' >"$t/d/n"
+printf '#!/usr/bin/env bashful\n' >"$t/d/x"
+printf '#!/usr/bin/env python3\n' >"$t/d/p"
+: >"$t/d/f"
+printf '#!/usr/bin/env bash\n' >"$t/d/sub/g"
+printf '#!/bin/sh\n' >"$t/e/a"
+printf '#!/usr/bin/env bash\n' >"$t/r/s/u/a"
+printf '#!/bin/sh\n' >"$t/r/s/b"
+
+# Only a bash shebang, with or without arguments or a newline, or a first line
+# opening with ShellCheck's shell=bash directive, and only directly in the
+# directory, its files sorted; a binary file's NUL bytes draw no warning.
+test_check shebang-bash 0 $'d/a\nd/b\nd/b2\nd/b3\nd/b4\nd/b5' '' \
+    env -C "$t" "$driver" files_shebang bash d
+test_check shebang-recursive 0 r/s/u/a '' \
+    env -C "$t" "$driver" files_shebang bash --recursive r
+test_check shebang-python 0 d/p '' \
+    env -C "$t" "$driver" files_shebang python3 d
+test_check shebang-none 1 $'d/a\nd/b\nd/b2\nd/b3\nd/b4\nd/b5' \
+    'lint: e/ holds no bash script' \
+    env -C "$t" "$driver" files_shebang bash d e
+test_check shebang-missing 1 '' \
+    $'find: ‘m’: No such file or directory\nlint: bin/settings: files_sorted failed (1)' \
+    env -C "$t" "$driver" files_shebang bash m
+
+t=$(tree workflows)
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+yaml_files() { printf '%s\0' a.yml; }
+yaml_lint_files() { printf '%s\0' l.yml; }
+EOF
+mkdir -p -- "$t/.github/workflows" "$t/.github/x" "$t/.github/workflows-old"
+: >"$t/.github/workflows/b.yml"
+: >"$t/.github/workflows/c.yaml"
+: >"$t/.github/workflows/f.json"
+: >"$t/.github/workflows-old/g.yml"
+: >"$t/.github/x/e.yml"
+
+# Only *.yml and *.yaml directly in the workflow directories, the two suffixes
+# GitHub runs a workflow under (GitHub's "Workflow syntax for GitHub Actions",
+# docs.github.com, read 2026-11-20); a directory whose name only begins like
+# theirs is not read.
+test_check workflows 0 $'.github/workflows/b.yml\n.github/workflows/c.yaml' '' \
+    env -C "$t" "$driver" workflow_files
+
+mkdir -p -- "$t/.github/workflows.new/sub"
+: >"$t/.github/workflows.new/a.yml"
+: >"$t/.github/workflows.new/b.yml"
+: >"$t/.github/workflows.new/sub/d.yml"
+test_check workflows-new 0 \
+    $'.github/workflows.new/a.yml\n.github/workflows.new/b.yml\n.github/workflows/b.yml\n.github/workflows/c.yaml' \
+    '' env -C "$t" "$driver" workflow_files
+
+# yamllint takes each YAML set and the workflows, less a live one a proposal
+# replaces.
+test_check yamllint-files 0 \
+    $'a.yml\nl.yml\n.github/workflows.new/a.yml\n.github/workflows.new/b.yml\n.github/workflows/c.yaml' \
+    '' env -C "$t" "$driver" yamllint_files
+
+t=$(tree web)
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+css_files() { printf '%s\0' a.css; }
+html_files() { printf '%s\0' a.html 'b c.html'; }
+web() {
+    files_web got
+    printf '%s\n' "${got[@]}"
+}
+EOF
+test_check web 0 $'a.css\na.html\nb c.html' '' env -C "$t" "$driver" web
+
+test_finish

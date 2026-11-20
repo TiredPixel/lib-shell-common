@@ -1,29 +1,26 @@
 #!/usr/bin/env bash
 #
-# Tests github/review-gate with gh faked on PATH, so nothing reaches GitHub. The
-# fake answers each read from a file the case writes, and logs each check run
-# written. Each case starts from pull request 7 of o/p, an open pull request on
-# main with head $head, the only open one, whose rules require review/codex/code
-# and review/codex/security beside a check of another name, with a head commit
-# committed before any comment, with no change of base, no comments, reviews or
-# check runs, and checks the gate's status, that its stdout is empty, the check
-# runs it wrote and its stderr, exactly. Comments and reviews are built from the
-# fixtures, which keep the form of Codex's summary, receipts, reviews and
-# failure comment with synthetic SHAs.
-#
-# Run: test/github/review-gate.test. Exits 1 naming each case that failed.
+# gh is faked on PATH, so nothing reaches GitHub. The fake answers each read
+# from a file the case writes, and logs each check run written. Each case starts
+# from pull request 7 of o/p, an open pull request on main with head $head, the
+# only open one, whose rules require review/codex/code and review/codex/security
+# beside a check of another name, with a head commit committed before any
+# comment, with no change of base, no comments, reviews or check runs. Comments
+# and reviews are built from the fixtures, which keep the form of Codex's
+# summary, receipts, reviews and failure comment with synthetic SHAs.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-gate=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../github")/review-gate
-fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/github/review-gate")
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/bin" "$work/api"
-cp -p -- "$fixtures/gh" "$work/bin/"
-export PATH=$work/bin:$PATH
-export FAKE_DIR=$work/api FAKE_LOG=$work/log FAKE_WRITES=$work/writes
+gate=$root/github/review-gate
+fixtures=$root/test/fixtures/github/review-gate
+
+mkdir -- "$test_tmp/api"
+cp -p -- "$fixtures/gh" "$test_tmp/path/"
+export FAKE_DIR=$test_tmp/api FAKE_LOG=$test_tmp/log FAKE_WRITES=$test_tmp/writes
 codex='chatgpt-codex-connector[bot]'
 # An app of Codex's login but another id, as no app can be.
 impostor='chatgpt-codex-connector[bot]#5'
@@ -51,17 +48,6 @@ retry_security="Comment @codex security review to try again."
 endings=("Already looking forward to the next diff." "Keep it up!" "Bravo."
     ":+1:")
 
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
 # Writes $2 to the answer the fake gives for $1.
 api() {
     printf '%s\n' "$2" >"$FAKE_DIR/$1"
@@ -69,8 +55,8 @@ api() {
 
 # Applies jq filter $2 to the answer the fake gives for $1.
 amend() {
-    jq -c "$2" "$FAKE_DIR/$1" >"$work/amended"
-    mv -- "$work/amended" "$FAKE_DIR/$1"
+    jq -c "$2" "$FAKE_DIR/$1" >"$test_tmp/amended"
+    mv -- "$test_tmp/amended" "$FAKE_DIR/$1"
 }
 
 # A pull request on main with head $head in state $1, open by default.
@@ -377,7 +363,7 @@ want() {
         action=updated
         ;;
     esac
-    want_err+="review-gate: $name: ${conclusion:-$status} ($action): $summary"
+    want_err+="github/review-gate: $name: ${conclusion:-$status} ($action): $summary"
     want_err+=$'\n'
 }
 
@@ -427,62 +413,56 @@ want_clean_both() {
 # prints nothing on stdout, writes want_writes, prints want_err on stderr and,
 # where want_log is set, calls gh as it says; then resets.
 check() {
-    local name=$1 status=$2 rc=0
+    local name=$1 status=$2
     shift 2
     if [ $# -eq 0 ]; then
         set -- o/p 7 review-app
     elif [ $# -eq 1 ] && [ "$1" = none ]; then
         set --
     fi
-    "$gate" "$@" >"$work/out" 2>"$work/err" || rc=$?
-    if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$work/err")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ "$(<"$FAKE_WRITES")" != "${want_writes%$'\n'}" ]; then
-        fail "$name" "writes are: $(<"$FAKE_WRITES")"$'\n'"not: $want_writes"
-    elif [ "$(<"$work/err")" != "${want_err%$'\n'}" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"$'\n'"not: $want_err"
+    test_check "$name" "$status" '' "${want_err%$'\n'}" "$gate" "$@"
+    if [ "$(<"$FAKE_WRITES")" != "${want_writes%$'\n'}" ]; then
+        test_fail "$name" "writes are: $(<"$FAKE_WRITES")"$'\n'"not: $want_writes"
     elif [ -v want_log ] && [ "$(<"$FAKE_LOG")" != "$want_log" ]; then
-        fail "$name" "gh was called as: $(<"$FAKE_LOG")"
+        test_fail "$name" "gh was called as: $(<"$FAKE_LOG")"
     fi
     reset
 }
 
-usage="Usage: review-gate OWNER/REPO NUMBER APP"
+usage="Usage: github/review-gate OWNER/REPO NUMBER APP"
 waiting_code="Codex has made no code review of $short yet. $ask_code"
 waiting_security="Codex has made no security review of $short yet. $ask_security"
 
 # Each argument is checked before gh is called.
 reset
 want_log=""
-want_err="review-gate: expected 3 arguments, got 0"$'\n'"$usage"
+want_err="github/review-gate: expected 3 arguments, got 0"$'\n'"$usage"
 check usage-none 2 none
 want_log=""
-want_err="review-gate: expected 3 arguments, got 4"$'\n'"$usage"
+want_err="github/review-gate: expected 3 arguments, got 4"$'\n'"$usage"
 check usage-four 2 o/p 7 review-app x
 want_log=""
-want_err="review-gate: expected 3 arguments, got 2"$'\n'"$usage"
+want_err="github/review-gate: expected 3 arguments, got 2"$'\n'"$usage"
 check usage-two 2 o/p 7
 for repo in o o/p/q "o p/q" ""; do
     want_log=""
-    want_err="review-gate: $(printf %q "$repo") is not OWNER/REPO"$'\n'"$usage"
+    want_err="github/review-gate: $(printf %q "$repo") is not OWNER/REPO"$'\n'"$usage"
     check "usage-repo-$repo" 2 "$repo" 7 review-app
 done
 for number in 0 07 x -1 ""; do
     want_log=""
-    want_err="review-gate: $(printf %q "$number") is not a pull request"
+    want_err="github/review-gate: $(printf %q "$number") is not a pull request"
     want_err+=" number"$'\n'"$usage"
     check "usage-number-$number" 2 o/p "$number" review-app
 done
 for app in Review -app "a b" ""; do
     want_log=""
-    want_err="review-gate: $(printf %q "$app") is not an app slug"$'\n'"$usage"
+    want_err="github/review-gate: $(printf %q "$app") is not an app slug"$'\n'"$usage"
     check "usage-app-$app" 2 o/p 7 "$app"
 done
 for extra in review/codex review/codex/code/x other/codex/code "review/a b/c"; do
     want_log=""
-    want_err="review-gate: REVIEW_GATE_CHECKS: $(printf %q "${extra%% *}") is"
+    want_err="github/review-gate: REVIEW_GATE_CHECKS: $(printf %q "${extra%% *}") is"
     want_err+=" not review/REVIEWER/KIND"$'\n'"$usage"
     REVIEW_GATE_CHECKS="review/codex/code $extra" check "usage-extra-$extra" 2
 done
@@ -496,31 +476,31 @@ check plain-issue 1
 
 # The head and base come from the pull request as the API gives it.
 api pull "{\"head\": {\"sha\": \"$short\"}, \"base\": {\"ref\": \"main\"}}"
-want_err="review-gate: pull request #7's head is not a commit SHA"
+want_err="github/review-gate: pull request #7's head is not a commit SHA"
 check head-short 1
 api pull '{"base": {"ref": "main"}}'
-want_err="review-gate: pull request #7's head is not a commit SHA"
+want_err="github/review-gate: pull request #7's head is not a commit SHA"
 check head-missing 1
 api pull "{\"head\": {\"sha\": \"${head^^}\"}, \"base\": {\"ref\": \"main\"}}"
-want_err="review-gate: pull request #7's head is not a commit SHA"
+want_err="github/review-gate: pull request #7's head is not a commit SHA"
 check head-upper 1
 api pull "{\"head\": {\"sha\": \"$head\"}, \"base\": {\"ref\": \"\"}}"
-want_err="review-gate: pull request #7 has no base branch"
+want_err="github/review-gate: pull request #7 has no base branch"
 check base-empty 1
 api pull "{\"head\": {\"sha\": \"$head\"}}"
-want_err="review-gate: pull request #7 has no base branch"
+want_err="github/review-gate: pull request #7 has no base branch"
 check base-missing 1
 for state in '""' '"merged"' '"OPEN"' null 1; do
     amend pull ".state = $state"
     want_log="api repos/o/p/pulls/7"
-    want_err="review-gate: pull request #7 is neither open nor closed"
+    want_err="github/review-gate: pull request #7 is neither open nor closed"
     check "state-$state" 1
 done
 
 # The event's payload, naming another head, plays no part: the checks, and the
 # reads of check runs, go to the head the API gives, and the rules read are the
 # base branch's. With no summary, no edit history is read.
-printf '{"pull_request": {"head": {"sha": "%s"}}}\n' "$old" >"$work/event"
+printf '{"pull_request": {"head": {"sha": "%s"}}}\n' "$old" >"$test_tmp/event"
 amend pull '.base.ref = "next"'
 want_log="api repos/o/p/pulls/7
 api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
@@ -534,16 +514,16 @@ api -X POST repos/o/p/check-runs --input -
 api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/security
 api -X POST repos/o/p/check-runs --input -"
 want_both waiting "$waiting_code" "$waiting_security"
-GITHUB_EVENT_PATH=$work/event GITHUB_SHA=$old check head-from-api 0
+GITHUB_EVENT_PATH=$test_tmp/event GITHUB_SHA=$old check head-from-api 0
 
 # Which checks are posted: those the rules require, across pages, and those
 # REVIEW_GATE_CHECKS names, each once, in order.
 api rules '[{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}]}}]'
-want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err="github/review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
 want_err+=" names none"
 check none-required 0
 api rules '[]'
-want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err="github/review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
 want_err+=" names none"
 REVIEW_GATE_CHECKS=" " check no-rules 0
 api rules '[]'
@@ -557,7 +537,7 @@ want_both waiting "$waiting_code" "$waiting_security"
 REVIEW_GATE_CHECKS=" review/codex/security  review/codex/code " \
     check extra-and-required 0
 api rules "$(rules review/codex)"
-want_err="review-gate: main requires review/codex, which is not"
+want_err="github/review-gate: main requires review/codex, which is not"
 want_err+=" review/REVIEWER/KIND"
 check required-malformed 1
 
@@ -1644,10 +1624,10 @@ check base-unreadable-waiting 0
 
 # Comments are read across pages.
 codex_run
-mv -- "$FAKE_DIR/comments" "$work/page1"
+mv -- "$FAKE_DIR/comments" "$test_tmp/page1"
 api comments "$empty_page"
 receipts
-api comments "$(<"$work/page1")"$'\n'"$(<"$FAKE_DIR/comments")"
+api comments "$(<"$test_tmp/page1")"$'\n'"$(<"$FAKE_DIR/comments")"
 want_clean_both
 check comments-pages 0
 
@@ -1719,7 +1699,7 @@ want review/codex/security created reviewing \
     "Codex's security review of $short is running. If it stalls, comment @codex security review."
 check runs-record-changed 0
 api runs '{"check_runs": [{"id": "x", "name": "review/codex/code", "app": {"slug": "review-app"}, "status": "in_progress", "conclusion": null, "output": {}}]}'
-want_err="review-gate: check run review/codex/code on $short has no id"
+want_err="github/review-gate: check run review/codex/code on $short has no id"
 check runs-bad-id 1
 
 # Each check run records the evidence it rested on, and a later run finding a
@@ -1865,20 +1845,20 @@ check commits-head-entry 0
 for page in "$(commits "$old:$pushed")" "[]" '"x"' '[1, "x", null]' \
     "$(commits "$short:$pushed")" "$(commits "${head^^}:$pushed")"; do
     api commits "$page"
-    want_err="review-gate: pull request #7's commits do not list its head $short"
+    want_err="github/review-gate: pull request #7's commits do not list its head $short"
     check "commits-no-head-$page" 1
 done
 # The head commit's committer date must be readable.
 for date in "" - 2000-01-01 "${pushed/Z/+00:00}"; do
     api commits "$(commits "$head:$date")"
-    want_err="review-gate: commit $short has no committer date"
+    want_err="github/review-gate: commit $short has no committer date"
     check "commit-date-$date" 1
 done
 for entry in "{\"sha\": \"$head\"}" "{\"sha\": \"$head\", \"commit\": {}}" \
     "{\"sha\": \"$head\", \"commit\": \"x\"}" \
     "{\"sha\": \"$head\", \"commit\": {\"committer\": {\"date\": 1}}}"; do
     api commits "[$entry]"
-    want_err="review-gate: commit $short has no committer date"
+    want_err="github/review-gate: commit $short has no committer date"
     check "commit-date-entry-$entry" 1
 done
 
@@ -1942,12 +1922,12 @@ done
 for entries in 5 "7:$old 5" "7::x/p" "7:::closed"; do
     read -r -a list <<<"$entries"
     api open "$(open_pulls "${list[@]}")"
-    want_err="review-gate: the open pull requests of o/p leave out #7"
+    want_err="github/review-gate: the open pull requests of o/p leave out #7"
     check "open-without-self-$entries" 1
 done
 for page in '"x"' '{}' '[1]' '[null]' "$(open_pulls 7)"$'\n'"{}"; do
     api open "$page"
-    want_err="review-gate: the open pull requests of o/p cannot be read"
+    want_err="github/review-gate: the open pull requests of o/p cannot be read"
     check "open-unreadable-$page" 1
 done
 for filter in 'del(.number)' '.number = "5"' '.number = 0' '.number = 5.5' \
@@ -1955,7 +1935,7 @@ for filter in 'del(.number)' '.number = "5"' '.number = 0' '.number = 5.5' \
     'del(.base)'; do
     api open "$(open_pulls 7 5)"
     amend open ".[1] |= ($filter)"
-    want_err="review-gate: the open pull requests of o/p cannot be read"
+    want_err="github/review-gate: the open pull requests of o/p cannot be read"
     check "open-entry-$filter" 1
 done
 
@@ -1965,7 +1945,7 @@ api pull "$(pull closed)"
 api open "$(open_pulls "5:$old" 6::x/p)"
 want_log="api repos/o/p/pulls/7
 api --paginate repos/o/p/pulls\\?state=open\\&per_page=100"
-want_err="review-gate: pull request #7 is closed, and no open one has its head"
+want_err="github/review-gate: pull request #7 is closed, and no open one has its head"
 want_err+=" $short"
 check closed-alone 0
 clean_run
@@ -1986,7 +1966,7 @@ api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/code
 api -X POST repos/o/p/check-runs --input -
 api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review/codex/security
 api -X POST repos/o/p/check-runs --input -"
-want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err="github/review-gate: pull request #7 is closed; running for #5, which has its"
 want_err+=" head $short"$'\n'
 want_clean_both
 check closed-reruns 0
@@ -2000,7 +1980,7 @@ for entries in "8 5" "7 8 5"; do
     read -r -a list <<<"$entries"
     api open "$(open_pulls "${list[@]}")"
     for other in 5 8; do
-        want_err+="review-gate: pull request #7 is closed; running for"
+        want_err+="github/review-gate: pull request #7 is closed; running for"
         want_err+=" #$other, which has its head $short"$'\n'
         want_both shared "$(shared_summary "#5 and #8")" \
             "$(shared_summary "#5 and #8")" "" ""
@@ -2011,7 +1991,7 @@ clean_run
 api pull "$(pull closed)"
 api pull-5 "$(pull)"
 api open "$(open_pulls 7 5)"
-want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err="github/review-gate: pull request #7 is closed; running for #5, which has its"
 want_err+=" head $short"$'\n'
 want_clean_both
 check closed-listed-open 0
@@ -2020,14 +2000,14 @@ check closed-listed-open 0
 api pull "$(pull closed)"
 api pull-5 "$(pull closed)"
 api open "$(open_pulls 5)"
-want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err="github/review-gate: pull request #7 is closed; running for #5, which has its"
 want_err+=" head $short"$'\n'
-want_err+="review-gate: pull request #5, listed open beside #7, is closed"
+want_err+="github/review-gate: pull request #5, listed open beside #7, is closed"
 check closed-rerun-closed 1
 api pull "$(pull closed)"
 api pull-5 "$(pull)"
 api open "$(open_pulls 5)"
-want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err="github/review-gate: pull request #7 is closed; running for #5, which has its"
 want_err+=" head $short"$'\n'"gh: fake failure"
 FAKE_FAIL="api repos/o/p/pulls/5" check closed-rerun-fails 3
 # One failing leaves the others to run, the first failure's status ending it.
@@ -2036,10 +2016,10 @@ api pull "$(pull closed)"
 api pull-5 "$(pull closed)"
 api pull-8 "$(pull)"
 api open "$(open_pulls 8 5)"
-want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err="github/review-gate: pull request #7 is closed; running for #5, which has its"
 want_err+=" head $short"$'\n'
-want_err+="review-gate: pull request #5, listed open beside #7, is closed"$'\n'
-want_err+="review-gate: pull request #7 is closed; running for #8, which has its"
+want_err+="github/review-gate: pull request #5, listed open beside #7, is closed"$'\n'
+want_err+="github/review-gate: pull request #7 is closed; running for #8, which has its"
 want_err+=" head $short"$'\n'
 want_both shared "$(shared_summary "#5 and #8")" \
     "$(shared_summary "#5 and #8")" "" ""
@@ -2049,18 +2029,18 @@ api pull "$(pull closed)"
 api pull-5 "$(pull)"
 api pull-8 "$(pull closed)"
 api open "$(open_pulls 8 5)"
-want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err="github/review-gate: pull request #7 is closed; running for #5, which has its"
 want_err+=" head $short"$'\n'
 want_both shared "$(shared_summary "#5 and #8")" \
     "$(shared_summary "#5 and #8")" "" ""
-want_err+="review-gate: pull request #7 is closed; running for #8, which has its"
+want_err+="github/review-gate: pull request #7 is closed; running for #8, which has its"
 want_err+=" head $short"$'\n'
-want_err+="review-gate: pull request #8, listed open beside #7, is closed"
+want_err+="github/review-gate: pull request #8, listed open beside #7, is closed"
 check closed-rerun-open-then-closed 1
 # A closed pull request's listing must be readable too.
 api pull "$(pull closed)"
 api open '[1]'
-want_err="review-gate: the open pull requests of o/p cannot be read"
+want_err="github/review-gate: the open pull requests of o/p cannot be read"
 check closed-unreadable 1
 # A run again for a closed one runs no further, whatever REVIEW_GATE_BEFORE
 # gives, so the open one on that head is not run for.
@@ -2068,7 +2048,7 @@ clean_run
 api pull "$(pull closed)"
 api pull-5 "$(pull)"
 api open "$(open_pulls 5 "8:$old")"
-want_err="review-gate: pull request #7 is closed; running for #5, which has its"
+want_err="github/review-gate: pull request #7 is closed; running for #5, which has its"
 want_err+=" head $short"$'\n'
 want_clean_both
 REVIEW_GATE_BEFORE=$old check closed-rerun-ignores-before 0
@@ -2089,7 +2069,7 @@ want_pushed() {
     want review/codex/security created waiting \
         "Codex's last security review is of $was, not the head $short. $ask_security"
 }
-left="review-gate: pull request #7 has left the head $short; running for"
+left="github/review-gate: pull request #7 has left the head $short; running for"
 clean_run
 pushed
 api open "$(open_pulls "7:$old" 5 6::x/p "9:$head:o/p:closed")"
@@ -2123,9 +2103,9 @@ REVIEW_GATE_BEFORE=$head check pushed-same-head 0
 pushed
 api rules "$(rules)"
 api open "$(open_pulls "7:$old" 5)"
-want_err="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err="github/review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
 want_err+=" names none"$'\n'"$left #5, which has that head"$'\n'
-want_err+="review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
+want_err+="github/review-gate: main requires no review/ check, and REVIEW_GATE_CHECKS"
 want_err+=" names none"
 REVIEW_GATE_BEFORE=$head check pushed-no-checks 0
 # A run again that fails ends the run with its status, once each other has run.
@@ -2135,7 +2115,7 @@ api pull-5 "$(pull closed)"
 api open "$(open_pulls "7:$old" 5 8)"
 want_pushed
 want_err+="$left #5, which has that head"$'\n'
-want_err+="review-gate: pull request #5, listed open beside #7, is closed"$'\n'
+want_err+="github/review-gate: pull request #5, listed open beside #7, is closed"$'\n'
 want_err+="$left #8, which has that head"$'\n'
 want_both shared "$(shared_summary "#5 and #8")" \
     "$(shared_summary "#5 and #8")" "" ""
@@ -2144,13 +2124,13 @@ REVIEW_GATE_BEFORE=$head check pushed-rerun-fails 1
 # listing that cannot be read fails before any check is posted.
 for sha in x "${head^^}" "$short" "${head}0"; do
     want_log=""
-    want_err="review-gate: REVIEW_GATE_BEFORE: $(printf %q "$sha") is not a"
+    want_err="github/review-gate: REVIEW_GATE_BEFORE: $(printf %q "$sha") is not a"
     want_err+=" commit SHA"$'\n'"$usage"
     REVIEW_GATE_BEFORE=$sha check "pushed-before-$sha" 2
 done
 pushed
 api open "$(open_pulls "7:$old" 5)"$'\n''[1]'
-want_err="review-gate: the open pull requests of o/p cannot be read"
+want_err="github/review-gate: the open pull requests of o/p cannot be read"
 REVIEW_GATE_BEFORE=$head check pushed-unreadable 1
 
 # A failing request ends the run with gh's own report and status.
@@ -2191,7 +2171,7 @@ want_invalidated() {
     want_writes+="PATCH $1 $(jq -cnS --arg m "$3" '{status: "completed",
         conclusion: "failure",
         output: {title: "review gate failed", summary: $m}}')"$'\n'
-    want_err+="review-gate: $2: failure (updated): $3"$'\n'
+    want_err+="github/review-gate: $2: failure (updated): $3"$'\n'
 }
 no_head="pull request #7's commits do not list its head $short"
 passed_code=$(run 11 review/codex/code review-app completed success \
@@ -2208,7 +2188,7 @@ api head-runs "$(page "$passed_code" "$failed_security" \
 amend head-runs "., $(page "$running_security" \
     "$(run 16 review/other/kind review-app completed neutral x x)")"
 api commits "$(commits "$old:$pushed")"
-want_err="review-gate: $no_head"$'\n'
+want_err="github/review-gate: $no_head"$'\n'
 for entry in 11:review/codex/code 15:review/codex/security \
     16:review/other/kind; do
     want_invalidated "${entry%%:*}" "${entry#*:}" "$(gate_failed ": $no_head")"
@@ -2219,25 +2199,25 @@ check invalidated-commits 1
 # a request failing, the gate's own posting included, after a check is posted.
 api head-runs "$(page "$passed_code")"
 api pull "{\"state\": \"open\", \"head\": {\"sha\": \"$head\"}}"
-want_err="review-gate: pull request #7 has no base branch"$'\n'
+want_err="github/review-gate: pull request #7 has no base branch"$'\n'
 want_invalidated 11 review/codex/code \
     "$(gate_failed ": pull request #7 has no base branch")"
 check invalidated-no-base 1
 api head-runs "$(page "$passed_code")"
 api open '[1]'
-want_err="review-gate: the open pull requests of o/p cannot be read"$'\n'
+want_err="github/review-gate: the open pull requests of o/p cannot be read"$'\n'
 want_invalidated 11 review/codex/code \
     "$(gate_failed ": the open pull requests of o/p cannot be read")"
 check invalidated-open-unreadable 1
 api head-runs "$(page "$passed_code")"
 api rules "$(rules review/codex)"
 error="main requires review/codex, which is not review/REVIEWER/KIND"
-want_err="review-gate: $error"$'\n'
+want_err="github/review-gate: $error"$'\n'
 want_invalidated 11 review/codex/code "$(gate_failed ": $error")"
 check invalidated-rules 1
 api head-runs "$(page "$passed_code")"
 api commits "$(commits "$head:-")"
-want_err="review-gate: commit $short has no committer date"$'\n'
+want_err="github/review-gate: commit $short has no committer date"$'\n'
 want_invalidated 11 review/codex/code \
     "$(gate_failed ": commit $short has no committer date")"
 check invalidated-date 1
@@ -2258,8 +2238,8 @@ FAKE_FAIL="api --paginate repos/o/p/commits/$head/check-runs\\?check_name=review
 # failed, the run says so, failing others still, and ends with its status.
 api head-runs "$(page "$passed_code")"
 api commits "$(commits "$old:$pushed")"
-want_err="review-gate: $no_head"$'\n'"gh: fake failure"$'\n'
-want_err+="review-gate: cannot fail the review/ checks of review-app on"
+want_err="github/review-gate: $no_head"$'\n'"gh: fake failure"$'\n'
+want_err+="github/review-gate: cannot fail the review/ checks of review-app on"
 want_err+=" $short: their check runs cannot be listed"
 FAKE_FAIL="api --paginate repos/o/p/commits/$head/check-runs\\?filter=all\\&per_page=100" \
     check invalidate-list-fails 1
@@ -2267,23 +2247,23 @@ for page in '[1]' '{}' '{"check_runs": [1]}' \
     "$(page)"$'\n''{"check_runs": "x"}'; do
     api head-runs "$page"
     api commits "$(commits "$old:$pushed")"
-    want_err="review-gate: $no_head"$'\n'
-    want_err+="review-gate: cannot fail the review/ checks of review-app on"
+    want_err="github/review-gate: $no_head"$'\n'
+    want_err+="github/review-gate: cannot fail the review/ checks of review-app on"
     want_err+=" $short: their check runs cannot be read"
     check "invalidate-unreadable-$page" 1
 done
 api head-runs "$(page "$passed_code" "$passed_security")"
 api commits "$(commits "$old:$pushed")"
-want_err="review-gate: $no_head"$'\n'"gh: fake failure"$'\n'
-want_err+="review-gate: cannot fail check run 11, review/codex/code, on $short"
+want_err="github/review-gate: $no_head"$'\n'"gh: fake failure"$'\n'
+want_err+="github/review-gate: cannot fail check run 11, review/codex/code, on $short"
 want_err+=$'\n'
 want_invalidated 15 review/codex/security "$(gate_failed ": $no_head")"
 FAKE_FAIL="api -X PATCH repos/o/p/check-runs/11 --input -" \
     check invalidate-patch-fails 1
 api head-runs '{"check_runs": [{"id": "x", "name": "review/codex/code", "app": {"slug": "review-app"}, "conclusion": "success"}]}'
 api commits "$(commits "$old:$pushed")"
-want_err="review-gate: $no_head"$'\n'
-want_err+="review-gate: cannot fail check run review/codex/code on $short: it"
+want_err="github/review-gate: $no_head"$'\n'
+want_err+="github/review-gate: cannot fail check run review/codex/code on $short: it"
 want_err+=" has no id"
 check invalidate-bad-id 1
 # With no run to fail, nothing is posted.
@@ -2293,7 +2273,7 @@ api --paginate repos/o/p/pulls\\?state=open\\&per_page=100
 api --paginate repos/o/p/rules/branches/main
 api --paginate repos/o/p/pulls/7/commits\\?per_page=100
 api --paginate repos/o/p/commits/$head/check-runs\\?filter=all\\&per_page=100"
-want_err="review-gate: $no_head"
+want_err="github/review-gate: $no_head"
 check invalidate-none 1
 # A run that fails before reading the head, or for a closed pull request, or
 # for a pull request neither open nor closed, or that ends with its checks
@@ -2305,20 +2285,20 @@ for case in head-short closed-unreadable state-merged no-checks moved-fails; do
     case $case in
     head-short)
         api pull "{\"state\": \"open\", \"head\": {\"sha\": \"$short\"}}"
-        want_err="review-gate: pull request #7's head is not a commit SHA"
+        want_err="github/review-gate: pull request #7's head is not a commit SHA"
         ;;
     closed-unreadable)
         api pull "$(pull closed)"
         api open '[1]'
-        want_err="review-gate: the open pull requests of o/p cannot be read"
+        want_err="github/review-gate: the open pull requests of o/p cannot be read"
         ;;
     state-merged)
         api pull "$(pull merged)"
-        want_err="review-gate: pull request #7 is neither open nor closed"
+        want_err="github/review-gate: pull request #7 is neither open nor closed"
         ;;
     no-checks)
         api rules "$(rules)"
-        want_err="review-gate: main requires no review/ check, and"
+        want_err="github/review-gate: main requires no review/ check, and"
         want_err+=" REVIEW_GATE_CHECKS names none"
         status=0
         ;;
@@ -2329,13 +2309,11 @@ for case in head-short closed-unreadable state-merged no-checks moved-fails; do
         api open "$(open_pulls "7:$old" 5)"
         want_pushed
         want_err+="$left #5, which has that head"$'\n'
-        want_err+="review-gate: pull request #5, listed open beside #7, is"
+        want_err+="github/review-gate: pull request #5, listed open beside #7, is"
         want_err+=" closed"
         ;;
     esac
     REVIEW_GATE_BEFORE=$head check "invalidate-not-$case" "$status"
 done
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

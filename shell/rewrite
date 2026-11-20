@@ -1,0 +1,25 @@
+# shellcheck shell=bash
+#
+# The file is written back through cat > rather than replaced, so its inode is
+# kept and a bind of the file alone sees the write.
+
+# Runs the command after $1 with file $1 as stdin and writes its output back to
+# the file only where it differs. Each step's failure is returned, since check
+# calls this under ||, where errexit is off.
+rewrite() {
+    local rewrite_file=$1 rewrite_out rewrite_status=0
+
+    shift
+    rewrite_out=$(mktemp) || return
+    if ! "$@" <"$rewrite_file" >"$rewrite_out"; then
+        rewrite_status=1
+    elif ! cmp -s -- "$rewrite_file" "$rewrite_out"; then
+        if cat -- "$rewrite_out" >"$rewrite_file"; then
+            echo "${prog:-${0##*/}}: $rewrite_file: rewritten" >&2
+        else
+            rewrite_status=1
+        fi
+    fi
+    rm -- "$rewrite_out" || return
+    return "$rewrite_status"
+}

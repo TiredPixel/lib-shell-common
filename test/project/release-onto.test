@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 #
-# Tests project/release-onto, sourced in a shell with no options set and in one
-# under the strict mode its callers run, with every project/ script it calls
-# faked in a scratch dir: each fake logs its name and arguments, a line to a
-# call, and exits 3 where that line is FAKE_FAIL. Sourcing must set none of the
-# shell's options.
-#
-# Run: test/project/release-onto.test. Exits 1 naming each case that failed.
+# Sourced in a shell with no options set and in one under the strict mode its
+# callers run, with every project/ script it calls faked in a scratch dir: each
+# fake logs its name and arguments, a line to a call, and exits 3 where that
+# line is FAKE_FAIL. Sourcing must set none of the shell's options.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-helper=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/release-onto
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/project"
+helper=$root/project/release-onto
+
+mkdir "$test_tmp/project"
 for f in release-assert release-branch-ready each release-commit-submodules \
     tag-create; do
-    cat >"$work/project/$f" <<EOF
+    cat >"$test_tmp/project/$f" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -26,14 +25,14 @@ line=$f
 echo "\$line" >>"\$FAKE_LOG"
 [ "\$line" != "\${FAKE_FAIL:-}" ] || exit 3
 EOF
-    chmod +x "$work/project/$f"
+    chmod +x "$test_tmp/project/$f"
 done
-export FAKE_LOG=$work/log
+export FAKE_LOG=$test_tmp/log
 
 # plain sets no options; strict calls release_onto where errexit applies, and
 # strict-if and strict-or where bash ignores it, under if and before ||; push
 # calls release_push alone, under strict.
-cat >"$work/release" <<'EOF'
+cat >"$test_tmp/release" <<'EOF'
 if [ "$1" != plain ]; then
     set -Eeuo pipefail
     shopt -s inherit_errexit failglob
@@ -52,23 +51,11 @@ push) release_push "${@:3}" ;;
 *) release_onto "${@:3}" ;;
 esac
 EOF
-cat >"$work/options" <<'EOF'
+cat >"$test_tmp/options" <<'EOF'
 before=$SHELLOPTS:$BASHOPTS
 source "$1"
 [ "$SHELLOPTS:$BASHOPTS" = "$before" ]
 EOF
-
-failures=0
-
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
 
 # The calls a whole release of tag $2 onto branch $1 makes, in order, each
 # branch after $2 checked before $1 is readied, and the tag signed without
@@ -95,17 +82,17 @@ calls() {
 check() {
     local name=$1 mode=$2 branch=$3 tag=$4 status=$5 want=$6 rc=0
     : >"$FAKE_LOG"
-    bash --norc --noprofile "$work/release" "$mode" "$helper" \
-        "$work/project" "$branch" "$tag" "${@:7}" >"$work/out" 2>"$work/err" ||
+    bash --norc --noprofile "$test_tmp/release" "$mode" "$helper" \
+        "$test_tmp/project" "$branch" "$tag" "${@:7}" >"$test_tmp/out" 2>"$test_tmp/err" ||
         rc=$?
     if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$work/err")"
+        test_fail "$name" "exit $rc, not $status: $(<"$test_tmp/err")"
     elif [ "$(<"$FAKE_LOG")" != "$want" ]; then
-        fail "$name" "the calls were: $(<"$FAKE_LOG")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ -s "$work/err" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"
+        test_fail "$name" "the calls were: $(<"$FAKE_LOG")"
+    elif [ -s "$test_tmp/out" ]; then
+        test_fail "$name" "stdout is: $(<"$test_tmp/out")"
+    elif [ -s "$test_tmp/err" ]; then
+        test_fail "$name" "stderr is: $(<"$test_tmp/err")"
     fi
 }
 
@@ -134,18 +121,16 @@ done
 # pushes stable once the release is out.
 : >"$FAKE_LOG"
 rc=0
-bash --norc --noprofile "$work/release" push "$helper" "$work/project" stable \
-    >"$work/out" 2>"$work/err" || rc=$?
+bash --norc --noprofile "$test_tmp/release" push "$helper" "$test_tmp/project" stable \
+    >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
 if [ "$rc" != 0 ]; then
-    fail push-branch "exit $rc, not 0: $(<"$work/err")"
+    test_fail push-branch "exit $rc, not 0: $(<"$test_tmp/err")"
 elif [ "$(<"$FAKE_LOG")" != "each git push --atomic --no-follow-tags --recurse-submodules=check origin stable:stable" ]; then
-    fail push-branch "the calls were: $(<"$FAKE_LOG")"
+    test_fail push-branch "the calls were: $(<"$FAKE_LOG")"
 fi
 
 # Sourcing changes none of the shell's options.
-bash --norc --noprofile "$work/options" "$helper" ||
-    fail options "sourcing changed the shell's options"
+bash --norc --noprofile "$test_tmp/options" "$helper" ||
+    test_fail options "sourcing changed the shell's options"
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

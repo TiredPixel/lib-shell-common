@@ -15,8 +15,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=project/release-branch-ready
+
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-prog=${0##*/}
+
+usage() {
+    echo "Usage: $prog [--check] BRANCH" >&2
+    exit 2
+}
 
 check_only=
 if [ "${1:-}" = --check ]; then
@@ -26,8 +32,7 @@ fi
 
 # An empty argument is refused too, since it would name no branch.
 if [ $# -ne 1 ] || [ -z "$1" ]; then
-    echo "Usage: $prog [--check] BRANCH" >&2
-    exit 2
+    usage
 fi
 branch=$1
 
@@ -36,11 +41,12 @@ branch=$1
 # refused, whether it is behind the branch or diverged from it, since moving
 # the branch there would drop them. --is-ancestor answers 1 for "no" and any
 # other non-zero for an error, so the status is read rather than tested. The
-# string is for sh, which runs it in each project with this program's name as
+# string is for bash, which runs it in each project with this program's name as
 # $0.
 # shellcheck disable=SC2016
 check='
-    set -eu
+    set -Eeuo pipefail
+    shopt -s inherit_errexit failglob
     branch=$1
     origin=refs/remotes/origin/$branch
     git fetch -q --no-recurse-submodules origin "+refs/heads/$branch:$origin"
@@ -59,7 +65,7 @@ check='
         esac
     done'
 
-"$dir/each" sh -c "$check" "$prog" "$branch"
+"$dir/each" bash -c "$check" "$prog" "$branch"
 
 if [ -n "$check_only" ]; then
     exit 0

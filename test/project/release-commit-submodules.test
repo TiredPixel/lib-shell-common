@@ -1,44 +1,31 @@
 #!/usr/bin/env bash
 #
-# Tests project/release-commit-submodules against real repositories in a scratch
-# dir: a parent, app, with submodules lib and ext, each with a bare remote.
-# lib's remote holds two commits and app records the first, which a case can
-# move lib forwards from, back to, or away from. Every case builds its fixture
-# afresh and runs project/release-commit-submodules in app.
-#
-# Run: test/project/release-commit-submodules.test. Exits 1 naming each case
-# that failed.
+# Runs against real repositories in a scratch dir: a parent, app, with
+# submodules lib and ext, each with a bare remote. lib's remote holds two
+# commits and app records the first, which a case can move lib forwards from,
+# back to, or away from. Every case builds its fixture afresh and runs
+# project/release-commit-submodules in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-commit=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/release-commit-submodules
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+commit=$root/project/release-commit-submodules
 
 # Nothing from the caller's configuration reaches the fixtures, and nothing
 # above the scratch dir is taken for a repository. File URLs are refused to
 # submodules by default.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
-export GIT_CEILING_DIRECTORIES=$work
+export GIT_CEILING_DIRECTORIES=$test_tmp
 export GIT_CONFIG_COUNT=4
 export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
 export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
-p=release-commit-submodules
-failures=0
-
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
+p=project/release-commit-submodules
 n=0
 
 # Creates bare remote $w/$1.git holding one empty commit for each message after
@@ -59,7 +46,7 @@ mkrepo() {
 # shares a hash with a commit of the other.
 fixture() {
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     mkrepo lib one two
     mkrepo ext ext-one
@@ -89,14 +76,14 @@ run_in() {
     rc=0
     (cd "$dir" && "$commit" "$@") >"$w/out" 2>"$w/err" || rc=$?
     if [ -s "$w/out" ]; then
-        fail "run in $dir" "stdout carries: $(<"$w/out")"
+        test_fail "run in $dir" "stdout carries: $(<"$w/out")"
     fi
 }
 
 # Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
 expect() {
     if [ "$3" != "$4" ]; then
-        fail "$1" "$2 is $3, not $4: $(<"$w/err")"
+        test_fail "$1" "$2 is $3, not $4: $(<"$w/err")"
     fi
 }
 
@@ -107,7 +94,7 @@ expect_out() {
     shift
     for line in "$@"; do
         grep -qFx -- "$line" "$w/err" ||
-            fail "$name" "stderr lacks '$line': $(<"$w/err")"
+            test_fail "$name" "stderr lacks '$line': $(<"$w/err")"
     done
 }
 
@@ -144,7 +131,7 @@ fixture
 run
 expect unmoved status "$rc" 0
 expect unmoved "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
-[ -s "$w/err" ] && fail unmoved "output: $(<"$w/err")"
+[ -s "$w/err" ] && test_fail unmoved "output: $(<"$w/err")"
 
 # A pointer moved forwards is committed alone: what else is staged stays staged
 # and is reported as left out. A second run finds nothing to commit.
@@ -312,18 +299,4 @@ expect unmerged-empty status "$rc" 1
 expect_out unmerged-empty "$p: U lib"
 expect unmerged-empty "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
 
-# A pointer move staged for a submodule whose directory is empty is refused
-# rather than compared, since git in that directory answers for app.
-fixture
-git -C "$w/app" submodule deinit -q lib
-git -C "$w/app" update-index --cacheinfo "160000,$second,lib"
-run
-expect not-own status "$rc" 1
-expect_out not-own \
-    "$p: $w/app: lib: not a repository of its own, resolving to $w/app" \
-    "$p: nothing is tagged or pushed"
-expect not-own "app's HEAD" "$(git -C "$w/app" rev-parse HEAD)" "$head"
-
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

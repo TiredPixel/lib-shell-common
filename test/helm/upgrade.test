@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# kubectl and helm are faked; kubectl names the context example.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/helm/upgrade
+
+test_stub kubectl 'echo example'
+test_stub helm
+
+usage='helm/upgrade REPO URL CHART RELEASE NAMESPACE VERSION [HELM_ARG...]'
+args=(repo https://charts.example.com chart release ns 1.2.3)
+
+test_usage none "$usage" "$script"
+test_usage five "$usage" "$script" "${args[@]:0:5}"
+for i in 0 1 2 3 4 5; do
+    empty=("${args[@]}")
+    empty[i]=
+    test_usage "empty-$i" "$usage" "$script" "${empty[@]}" --debug
+done
+
+test_check context 0 '' 'helm/upgrade: context example' \
+    "$script" "${args[@]}" --set a=b --debug
+upgrade=$(grep '^upgrade ' "$test_tmp/helm.calls")
+
+for flag in --wait --rollback-on-failure; do
+    if [[ " $upgrade " != *" $flag "* ]]; then
+        test_fail "$flag" "not passed: $upgrade"
+    fi
+done
+
+# So a HELM_ARG cannot set another version.
+if [[ $upgrade != *' --set a=b --debug --version 1.2.3' ]]; then
+    test_fail helm-args "not before --version: $upgrade"
+fi
+
+test_finish

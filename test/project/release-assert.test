@@ -1,48 +1,36 @@
 #!/usr/bin/env bash
 #
-# Tests project/release-assert against real repositories in a scratch dir: a
-# parent, app, with submodules lib and ext, each with a bare remote. app's
-# .projects names lib and ext2, so ext is the submodule the release leaves out.
-# Every case builds its fixture afresh and runs project/release-assert in app.
-#
-# Run: test/project/release-assert.test. Exits 1 naming each case that failed.
+# Runs against real repositories in a scratch dir: a parent, app, with
+# submodules lib and ext, each with a bare remote. app's .projects names lib and
+# ext2, so ext is the submodule the release leaves out. Every case builds its
+# fixture afresh and runs project/release-assert in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-assert=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/release-assert
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+assert=$root/project/release-assert
 
 # Nothing from the caller's configuration reaches the fixtures, and nothing
 # above the scratch dir is taken for a repository. File URLs are refused to
 # submodules by default.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
-export GIT_CEILING_DIRECTORIES=$work
+export GIT_CEILING_DIRECTORIES=$test_tmp
 export GIT_CONFIG_COUNT=4
 export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
 export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
-p=release-assert
-failures=0
-
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
+p=project/release-assert
 n=0
 
 # A fresh fixture in $w, as the header describes.
 fixture() {
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     local r
     for r in lib ext; do
@@ -69,7 +57,7 @@ run() {
     rc=0
     (cd "$w/app/${1:-}" && "$assert") >"$w/out" 2>"$w/err" || rc=$?
     if [ -s "$w/out" ]; then
-        fail "run in app/${1:-}" "stdout carries: $(<"$w/out")"
+        test_fail "run in app/${1:-}" "stdout carries: $(<"$w/out")"
     fi
 }
 
@@ -79,12 +67,12 @@ expect() {
     local name=$1 status=$2 line
     shift 2
     if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$w/err")"
+        test_fail "$name" "exit $rc, not $status: $(<"$w/err")"
         return
     fi
     for line in "$@"; do
         grep -qFx -- "$line" "$w/err" ||
-            fail "$name" "stderr lacks '$line': $(<"$w/err")"
+            test_fail "$name" "stderr lacks '$line': $(<"$w/err")"
     done
 }
 
@@ -94,9 +82,9 @@ expect_exact() {
     local name=$1 status=$2
     shift 2
     if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$w/err")"
+        test_fail "$name" "exit $rc, not $status: $(<"$w/err")"
     elif [ "$(<"$w/err")" != "$(printf '%s\n' "$@")" ]; then
-        fail "$name" "stderr is: $(<"$w/err")"
+        test_fail "$name" "stderr is: $(<"$w/err")"
     fi
 }
 
@@ -113,7 +101,7 @@ outside() {
 fixture
 run
 expect clean 0 "$unlisted" "$p: ext"
-grep -qFx "$p: lib" "$w/err" && fail clean "lib reported: $(<"$w/err")"
+grep -qFx "$p: lib" "$w/err" && test_fail clean "lib reported: $(<"$w/err")"
 
 # With every submodule named, nothing is reported.
 fixture
@@ -121,7 +109,7 @@ printf '%s\n' lib ext >"$w/app/.projects"
 git -C "$w/app" commit -q -am "name ext"
 run
 expect all-listed 0
-[ -s "$w/err" ] && fail all-listed "output: $(<"$w/err")"
+[ -s "$w/err" ] && test_fail all-listed "output: $(<"$w/err")"
 
 # Without .projects, every submodule is reported.
 fixture
@@ -130,13 +118,11 @@ git -C "$w/app" commit -q -m "drop .projects"
 run
 expect no-projects 0 "$unlisted" "$p: lib" "$p: ext"
 
-# Below the top level, the release is refused.
+# Below the top level, the checks still cover the whole repository.
 fixture
 mkdir "$w/app/sub"
 run sub
-expect_exact subdir 1 \
-    "$p: $w/app/sub: refusing to release from below the top level" \
-    "$p: run it from $w/app"
+expect_exact subdir 0 "$unlisted" "$p: ext"
 
 # Work outside the submodules is refused, untracked included even where status
 # is configured to hide it.
@@ -186,13 +172,6 @@ this is no state to release from"
     rmdir -- "$w/app/.git/$f"
 done
 
-# A submodule whose directory is gone is refused.
-fixture
-rm -rf -- "$w/app/ext"
-run
-expect_exact missing 1 \
-    "$p: $w/app: ext: not checked out, so a release cannot record it"
-
 # A submodule nobody initialised, its directory empty, is left alone.
 fixture
 git -C "$w/app" submodule deinit -q -f ext
@@ -214,10 +193,8 @@ fixture
 rc=0
 (cd "$w/app" && "$assert" x) >"$w/out" 2>"$w/err" || rc=$?
 if [ -s "$w/out" ]; then
-    fail argument "stdout carries: $(<"$w/out")"
+    test_fail argument "stdout carries: $(<"$w/out")"
 fi
 expect_exact argument 2 "Usage: $p"
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

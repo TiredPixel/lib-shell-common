@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=helm/upgrade
+
+usage() {
+    echo "Usage: $prog REPO URL CHART RELEASE NAMESPACE VERSION" \
+        "[HELM_ARG...]" >&2
+    exit 2
+}
+
+[ $# -ge 6 ] || usage
+for arg in "${@:1:6}"; do
+    [ -n "$arg" ] || usage
+done
+repo=$1 url=$2 chart=$3 release=$4 namespace=$5 version=$6
+shift 6
+
+context=$(kubectl config current-context)
+echo "$prog: context $context" >&2
+
+helm repo add "$repo" "$url"
+helm repo update "$repo"
+helm upgrade "$release" "$repo/$chart" \
+    --install \
+    --namespace "$namespace" \
+    --create-namespace \
+    --wait \
+    --rollback-on-failure \
+    "$@" \
+    --version "$version"

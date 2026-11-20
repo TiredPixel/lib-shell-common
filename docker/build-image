@@ -1,0 +1,27 @@
+# shellcheck shell=bash
+#
+# Sourced by the docker/ scripts that build one image, after init, describe and
+# image-source, to define build_image. Sets no shell options, since it runs
+# under its caller's.
+
+# build_image TARGET IMAGE CACHE... builds stage TARGET, or the last stage where
+# TARGET is empty, as IMAGE, taking layers from each CACHE image.
+build_image() {
+    local target=$1 image=$2 cache
+    local args=()
+    shift 2
+
+    if [ -n "$target" ]; then
+        args+=(--target "$target")
+    fi
+    for cache in "$@"; do
+        args+=(--cache-from "$cache")
+    done
+
+    # shellcheck disable=SC2154 # Set by describe and image-source.
+    docker build "${args[@]}" \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        --build-arg GIT_DESCRIBE="$describe" \
+        --build-arg IMAGE_SOURCE="$image_source" \
+        -t "$image" .
+}

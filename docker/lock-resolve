@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 #
-# Usage: lock-resolve pypi PACKAGE[==VERSION]...
-#        lock-resolve npm NAME PACKAGE_JSON
-#
 # Resolves a TRACK LOCK for docker/upgrade, which feeds this script on stdin to
 # bash -s in the image the lock resolves in, run with docker run -i --rm as
 # root, so resolution sees the Python or Node the build will. Where
@@ -25,9 +22,12 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+# Literal, since docker/upgrade feeds this script to bash -s, whose $0 is bash.
+prog=docker/lock-resolve
+
 usage() {
-    echo "Usage: lock-resolve pypi PACKAGE[==VERSION]..." >&2
-    echo "       lock-resolve npm NAME PACKAGE_JSON" >&2
+    echo "Usage: $prog pypi PACKAGE[==VERSION]..." >&2
+    echo "       $prog npm NAME PACKAGE_JSON" >&2
     exit 2
 }
 
@@ -38,7 +38,7 @@ pypi)
     [ $# -ge 1 ] || usage
     ;;
 npm)
-    if [ $# != 3 ] || [[ ! "$2" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
+    if [ $# -ne 3 ] || [[ ! "$2" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
         usage
     fi
     ;;
@@ -72,7 +72,7 @@ id=""
 family=""
 if [ -z "$present" ]; then
     if ! [ -e /etc/os-release ]; then
-        echo "lock-resolve: the image has no /etc/os-release to name its" \
+        echo "$prog: the image has no /etc/os-release to name its" \
             "distribution, and no $tool of its own" >&2
         exit 1
     fi
@@ -106,7 +106,7 @@ if [ -z "$present" ]; then
     # Fedora's nodejs-npm provides npm, which RHEL 9 and its rebuilds name it.
     npm:?*) packages=(npm) ;;
     *)
-        echo "lock-resolve: /etc/os-release names ${id:-no ID}, which is not" \
+        echo "$prog: /etc/os-release names ${id:-no ID}, which is not" \
             "Debian, Ubuntu, Fedora, a RHEL-like or Alpine, nor like one, and" \
             "the image has no $tool of its own" >&2
         exit 1
@@ -132,7 +132,7 @@ if [ -z "$present" ]; then
             microdnf install -y --setopt=install_weak_deps=0 \
                 --setopt='*.countme=0' "${packages[@]}" </dev/null
         else
-            echo "lock-resolve: /etc/os-release names $id, like Fedora or" \
+            echo "$prog: /etc/os-release names $id, like Fedora or" \
                 "RHEL, but the image has neither dnf nor microdnf" >&2
             exit 1
         fi
@@ -148,7 +148,7 @@ pypi)
     # Python.
     version=$(python3 -m pip --version </dev/null)
     if ! [[ "$version" =~ ^pip\ ([0-9]+)\.([0-9]+) ]]; then
-        echo "lock-resolve: pip --version gave $version" >&2
+        echo "$prog: pip --version gave $version" >&2
         exit 1
     fi
     major=${BASH_REMATCH[1]}

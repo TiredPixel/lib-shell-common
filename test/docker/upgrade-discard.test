@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+#
+# Runs against real repositories in a scratch dir: app, with a submodule lib, in
+# which an upgrade has left changes, a record and lib moved forwards.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+prog=docker/upgrade-discard
+discard=$root/$prog
+
+# Nothing from the caller's configuration reaches the fixtures, and no fixture
+# finds a repository above the scratch dir. The file protocol, local paths
+# included, is refused to submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$test_tmp
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+n=0
+
+# A fresh fixture in $w: app at $w/app with lib one commit past what app
+# records, the Dockerfile rewritten, notes.txt staged, gone.txt deleted, a
+# workflow proposed and a file made under a listed directory, all recorded in
+# tmp/upgrade.record, and a stray untracked file the record does not list.
+fixture() {
+    n=$((n + 1))
+    w=$test_tmp/$n
+    mkdir "$w"
+    git init -q "$w/lib.up"
+    git -C "$w/lib.up" commit -q --allow-empty -m init
+    git clone -q --bare "$w/lib.up" "$w/lib.git"
+    git init -q "$w/app"
+    mkdir -p "$w/app/vendor"
+    printf 'tmp/\n' >"$w/app/.gitignore"
+    printf 'ARG V=1\n' >"$w/app/Dockerfile"
+    printf 'notes\n' >"$w/app/notes.txt"
+    printf 'gone\n' >"$w/app/gone.txt"
+    printf 'a\n' >"$w/app/vendor/a.js"
+    git -C "$w/app" add .
+    git -C "$w/app" submodule add -q "$w/lib.git" lib
+    git -C "$w/app" commit -q -m init
+    recorded=$(git -C "$w/app" rev-parse HEAD:lib)
+    git -C "$w/app/lib" commit -q --allow-empty -m forwards
+    printf 'ARG V=2\n' >"$w/app/Dockerfile"
+    printf 'more\n' >>"$w/app/notes.txt"
+    git -C "$w/app" add notes.txt
+    rm "$w/app/gone.txt"
+    mkdir -p "$w/app/.github/workflows.new" "$w/app/tmp"
+    : >"$w/app/.github/workflows.new/build.yml"
+    : >"$w/app/vendor/b.js"
+    : >"$w/app/stray.txt"
+    printf '%s\n' Dockerfile .github/workflows.new/build.yml vendor '' \
+        'V 1 -> 2' >"$w/app/tmp/upgrade.record"
+}
+
+# Fails case $1 unless app holds only stray.txt beyond HEAD, the record is gone,
+# and lib is at commit $2.
+discarded() {
+    local left
+    left=$(git -C "$w/app" status --porcelain --ignore-submodules=all)
+    [ "$left" = '?? stray.txt' ] || test_fail "$1" "status is: $left"
+    [ ! -e "$w/app/tmp/upgrade.record" ] || test_fail "$1" "record is left"
+    [ "$(git -C "$w/app/lib" rev-parse HEAD)" = "$2" ] ||
+        test_fail "$1" "lib is not at $2"
+}
+
+# Without a SUBMODULE, lib stays where it moved.
+fixture
+test_check no-submodule 0 '' '' env -C "$w/app" "$discard" tmp/upgrade.record
+discarded no-submodule "$(git -C "$w/app/lib" rev-parse HEAD)"
+
+fixture
+test_check submodule 0 '' "Submodule path 'lib': checked out '$recorded'" \
+    env -C "$w/app" "$discard" tmp/upgrade.record lib
+discarded submodule "$recorded"
+
+# A missing record lists nothing to clean, so what it would have listed stays.
+fixture
+rm "$w/app/tmp/upgrade.record"
+test_check record-missing 0 '' '' \
+    env -C "$w/app" "$discard" tmp/upgrade.record
+left=$(git -C "$w/app" status --porcelain --ignore-submodules=all)
+[ "$left" = $'?? .github/\n?? stray.txt\n?? vendor/b.js' ] ||
+    test_fail record-missing "status is: $left"
+
+test_usage usage "$prog RECORD [SUBMODULE...]" "$discard"
+
+test_finish

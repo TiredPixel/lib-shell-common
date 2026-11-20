@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# Fails unless the current directory holds .projects, the list a sweep takes,
+# naming CALLER, the sweep that asks, in its message.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=project/projects-assert
+
+usage() {
+    echo "Usage: $prog CALLER" >&2
+    exit 2
+}
+
+[ $# -eq 1 ] || usage
+
+# The sweep is defined by this list, so its absence is a broken checkout rather
+# than an empty one: the caller's per-project make stages would find no project
+# to run in, and the run would still complete having run them nowhere.
+if [ ! -f .projects ]; then
+    echo "$1: $PWD: no .projects, so there is nothing to sweep" >&2
+    exit 1
+fi

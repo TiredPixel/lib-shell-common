@@ -1,6 +1,12 @@
 ---
-# DL3008 asks for each apt package pinned to an exact version. The base image is
-# pinned by digest through TRACK FROM instead, and packages come from Debian
-# unpinned so that each upgrade reaches them.
+# Distribution packages are left unpinned and taken current at each uncached
+# build; other tools are pinned by their locks and ARGs.
 ignored:
   - DL3008
+  - DL3013
+  - DL3016
+  - DL3018
+  - DL3028
+  - DL3033
+  - DL3037
+  - DL3041

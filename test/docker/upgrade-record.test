@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+prog=docker/upgrade-record
+record=$test_tmp/tmp/upgrade.record
+
+# Runs the script on RECORD and the arguments after $5, its stdin $2, and fails
+# case $1 unless it exits $3 with stdout $4 and stderr $5.
+run() {
+    printf '%s' "$2" >"$test_tmp/moves"
+    test_check "$1" "$3" "$4" "$5" record_from_moves "${@:6}"
+}
+# shellcheck disable=SC2317 # Called through test_check.
+record_from_moves() {
+    "$root/$prog" "$record" "$@" <"$test_tmp/moves"
+}
+
+# Fails case $1 unless RECORD holds exactly the lines after it.
+holds() {
+    local want
+    want=$(printf '%s\n' "${@:2}")
+    if [ "$(<"$record")" != "$want" ]; then
+        test_fail "$1" "record is: $(<"$record")"
+    fi
+}
+
+# With no line, a missing RECORD is made empty, its directory with it, and a
+# RECORD there is left as it is.
+run empty '' 0 '' '' a.lock
+if [ ! -f "$record" ] || [ -s "$record" ]; then
+    test_fail empty "record is not an empty file"
+fi
+printf '%s\n' Dockerfile '' 'V 1 -> 2' >"$record"
+run empty-kept '' 0 '' '' a.lock
+holds empty-kept Dockerfile '' 'V 1 -> 2'
+rm -- "$record"
+
+# A missing RECORD is made, each line printed as it is recorded.
+run new $'P 1 -> 2\nLOCK x: 3 dependencies moved\n' 0 \
+    $'P 1 -> 2\nLOCK x: 3 dependencies moved' '' a.lock b.lock
+holds new a.lock b.lock '' 'P 1 -> 2' 'LOCK x: 3 dependencies moved'
+
+# An empty RECORD, as docker/upgrade leaves where nothing moved, is filled.
+: >"$record"
+run record-empty 'P 1 -> 2' 0 'P 1 -> 2' '' a.lock
+holds record-empty a.lock '' 'P 1 -> 2'
+
+# A SUBJECT holding spaces and colons splits at the last ' -> ' and space; a
+# rerun keeps the first OLD and the paths already listed, and takes the latest
+# NEW or TEXT, adding what is new after what was there.
+printf '%s\n' Dockerfile '' 'V 1 -> 2' 'LOCK a: files changed' >"$record"
+run merge $'V 2 -> 3\nLOCK a: 1 dependency moved\nLOCK a b:c 1 -> 2\n' 0 \
+    $'V 1 -> 3\nLOCK a: 1 dependency moved\nLOCK a b:c 1 -> 2' '' \
+    a.lock Dockerfile
+holds merge Dockerfile a.lock '' 'V 1 -> 3' 'LOCK a: 1 dependency moved' \
+    'LOCK a b:c 1 -> 2'
+
+# A blank or unsplittable line is refused by its line number, nothing written.
+printf '%s\n' Dockerfile '' 'V 1 -> 2' >"$record"
+for bad in '' 'x -> 2' 'P 1 -> ' 'no move' ': text'; do
+    run "bad-${bad:-blank}" "V 2 -> 3"$'\n'"$bad"$'\n' 1 '' \
+        "$prog: stdin:2: not SUBJECT OLD -> NEW or SUBJECT: TEXT" a.lock
+    holds "bad-${bad:-blank}" Dockerfile '' 'V 1 -> 2'
+done
+
+usage="$prog RECORD PATH... < MOVES"
+test_usage usage-none "$usage" "$root/$prog"
+test_usage usage-no-path "$usage" "$root/$prog" "$record"
+
+test_finish

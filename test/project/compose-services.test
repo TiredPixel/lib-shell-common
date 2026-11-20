@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# Runs project/compose-services in scratch directories with docker faked on
+# PATH. compose config --services prints FAKE_SERVICES, or fails with exit
+# FAKE_RC where that is set.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/project/compose-services
+
+# shellcheck disable=SC2016 # Expanded by the fake.
+test_stub docker '
+if [ -n "${FAKE_RC-}" ]; then
+    echo "fake docker: invalid compose project" >&2
+    exit "$FAKE_RC"
+fi
+printf "%s\n" "$FAKE_SERVICES"'
+
+# Every name compose looks for is taken.
+for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+    mkdir "$test_tmp/$f"
+    touch "$test_tmp/$f/$f"
+    FAKE_SERVICES=$'web\ndb' test_check "$f" 0 $'web\ndb' '' \
+        env -C "$test_tmp/$f" "$script"
+    test_calls "$f" docker "compose config --services"
+done
+
+# A directory with no compose file prints nothing without asking compose, even
+# below one that has a file.
+mkdir -p "$test_tmp/up/none"
+touch "$test_tmp/up/compose.yaml"
+test_check none 0 '' '' env -C "$test_tmp/up/none" "$script"
+test_calls none docker
+
+# A configuration compose cannot read fails with compose's status.
+FAKE_RC=3 test_check config-fails 3 '' "fake docker: invalid compose project" \
+    env -C "$test_tmp/up" "$script"
+test_calls config-fails docker "compose config --services"
+
+# Any argument is a usage error, refused before docker is called.
+test_usage argument project/compose-services env -C "$test_tmp/up" "$script" x
+
+test_finish

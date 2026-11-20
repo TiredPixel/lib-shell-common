@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+#
+# Runs against real repositories in a scratch dir: app, with the library as a
+# submodule at lib/shell-common, itself holding a nested submodule, and a second
+# submodule other. The library holds copies of upgrade-guard and
+# workflows-pending, since the guard checks the checkout it runs from. Every
+# case builds its fixture afresh and runs the copy in app.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+# Nothing from the caller's configuration reaches the fixtures, and no fixture
+# finds a repository above the scratch dir. The file protocol, local paths
+# included, is refused to submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$test_tmp
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+n=0
+prog=docker/upgrade-guard
+tree="$prog: the tree has changes outside its submodules, which the upgrade would commit; commit or remove them first"
+lib="$prog: lib/shell-common has changes, which the upgrade would run as edited; commit or remove them first"
+
+# A bare repository at $w/$1.git holding one commit, of what its first checkout
+# holds and the library files after $1 copied in.
+upstream() {
+    local f
+    git init -q "$w/$1.up"
+    for f in "${@:2}"; do
+        mkdir -p -- "$w/$1.up/${f%/*}"
+        cp -p -- "$root/$f" "$w/$1.up/$f"
+    done
+    git -C "$w/$1.up" add -A
+    git -C "$w/$1.up" commit -q --allow-empty -m init
+    git clone -q --bare "$w/$1.up" "$w/$1.git"
+}
+
+# A fresh fixture in $w, with app at $w/app, its library checkout at $l and the
+# guard to run at $guard.
+fixture() {
+    n=$((n + 1))
+    w=$test_tmp/$n
+    mkdir "$w"
+    upstream nested
+    git init -q "$w/lib.up"
+    git -C "$w/lib.up" submodule add -q "$w/nested.git" nested
+    upstream lib docker/upgrade-guard github/workflows-pending
+    upstream other
+    git init -q "$w/app"
+    printf 'tmp/\n' >"$w/app/.gitignore"
+    printf 'notes\n' >"$w/app/notes.txt"
+    git -C "$w/app" add .gitignore notes.txt
+    git -C "$w/app" submodule add -q "$w/lib.git" lib/shell-common
+    git -C "$w/app" submodule add -q "$w/other.git" other
+    git -C "$w/app" submodule update -q --init --recursive
+    git -C "$w/app" commit -q -m init
+    l=$w/app/lib/shell-common
+    guard=$l/docker/upgrade-guard
+}
+
+# Runs the guard in $w/app with the arguments after $4, and fails case $1 unless
+# it exits $2 with no stdout and stderr $3.
+check() {
+    test_check "$1" "$2" '' "$3" env -C "$w/app" "$guard" "${@:4}"
+}
+
+# A clean tree passes, with no record, an empty one, or one in an ignored path.
+fixture
+check clean 0 '' tmp/upgrade.record
+mkdir "$w/app/tmp"
+: >"$w/app/tmp/upgrade.record"
+check record-empty 0 '' tmp/upgrade.record
+
+fixture
+mkdir "$w/app/tmp"
+printf 'Dockerfile\n\nV 1 -> 2\n' >"$w/app/tmp/upgrade.record"
+check record-pending 1 "$prog: tmp/upgrade.record is not empty, so an earlier upgrade is unfinished; commit or discard it first" \
+    tmp/upgrade.record
+
+# A pending proposal is refused through workflows-pending, unless
+# --skip-pending, where the tree is then checked alone.
+fixture
+mkdir -p "$w/app/.github/workflows.new"
+: >"$w/app/.github/workflows.new/build.yml"
+check pending 1 "github/workflows-pending: .github/workflows.new/build.yml
+github/workflows-pending: proposals pending; approve them with $l/docker/../github/workflows-approve" \
+    tmp/upgrade.record
+check skip-pending-untracked 1 "$prog: .github/workflows.new/build.yml
+$tree" --skip-pending tmp/upgrade.record
+git -C "$w/app" add .github
+git -C "$w/app" commit -q -m proposal
+check skip-pending 0 '' --skip-pending tmp/upgrade.record
+
+# A staged, an unstaged and an untracked change are each refused, listed.
+for how in staged unstaged untracked; do
+    fixture
+    case $how in
+    staged)
+        printf 'more\n' >>"$w/app/notes.txt"
+        git -C "$w/app" add notes.txt
+        want=notes.txt
+        ;;
+    unstaged)
+        printf 'more\n' >>"$w/app/notes.txt"
+        want=notes.txt
+        ;;
+    untracked)
+        : >"$w/app/new.txt"
+        want=new.txt
+        ;;
+    esac
+    check "tree-$how" 1 "$prog: $want"$'\n'"$tree" tmp/upgrade.record
+done
+
+# Submodule pointers, and the other submodule's own state, are passed over.
+fixture
+git -C "$w/app/other" commit -q --allow-empty -m forwards
+: >"$w/app/other/untracked"
+git -C "$l" commit -q --allow-empty -m forwards
+check submodules 0 '' tmp/upgrade.record
+
+# The library checkout refuses an unstaged or untracked change of its own, but
+# not its nested submodule's pointer.
+fixture
+printf '#\n' >>"$guard"
+: >"$l/new.txt"
+check lib-changed 1 "$prog: lib/shell-common: docker/upgrade-guard
+$prog: lib/shell-common: new.txt
+$lib" tmp/upgrade.record
+fixture
+git -C "$l/nested" commit -q --allow-empty -m forwards
+check lib-nested 0 '' tmp/upgrade.record
+
+fixture
+usage="$prog [--skip-pending] RECORD"
+test_usage usage-none "$usage" env -C "$w/app" "$guard"
+test_usage usage-skip-alone "$usage" env -C "$w/app" "$guard" --skip-pending
+test_usage usage-two "$usage" env -C "$w/app" "$guard" a b
+
+test_finish

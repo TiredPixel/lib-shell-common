@@ -1,51 +1,35 @@
 #!/usr/bin/env bash
 #
-# Tests docker/dockerfile-parse on Dockerfiles written to a scratch directory,
-# sourced in a shell with no options set and in one under the strict mode its
-# callers run, each printing what dockerfile_parse returned and set: its escape
-# character, how many lines it read, each instruction's lines and logical line,
-# each comment line and each heredoc body, numbered from 1. Neither sourcing nor
+# Dockerfiles are written to a scratch directory, and the script is sourced in a
+# shell with no options set and in one under the strict mode its callers run,
+# each printing what dockerfile_parse returned and set: its escape character,
+# how many lines it read, each instruction's lines and logical line, each
+# comment line and each heredoc body, numbered from 1. Neither sourcing nor
 # parsing may change the shell's options.
-#
-# Run: test/docker/dockerfile-parse.test. Exits 1 naming each case that failed.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-parse=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")/dockerfile-parse
-dump=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/dockerfile-parse")/dump
-work=$(mktemp -d)
-trap 'chmod -R u+rwx -- "$work" && rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
+parse=$root/docker/dockerfile-parse
+dump=$root/test/fixtures/docker/dockerfile-parse/dump
 
 # Parses file $2, in each mode, and checks what is printed is $3 and nothing
 # reaches stderr.
 parsed() {
-    local name=$1 mode
+    local mode
     for mode in plain strict; do
-        bash --norc --noprofile "$dump" "$mode" "$parse" "$2" >"$work/out" \
-            2>"$work/err" || fail "$name-$mode" "exit $?: $(<"$work/err")"
-        if [ -s "$work/err" ]; then
-            fail "$name-$mode" "stderr is: $(<"$work/err")"
-        elif [ "$(<"$work/out")" != "$3" ]; then
-            fail "$name-$mode" "printed: $(<"$work/out")"
-        fi
+        test_check "$1-$mode" 0 "$3" '' \
+            bash --norc --noprofile "$dump" "$mode" "$parse" "$2"
     done
 }
 
 # Writes $2 to a Dockerfile and checks it parses as parsed does.
 check() {
-    printf '%s' "$2" >"$work/Dockerfile"
-    parsed "$1" "$work/Dockerfile" "$3"
+    printf '%s' "$2" >"$test_tmp/Dockerfile"
+    parsed "$1" "$test_tmp/Dockerfile" "$3"
 }
 
 # Directives.
@@ -94,11 +78,9 @@ check heredoc-unended $'RUN <<A <<B\nA\nx\n' "status 1: a heredoc's body has no 
 
 # A file that cannot be read; root reads any.
 if [ "$(id -u)" -ne 0 ]; then
-    printf 'FROM x\n' >"$work/locked"
-    chmod 000 "$work/locked"
-    parsed unreadable "$work/locked" "status 1: cannot be read"
+    printf 'FROM x\n' >"$test_tmp/locked"
+    chmod 000 "$test_tmp/locked"
+    parsed unreadable "$test_tmp/locked" "status 1: cannot be read"
 fi
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

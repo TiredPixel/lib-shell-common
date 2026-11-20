@@ -1,62 +1,59 @@
 #!/usr/bin/env bash
 #
-# Tests terraform/upgrade in a scratch project with terraform faked on PATH, so
-# nothing is initialised. The fake terraform logs each call's arguments and
-# fails where its first argument is FAKE_FAIL.
-#
-# Run: test/terraform/upgrade.test. Exits 1 naming each case that failed.
+# terraform is faked on PATH, so nothing is initialised. The fake logs each
+# call's arguments, prints a line on stdout, which the script must send to
+# stderr, fails where its first argument is FAKE_FAIL, and on init copies the
+# file FAKE_LOCK_FROM names, where set, to the lock.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-script=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../terraform")/upgrade
-fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/terraform/upgrade")
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/bin" "$work/project"
-cp -p -- "$fixtures/terraform" "$work/bin/"
+script=$root/terraform/upgrade
 
-export FAKE_LOG=$work/log
-export PATH=$work/bin:$PATH
+cp -p -- "$root/test/fixtures/terraform/upgrade/terraform" "$test_tmp/path/"
+export FAKE_LOG=$test_tmp/terraform.calls
+: >"$FAKE_LOG"
+mkdir -- "$test_tmp/project"
+cd -- "$test_tmp/project"
 
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
+# Writes a lock to $1 holding the PROVIDER VERSION pairs after it.
+lock() {
+    local file=$1
+    shift
+    : >"$file"
+    while [ $# -gt 0 ]; do
+        printf 'provider "%s" {\n  version     = "%s"\n  hashes = [\n    "h1:x",\n  ]\n}\n\n' \
+            "$1" "$2" >>"$file"
+        shift 2
+    done
 }
 
-# Runs upgrade with the arguments after $5 and the fake failing at $2, or
-# nowhere where that is empty, and checks it exits $3, prints nothing on stdout
-# and $4 on stderr, and calls terraform as $5.
-check() {
-    local name=$1 rc=0
-    : >"$FAKE_LOG"
-    (cd "$work/project" && FAKE_FAIL=$2 "$script" "${@:6}") >"$work/out" \
-        2>"$work/err" || rc=$?
-    if [ "$rc" -ne "$3" ]; then
-        fail "$name" "exit $rc, not $3: $(<"$work/err")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ "$(<"$work/err")" != "$4" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"
-    elif [ "$(<"$FAKE_LOG")" != "$5" ]; then
-        fail "$name" "terraform was called as: $(<"$FAKE_LOG")"
-    fi
-}
+calls=('init -upgrade -backend=false -input=false'
+    'providers lock -platform=linux_amd64 -platform=darwin_arm64')
+err=$'fake terraform: init\nfake terraform: providers'
+a=registry.terraform.io/hashicorp/a
+b=registry.terraform.io/hashicorp/b
+c=registry.terraform.io/hashicorp/c
 
-# The upgrade is the one script that may write the lock file, so its init is
-# not read-only.
-check upgrades "" 0 "" "init -upgrade"
-check init-fails init 1 "fake terraform: init failed" "init -upgrade"
+# With no lock, every provider comes from none; then one moves, one goes and
+# one comes, and one that stays is not printed.
+lock "$test_tmp/lock1" "$b" 1.0.0 "$a" 2.0.0
+test_check from-none 0 "$a none -> 2.0.0"$'\n'"$b none -> 1.0.0" "$err" \
+    env FAKE_LOCK_FROM="$test_tmp/lock1" "$script" linux_amd64 darwin_arm64
+test_calls from-none terraform "${calls[@]}"
+lock "$test_tmp/lock2" "$a" 2.0.0 "$c" 3.0.0
+lock .terraform.lock.hcl "$a" 2.0.0 "$b" 1.0.0
+test_check moves 0 "$b 1.0.0 -> none"$'\n'"$c none -> 3.0.0" "$err" \
+    env FAKE_LOCK_FROM="$test_tmp/lock2" "$script" linux_amd64 darwin_arm64
+test_calls moves terraform "${calls[@]}"
 
-# Any argument is a usage error, refused before terraform runs.
-check argument "" 2 "Usage: upgrade" "" x
+test_check init-fails 1 '' $'fake terraform: init\nfake terraform: init failed' \
+    env FAKE_FAIL=init "$script" linux_amd64 darwin_arm64
+test_calls init-fails terraform "${calls[0]}"
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_usage no-platform "terraform/upgrade PLATFORM..." "$script"
+
+test_finish

@@ -7,8 +7,10 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=ansible/inventory-ssh-known-hosts
+
 usage() {
-    echo "Usage: ${0##*/} KNOWN_HOSTS DOMAIN --list | --host HOST" >&2
+    echo "Usage: $prog KNOWN_HOSTS DOMAIN --list | --host HOST" >&2
     exit 2
 }
 
@@ -18,10 +20,6 @@ domain=$2
 shift 2
 if [ -z "$f" ] || [ -z "$domain" ]; then
     usage
-fi
-if ! [ -f "$f" ] || ! [ -r "$f" ]; then
-    echo "${0##*/}: $f is not a readable file" >&2
-    exit 1
 fi
 
 # Sets inventory to {hosts, hostvars, conflicts}: each host once, in the order
@@ -56,7 +54,7 @@ read_inventory() {
         }
     ' "$f")
 
-    conflicts=$(jq -r --arg prog "${0##*/}" --arg f "$f" '
+    conflicts=$(jq -r --arg prog "$prog" --arg f "$f" '
         .conflicts[] | "\($prog): \(.) has more than one port in \($f)"
     ' <<<"$inventory")
     if [ -n "$conflicts" ]; then
@@ -74,7 +72,7 @@ cmd_list() {
     read_inventory
 
     if [ "$(jq '.hosts | length' <<<"$inventory")" -eq 0 ]; then
-        echo "${0##*/}: no host in $f ends in .$domain" >&2
+        echo "$prog: no host in $f ends in .$domain" >&2
         exit 1
     fi
 

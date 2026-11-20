@@ -2,58 +2,45 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-prog=${0##*/}
+prog=project/start
 
-if [ $# -gt 1 ] || { [ $# -eq 1 ] && [ "$1" != --pull ]; }; then
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+usage() {
     echo "Usage: $prog [--pull]" >&2
     exit 2
+}
+
+if [ $# -gt 1 ] || { [ $# -eq 1 ] && [ "$1" != --pull ]; }; then
+    usage
 fi
 pull=${1:+1}
 
-# Two questions, cheapest first: is this a compose project, and has it anything
-# to bring up. They cannot be folded into one -- compose resolves a project from
-# any directory inside it, so dropping the file test would let a project
-# carrying none adopt an ancestor's. The second catches services that all sit
-# behind a profile, which selects nothing and which compose calls an error
-# rather than nothing to do. The file test takes every name compose looks for,
-# so a project is not skipped for which of them it uses. The services are
-# captured on a line of their own, where errexit sees compose fail: inside
-# test's argument the failure would be lost, and a project whose configuration
-# compose cannot read would pass as one with nothing to bring up.
-#
 # --wait, so a service that dies on start or never turns healthy fails the
 # project it belongs to. A daemon-wide health poll would not do: filtering on
 # health status misses an exited container, which has none, so a crash on start
 # would pass, and it would stall on an unhealthy container from an unrelated
 # project. A one-shot service exiting 0 fails --wait too, unless it is a
 # service_completed_successfully dependency of a service that stays up (observed
-# with Compose 5.6.1, checked 2026-11; Compose's up reference does not say).
-# Override the bound with DC_WAIT_TIMEOUT.
+# with Compose 5.6.1; Compose's up reference, docs.docker.com, read 2026-11-20,
+# does not say). Override the bound with DC_WAIT_TIMEOUT.
 #
 # up pulls only images missing here, so a start runs what make build has just
 # built: Compose pulls even an image it builds under --pull always, or under a
 # service's own pull_policy: always unless --pull overrides it, replacing the
 # build with whatever a registry holds under its tag; --pull never would fail on
-# an image nothing has pulled yet (observed with Compose 5.7.0, checked
-# 2026-11). --pull, which only project/upgrade passes, first pulls each image
-# Compose cannot build, --ignore-buildable leaving the rest.
-#
-# The string is for sh, which expands it in each project, $1 set where --pull
-# was given.
-# shellcheck disable=SC2016
-"$dir/each" sh -c '
-    set -eu
-    found=
-    for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
-        test ! -f "$f" || found=1
-    done
-    test -n "$found" || exit 0
-    services=$(docker compose config --services)
-    test -n "$services" || exit 0
-    test -z "$1" || docker compose pull --ignore-buildable
+# an image nothing has pulled yet (observed with Compose 5.7.0). --pull, which
+# only project/upgrade passes, first pulls each image Compose cannot build,
+# --ignore-buildable leaving the rest.
+# shellcheck disable=SC2016 # Expanded by bash in each project.
+"$dir/each" bash -c '
+    set -Eeuo pipefail
+    shopt -s inherit_errexit failglob
+    services=$("$1")
+    [ -n "$services" ] || exit 0
+    [ -z "$2" ] || docker compose pull --ignore-buildable
     docker compose up -d --pull missing --wait \
         --wait-timeout "${DC_WAIT_TIMEOUT:-300}"' \
-    sh "$pull"
+    _ "$dir/compose-services" "$pull"
 
 docker ps

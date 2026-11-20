@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# Runs in scratch git repositories, with docker faked and git reading no
+# configuration but each repository's own, so the run's binds show in the docker
+# call it would make.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/runner/format-host
+
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$test_tmp
+export GIT_CONFIG_COUNT=3
+export GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=test
+export GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=test@example.com
+export GIT_CONFIG_KEY_2=init.defaultBranch GIT_CONFIG_VALUE_2=main
+mkdir -- "$test_tmp/tmpdir"
+export TMPDIR=$test_tmp/tmpdir
+
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub docker 'exit "${FAKE_DOCKER:-0}"'
+
+# Makes a git repository at $test_tmp/$1 and prints its path.
+repo() {
+    local t=$test_tmp/$1
+    git init -q -- "$t"
+    echo "$t"
+}
+
+# Writes a line to each path under repository $1 given after it that is not
+# there yet.
+write() {
+    local t=$1 f
+    shift
+    for f; do
+        if ! [ -e "$t/$f" ]; then
+            mkdir -p -- "$(dirname -- "$t/$f")"
+            echo a >"$t/$f"
+        fi
+    done
+}
+
+# Writes each path under repository $1 given after it, and adds it to the index.
+tracked() {
+    write "$@"
+    git -C "$1" add -- "${@:2}"
+}
+
+# The docker call a run in repository $1 makes, with the options given before --
+# and each entry after it bound by its absolute path.
+call() {
+    local t=$1 entry
+    local -a args=(compose run --rm)
+    shift
+    while [ "$1" != -- ]; do
+        args+=("$1")
+        shift
+    done
+    shift
+    args+=(-e FORMAT_MOUNTS=1)
+    for entry; do
+        args+=(-v "$t/$entry:/home/x/r/$entry")
+    done
+    args+=(tooling format)
+    printf ' %q' "${args[@]}" | cut -c 2-
+}
+
+# Each top-level entry, untracked ones too, is bound by its absolute path; an
+# untracked file in a tracked directory comes with it.
+t=$(repo top)
+tracked "$t" README.md src/a.css src/b/c.css .github/w.yml
+write "$t" new.md docs/x.md src/new.css
+test_check top 0 '' '' env -C "$t" "$script" --build -T -- tooling format
+test_calls top docker \
+    "$(call "$t" --build -T -- .github README.md docs new.md src)"
+
+# A directory holding an ignored path or a submodule is taken entry by entry, so
+# neither is bound, and an untracked dot entry is bound as any other is.
+t=$(repo ignored)
+printf '/tmp/\n*.log\n' >"$t/.gitignore"
+tracked "$t" .gitignore src/a.css lib/own.sh
+write "$t" tmp/state debug.log src/x.log src/.a.css.swp .a.swp \
+    .idea/workspace.xml lib/sub/f
+git -C "$t/lib/sub" init -q
+git -C "$t/lib/sub" add f
+git -C "$t/lib/sub" commit -q -m a
+sub=$(git -C "$t/lib/sub" rev-parse HEAD)
+git -C "$t" update-index --add --cacheinfo "160000,$sub,lib/sub"
+test_check ignored 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls ignored docker "$(call "$t" -- .a.swp .gitignore .idea \
+    lib/own.sh src/.a.css.swp src/a.css)"
+
+# A run from below the root binds the same entries, from the root.
+test_check subdirectory 0 '' '' env -C "$t/src" "$script" -- tooling format
+test_calls subdirectory docker "$(call "$t" -- .a.swp .gitignore .idea \
+    lib/own.sh src/.a.css.swp src/a.css)"
+
+# A deleted file and a symlink, tracked or not, are left out.
+t=$(repo links)
+tracked "$t" kept.md gone.md
+ln -s kept.md "$t/link"
+git -C "$t" add link
+rm -- "$t/gone.md"
+ln -s kept.md "$t/untracked-link"
+test_check links 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls links docker "$(call "$t" -- kept.md)"
+
+if [ -n "$(ls -A -- "$TMPDIR")" ]; then
+    test_fail tmpdir "TMPDIR holds: $(ls -A -- "$TMPDIR")"
+fi
+
+test_check status 3 '' '' env -C "$t" FAKE_DOCKER=3 "$script" -- tooling format
+test_calls status docker "$(call "$t" -- kept.md)"
+
+for args in '' tooling '-- tooling' '--build tooling format'; do
+    read -r -a words <<<"$args"
+    test_usage "usage $args" \
+        'runner/format-host [RUN_OPTION...] -- SERVICE COMMAND...' \
+        env -C "$t" "$script" "${words[@]}"
+done
+
+test_finish

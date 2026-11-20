@@ -7,7 +7,11 @@ if [ "${CHECKPOINT_DISABLE-}" != 1 ]; then
 fi
 args=$(printf '%q ' "$@")
 echo "${args% }" >>"$FAKE_LOG"
+echo "fake terraform: $1"
 if [ "$1" = "${FAKE_FAIL:-}" ]; then
     echo "fake terraform: $1 failed" >&2
     exit 1
+fi
+if [ "$1" = init ] && [ -n "${FAKE_LOCK_FROM:-}" ]; then
+    cp -- "$FAKE_LOCK_FROM" .terraform.lock.hcl
 fi

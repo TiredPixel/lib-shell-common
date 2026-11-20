@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 #
-# Tests project/build in place against real repositories in a scratch dir and
-# real GNU make: app, whose submodules lib1 and lib2 are listed in its
-# .projects, each cloned from a bare remote, with app's and lib1's remotes one
-# commit ahead of the clone, so that a pull would move both. lib1 and app
-# declare build, lib2 does not; a recipe logs the target and the project, and
-# fails where the project holds a file named fail. A post-merge hook in app logs
-# any pull that reaches it. Only app has a compose file, and docker is faked on
-# PATH: compose config --services prints web, compose up logs "start" and the
-# project and exits FAKE_UP_RC, compose stop logs "stop" and the project, ps
-# does nothing, and any other call fails. Every case builds its fixture afresh
-# and runs project/build in app.
-#
-# Run: test/project/build.test. Exits 1 naming each case that failed.
+# Runs in place against real repositories in a scratch dir and real GNU make:
+# app, whose submodules lib1 and lib2 are listed in its .projects, each cloned
+# from a bare remote, with app's and lib1's remotes one commit ahead of the
+# clone, so that a pull would move both. lib1 and app declare build, lib2 does
+# not; a recipe logs the target and the project, and fails where the project
+# holds a file named fail. A post-merge hook in app logs any pull that reaches
+# it. Only app has a compose file, and docker is faked on PATH: compose config
+# --services prints web, compose up logs "start" and the project and exits
+# FAKE_UP_RC, compose stop logs "stop" and the project, ps does nothing, and any
+# other call fails. Every case builds its fixture afresh and runs project/build
+# in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-build=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/build
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+build=$root/project/build
 
 # Nothing from the caller's configuration reaches the fixtures. File URLs are
 # refused to submodules by default.
@@ -31,8 +31,7 @@ export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 # The cases match git's messages, which git translates.
 export LC_ALL=C
 
-mkdir "$work/bin"
-cat >"$work/bin/docker" <<'EOF'
+cat >"$test_tmp/path/docker" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -47,8 +46,7 @@ ps) ;;
 *) exit 2 ;;
 esac
 EOF
-chmod +x "$work/bin/docker"
-export PATH=$work/bin:$PATH
+chmod +x "$test_tmp/path/docker"
 unset DC_WAIT_TIMEOUT
 
 # The recipe logs the target and the project's directory. The string is for
@@ -56,17 +54,6 @@ unset DC_WAIT_TIMEOUT
 # shellcheck disable=SC2016
 recipe='\t@test ! -f fail\n\t@echo "$@ $(notdir $(CURDIR))" >>"$$FAKE_LOG"\n'
 
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
-failures=0
 n=0
 
 # Creates bare remote $w/$1.git and $w/$1.up, a clone committing to it, whose
@@ -85,7 +72,7 @@ mkrepo() {
 fixture() {
     local sub
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     mkrepo lib1 build
     mkrepo lib2 other
@@ -119,22 +106,22 @@ check() {
     local rc=0
     (cd "$w/app" && "$build") >"$w/out" 2>"$w/err" || rc=$?
     if [ "$rc" != "$2" ]; then
-        fail "$1" "exit $rc, not $2: $(<"$w/err")"
+        test_fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
-        fail "$1" "the log is: $(<"$FAKE_LOG")"
+        test_fail "$1" "the log is: $(<"$FAKE_LOG")"
     fi
 }
 
 # Records a failure of case $1 unless stderr holds $2.
 expect_err() {
     if ! grep -qF -- "$2" "$w/err"; then
-        fail "$1" "stderr lacks $2: $(<"$w/err")"
+        test_fail "$1" "stderr lacks $2: $(<"$w/err")"
     fi
 }
 
 # The stages announced on stderr, one per line.
 stages() {
-    sed -n 's/^build: \([a-z]*\)$/\1/p' "$w/err"
+    sed -n 's|^project/build: \([a-z]*\)$|\1|p' "$w/err"
 }
 
 # Builds each listed project declaring build and not app itself, starts and
@@ -145,20 +132,20 @@ fixture
 head=$(git -C "$w/app" rev-parse HEAD)
 check whole 0 "$(printf '%s\n' "build lib1" "start app" "stop app")"
 if [ "$(stages)" != "$(printf '%s\n' build start stop completed)" ]; then
-    fail whole "the stages are: $(stages)"
+    test_fail whole "the stages are: $(stages)"
 fi
 if [ "$(git -C "$w/app" rev-parse HEAD)" != "$head" ]; then
-    fail whole "app moved from $head"
+    test_fail whole "app moved from $head"
 fi
 moved=$(git -C "$w/app" status --porcelain --ignore-submodules=none)
 if [ -n "$moved" ]; then
-    fail whole "app's tree changed: $moved"
+    test_fail whole "app's tree changed: $moved"
 fi
-if grep -q '^build: ' "$w/out"; then
-    fail whole "stdout carries a stage: $(<"$w/out")"
+if grep -q '^project/build: ' "$w/out"; then
+    test_fail whole "stdout carries a stage: $(<"$w/out")"
 fi
 if grep -qxE '[[:space:]=-]*' "$w/err"; then
-    fail whole "stderr carries a rule or a blank line: $(<"$w/err")"
+    test_fail whole "stderr carries a rule or a blank line: $(<"$w/err")"
 fi
 
 # With no list, nothing is swept, rather than the run completing having built
@@ -166,7 +153,7 @@ fi
 fixture
 rm -- "$w/app/.projects"
 check no-list 1 ""
-expect_err no-list "build: $w/app: no .projects, so there is nothing to sweep"
+expect_err no-list "project/build: $w/app: no .projects, so there is nothing to sweep"
 
 # A failed build stops the run before anything starts.
 fixture
@@ -179,7 +166,7 @@ mkdir "$w/app/sub"
 printf 'lib1\nsub\n' >"$w/app/.projects"
 check refused 1 ""
 expect_err refused \
-    "each-without-project: sub: not a submodule of $w/app, so it cannot be swept"
+    "project/each-without-project: sub: not a submodule of $w/app, so it cannot be swept"
 
 # A listed submodule not checked out stops the run before any build, rather
 # than being checked out.
@@ -187,9 +174,9 @@ fixture
 git -C "$w/app" submodule deinit -q lib1
 check uninitialised 1 ""
 expect_err uninitialised \
-    "each-without-project: lib1: submodule of $w/app not checked out"
+    "project/each-without-project: lib1: submodule of $w/app not checked out"
 if [ -e "$w/app/lib1/Makefile" ]; then
-    fail uninitialised "lib1 was checked out"
+    test_fail uninitialised "lib1 was checked out"
 fi
 
 # A failed start stops the run.
@@ -198,15 +185,9 @@ FAKE_UP_RC=1 check start-fails 1 "$(printf '%s\n' "build lib1" "start app")"
 
 # Any argument is a usage error, refused before anything is built or started.
 fixture
-rc=0
-(cd "$w/app" && "$build" x) >"$w/out" 2>"$w/err" || rc=$?
-if [ "$rc" != 2 ] || [ -s "$w/out" ] ||
-    [ "$(<"$w/err")" != "Usage: build" ]; then
-    fail argument "exit $rc: $(<"$w/out")$(<"$w/err")"
-elif [ -s "$FAKE_LOG" ]; then
-    fail argument "the log is: $(<"$FAKE_LOG")"
+test_usage argument project/build env -C "$w/app" "$build" x
+if [ -s "$FAKE_LOG" ]; then
+    test_fail argument "the log is: $(<"$FAKE_LOG")"
 fi
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

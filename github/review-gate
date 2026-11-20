@@ -9,8 +9,6 @@
 # counts towards a required check only from the app the rule names, which an
 # Actions job's own token is not.
 #
-# Usage: review-gate OWNER/REPO NUMBER APP
-#
 # Each REST call is one GitHub's "Permissions required for GitHub Apps" lists
 # for an app with only Checks write, Pull requests read and Metadata read: the
 # pull request, the repository's open ones, its commits and reviews under Pull
@@ -161,7 +159,7 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-prog=${0##*/}
+prog=github/review-gate
 
 # The head's checks are failed where the run ends while this is set, naming
 # $error, the message the run died with, where there is one.
@@ -174,11 +172,15 @@ die() {
     exit 1
 }
 
-# Names what is wrong with an argument, then the usage, and exits 2.
 usage() {
-    echo "$prog: $*" >&2
     echo "Usage: $prog OWNER/REPO NUMBER APP" >&2
     exit 2
+}
+
+# Names what is wrong with an argument, then the usage.
+bad_argument() {
+    echo "$prog: $*" >&2
+    usage
 }
 
 # The reviewers the gate knows: each one's kinds, each posted as the check
@@ -191,28 +193,29 @@ declare -A reviewers=([codex]="code security")
 check_name='^review/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
 
 if [ $# -ne 3 ]; then
-    usage "expected 3 arguments, got $#"
+    bad_argument "expected 3 arguments, got $#"
 fi
 repo=$1 number=$2 app=$3
 if ! [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-    usage "$(printf %q "$repo") is not OWNER/REPO"
+    bad_argument "$(printf %q "$repo") is not OWNER/REPO"
 fi
 if ! [[ $number =~ ^[1-9][0-9]*$ ]]; then
-    usage "$(printf %q "$number") is not a pull request number"
+    bad_argument "$(printf %q "$number") is not a pull request number"
 fi
 if ! [[ $app =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    usage "$(printf %q "$app") is not an app slug"
+    bad_argument "$(printf %q "$app") is not an app slug"
 fi
 read -r -a extra <<<"${REVIEW_GATE_CHECKS:-}"
 for name in "${extra[@]}"; do
     if ! [[ $name =~ $check_name ]]; then
-        usage "REVIEW_GATE_CHECKS: $(printf %q "$name") is not" \
+        bad_argument "REVIEW_GATE_CHECKS: $(printf %q "$name") is not" \
             "review/REVIEWER/KIND"
     fi
 done
 before=${REVIEW_GATE_BEFORE:-}
 if [ -n "$before" ] && ! [[ $before =~ ^[0-9a-f]{40}$ ]]; then
-    usage "REVIEW_GATE_BEFORE: $(printf %q "$before") is not a commit SHA"
+    bad_argument "REVIEW_GATE_BEFORE: $(printf %q "$before") is not a" \
+        "commit SHA"
 fi
 
 # Fails each review/ check run of the app on the head whose conclusion is not

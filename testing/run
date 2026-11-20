@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#
+# Runs each named test, or every test/**/*.test, at most the worker count at a
+# time, showing each one's output once it ends; every test runs whatever the
+# others do, and each that fails is named. PROGRAM, the caller's name, heads
+# every line it prints. Runs from the root of the repository.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=testing/run
+
+usage() {
+    echo "Usage: $prog PROGRAM [test/PATH.test...]" >&2
+    exit 2
+}
+
+[ $# -ge 1 ] || usage
+prog=$1
+shift
+# shellcheck source=SCRIPTDIR/common
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/common"
+
+tests=("$@")
+for t in "${tests[@]}"; do
+    if ! is_shell_test "$t"; then
+        echo "Usage: $prog [test/PATH.test...]" >&2
+        exit 2
+    fi
+done
+
+logs=$(mktemp -d)
+trap 'rm -rf -- "$logs"' EXIT
+
+if [ ${#tests[@]} -eq 0 ]; then
+    find test -type f -name '*.test' -print0 | LC_ALL=C sort -z >"$logs/list"
+    mapfile -t -d '' tests <"$logs/list"
+    if [ ${#tests[@]} -eq 0 ]; then
+        echo "$prog: no test/**/*.test found" >&2
+        exit 1
+    fi
+fi
+echo "$prog: running ${#tests[@]} shell test(s)" >&2
+
+declare -A running=()
+failed=()
+
+reap() {
+    local pid i rc=0
+    wait -n -p pid || rc=$?
+    i=${running[$pid]}
+    unset "running[$pid]"
+    echo "$prog: ${tests[$i]}" >&2
+    cat -- "$logs/$i" >&2
+    if [ "$rc" -ne 0 ]; then
+        failed+=("${tests[$i]}")
+    fi
+}
+
+for i in "${!tests[@]}"; do
+    while [ ${#running[@]} -ge "$workers" ]; do
+        reap
+    done
+    "./${tests[$i]}" </dev/null >"$logs/$i" 2>&1 &
+    running[$!]=$i
+done
+while [ ${#running[@]} -gt 0 ]; do
+    reap
+done
+
+for t in "${failed[@]}"; do
+    echo "$prog: $t failed" >&2
+done
+echo "$prog: $((${#tests[@]} - ${#failed[@]})) of ${#tests[@]} passed" >&2
+if [ ${#failed[@]} -gt 0 ]; then
+    exit 1
+fi

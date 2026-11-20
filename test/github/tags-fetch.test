@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# git is faked: git describe prints FAKE_DESCRIBE.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/github/tags-fetch
+
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub git 'if [ "$1" = describe ]; then
+    echo "$FAKE_DESCRIBE"
+fi'
+
+# The fetch git is given for the token $1.
+fetch() {
+    local auth line
+    auth=$(printf 'x-access-token:%s' "$1" | base64 -w 0)
+    printf -v line ' %q' -c \
+        "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+        fetch --tags --force --no-recurse-submodules
+    echo "${line# }"
+}
+
+test_usage argument github/tags-fetch "$script" x
+
+unset GITHUB_REF_TYPE GITHUB_REF_NAME
+GH_TOKEN=token test_check branchless 0 '' '' "$script"
+test_calls branchless git "$(fetch token)"
+
+# Long enough that base64 would wrap it.
+long=$(printf 't%.0s' {1..80})
+GH_TOKEN=$long GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main \
+    test_check branch 0 '' '' "$script"
+test_calls branch git "$(fetch "$long")"
+
+GH_TOKEN=token GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2 FAKE_DESCRIBE=v1.2 \
+    test_check tag 0 '' '' "$script"
+test_calls tag git "$(fetch token)" describe
+
+GH_TOKEN=token GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2 \
+    FAKE_DESCRIBE=v1.1-2-gabcdef0 test_check tag-other 1 '' \
+    "github/tags-fetch: describe says 'v1.1-2-gabcdef0' on tag 'v1.2'" "$script"
+test_calls tag-other git "$(fetch token)" describe
+
+test_finish

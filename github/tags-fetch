@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#
+# Refetches every tag with --force, so a tag that actions/checkout left
+# lightweight (actions/checkout#290) takes back its annotated object, which git
+# describe reads. It authenticates with GH_TOKEN for this fetch alone, so the
+# checkout need keep no credential, and does not recurse into submodules, which
+# that token cannot read where they are private. On a tag ref, as
+# GITHUB_REF_TYPE gives it, it then fails unless git describe names
+# GITHUB_REF_NAME, so nothing built from the tag is stamped with another
+# release.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=github/tags-fetch
+
+usage() {
+    echo "Usage: $prog" >&2
+    exit 2
+}
+
+[ $# -eq 0 ] || usage
+
+auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+    fetch --tags --force --no-recurse-submodules
+
+if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+    describe=$(git describe)
+    if [ "$describe" != "$GITHUB_REF_NAME" ]; then
+        echo "$prog: describe says '$describe' on tag '$GITHUB_REF_NAME'" >&2
+        exit 1
+    fi
+fi

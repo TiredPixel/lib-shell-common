@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# Checks every JSON path given on stdin, NUL-separated, against what
+# `jq --sort-keys .` writes, or with --keep-order `jq .`, and shows each file
+# that differs as a unified diff on stdout from the file to that form. Every
+# file is checked before the run fails, so one formatting run fixes all it
+# names. Reports and never rewrites; the caller's formatter is the writing half.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=lint/json-keys
+
+usage() {
+    echo "Usage: $prog [--keep-order] < PATHS" >&2
+    exit 2
+}
+
+args=(--sort-keys .)
+form=sorted
+what='keys not sorted'
+if [ "${1-}" = --keep-order ]; then
+    args=(.)
+    form='laid out'
+    what='not laid out'
+    shift
+fi
+[ $# -eq 0 ] || usage
+
+failed=0
+checked=0
+want=$(mktemp)
+trap 'rm -f -- "$want"' EXIT
+
+while IFS= read -r -d '' f; do
+    checked=$((checked + 1))
+    # Written to a file rather than piped into diff, so jq's own status is seen
+    # and a file it cannot parse is not reported as merely out of form.
+    if ! jq "${args[@]}" "$f" >"$want"; then
+        echo "$prog: $f: jq could not read it" >&2
+        failed=1
+        continue
+    fi
+    # diff exits 1 on a difference and above that on trouble, which is fatal.
+    rc=0
+    diff -u --label "$f" --label "$f ($form)" -- "$f" "$want" || rc=$?
+    case $rc in
+    0) ;;
+    1)
+        echo "$prog: $f: $what" >&2
+        failed=1
+        ;;
+    *) exit "$rc" ;;
+    esac
+done
+
+echo "$prog: checked $checked file(s)" >&2
+[ "$failed" -eq 0 ] || exit 1

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# docker and git are faked on PATH, so nothing is built or read from a
+# repository. The fake docker writes a line on stdout and exits with
+# FAKE_BUILD's status. The fake git puts HEAD on branch a/b, or detached at
+# commit 1a2b3c4 where FAKE_BRANCH is HEAD, and describes it as FAKE_DESCRIBE,
+# failing as an untagged repository does where that is empty.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/docker/build-tags-nopush
+
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub docker 'echo "fake docker: built"; exit "${FAKE_BUILD:-0}"'
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub git 'case $* in
+"rev-parse --abbrev-ref HEAD") echo "${FAKE_BRANCH:-a/b}" ;;
+"rev-parse --short HEAD") echo 1a2b3c4 ;;
+describe)
+    if [ -z "$FAKE_DESCRIBE" ]; then
+        echo "fatal: No names found, cannot describe anything." >&2
+        exit 128
+    fi
+    echo "$FAKE_DESCRIBE"
+    ;;
+"remote get-url origin") echo https://github.com/o/r.git ;;
+*) exit 2 ;;
+esac'
+
+mkdir -- "$test_tmp/project"
+echo r/x >"$test_tmp/project/.dockerrepo"
+cd "$test_tmp/project"
+
+export FAKE_DESCRIBE=v1.2-3-gabcdef0
+# A CI running these tests names its own branch or tag in them, which would name
+# the detached case's image.
+unset CIRCLE_BRANCH CIRCLE_TAG GITHUB_HEAD_REF GITHUB_REF_NAME
+
+# The build docker is called for, tagged and cached as tag $1 and stamped $2.
+build() {
+    local caches="--cache-from r/x:$1.dev --cache-from r/x:$1.prd"
+    caches+=" --cache-from r/x:latest.dev --cache-from r/x:latest.prd"
+    caches+=" --cache-from r/x:$1 --cache-from r/x:latest"
+    echo "build $caches --build-arg BUILDKIT_INLINE_CACHE=1" \
+        "--build-arg GIT_DESCRIBE=$2" \
+        "--build-arg IMAGE_SOURCE=https://github.com/o/r -t r/x:$1 ."
+}
+
+test_check builds 0 r/x:a-b "fake docker: built" "$script"
+test_calls builds docker "$(build a-b "$FAKE_DESCRIBE")"
+
+FAKE_BUILD=3 test_check build-fails 3 "" "fake docker: built" "$script"
+test_calls build-fails docker "$(build a-b "$FAKE_DESCRIBE")"
+
+FAKE_DESCRIBE='' test_check untagged 0 r/x:a-b "fake docker: built" "$script"
+test_calls untagged docker "$(build a-b "")"
+
+FAKE_BRANCH=HEAD test_check detached 0 r/x:1a2b3c4 "fake docker: built" \
+    "$script"
+test_calls detached docker "$(build 1a2b3c4 "$FAKE_DESCRIBE")"
+
+test_usage argument docker/build-tags-nopush "$script" --help
+
+test_finish

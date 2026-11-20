@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+#
+# Read-only counterpart to bin/format: every check reports and fails, and none
+# writes. Runs from the root of the repository.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+# shellcheck source=core
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/core"
+
+[ $# -eq 0 ] || usage
+
+# Filled by collect, through a nameref ShellCheck cannot follow.
+declare -a shell envrc docker compose make workflow yaml yaml_unsorted \
+    yamllint kube json json_ordered toml md dotenv python js web ansible
+
+if defines shell_files; then
+    collect shell shell_files
+    echo "$prog: checking ${#shell[@]} shell file(s)" >&2
+    check shellcheck shellcheck "${shell[@]}"
+    check shfmt shfmt "${shfmt_args[@]}" -d "${shell[@]}"
+fi
+
+# direnv files carry no shebang, and direnv runs them with bash.
+if defines envrc_files; then
+    collect envrc envrc_files
+    echo "$prog: checking ${#envrc[@]} direnv file(s)" >&2
+    check shellcheck shellcheck -s bash "${envrc[@]}"
+    check shfmt shfmt "${shfmt_args[@]}" -ln bash -d "${envrc[@]}"
+fi
+
+if defines docker_files; then
+    collect docker docker_files
+    echo "$prog: checking ${#docker[@]} Dockerfile(s)" >&2
+    check dockerfmt dockerfmt "${dockerfmt_args[@]}" --check "${docker[@]}"
+    check hadolint hadolint "${docker[@]}"
+    check dockerfile-locks "$lib/lint/dockerfile-locks" "${docker[@]}"
+fi
+
+if defines compose_files; then
+    collect compose compose_files
+    echo "$prog: checking ${#compose[@]} Compose file(s)" >&2
+    # One file at a time, so none is merged into another, and every profile,
+    # since Compose skips the checks of a service whose profile is off.
+    for f in "${compose[@]}"; do
+        check compose "${compose_cmd[@]}" -f "$f" --profile '*' config -q
+    done
+fi
+
+if defines make_files; then
+    collect make make_files
+    echo "$prog: checking ${#make[@]} Makefile(s)" >&2
+    check checkmake checkmake "${make[@]}"
+fi
+
+collect workflow workflow_files
+yaml=()
+if defines yaml_files; then
+    collect yaml yaml_files
+fi
+yaml+=("${workflow[@]}")
+echo "$prog: checking ${#yaml[@]} sorted YAML file(s)" >&2
+check yaml-keys "$lib/lint/yaml-keys" < <(printf '%s\0' "${yaml[@]}")
+if defines yaml_unsorted_files; then
+    collect yaml_unsorted yaml_unsorted_files
+    echo "$prog: checking ${#yaml_unsorted[@]} unsorted YAML file(s)" >&2
+    check yaml-layout "$lib/lint/yaml-keys" --keep-order \
+        < <(printf '%s\0' "${yaml_unsorted[@]}")
+fi
+collect yamllint yamllint_files
+echo "$prog: checking ${#yamllint[@]} YAML file(s) with yamllint" >&2
+check yamllint yamllint "${yamllint_args[@]}" -- "${yamllint[@]}"
+
+echo "$prog: checking ${#workflow[@]} workflow(s)" >&2
+actionlint_args=()
+if [ -e .github/actionlint.yaml ]; then
+    # Named, since actionlint finds its config only beside .git, which the
+    # image's copy of the tree leaves out.
+    actionlint_args=(-config-file .github/actionlint.yaml)
+fi
+check actionlint actionlint "${actionlint_args[@]}" "${workflow[@]}"
+
+if defines kube_files; then
+    collect kube kube_files
+    echo "$prog: checking ${#kube[@]} Kubernetes manifest(s)" >&2
+    check kubeconform "$lib/lint/kubernetes" < <(printf '%s\0' "${kube[@]}")
+fi
+
+if defines json_files; then
+    collect json json_files
+    echo "$prog: checking ${#json[@]} JSON file(s)" >&2
+    check json-keys "$lib/lint/json-keys" < <(printf '%s\0' "${json[@]}")
+fi
+
+if defines json_ordered_files; then
+    collect json_ordered json_ordered_files
+    echo "$prog: checking ${#json_ordered[@]} ordered JSON file(s)" >&2
+    check json-layout "$lib/lint/json-keys" --keep-order \
+        < <(printf '%s\0' "${json_ordered[@]}")
+fi
+
+if defines toml_files; then
+    collect toml toml_files
+    echo "$prog: checking ${#toml[@]} TOML file(s)" >&2
+    check taplo-fmt taplo fmt --check --diff "${toml[@]}"
+    check taplo-lint taplo lint "${toml[@]}"
+fi
+
+if defines md_files; then
+    collect md md_files
+    echo "$prog: checking ${#md[@]} Markdown file(s)" >&2
+    check mdformat mdformat --check "${md[@]}"
+fi
+
+if defines dotenv_files; then
+    collect dotenv dotenv_files
+    echo "$prog: checking ${#dotenv[@]} dotenv file(s)" >&2
+    check dotenv-linter dotenv-linter check "${dotenv[@]}"
+fi
+
+if defines python_files; then
+    collect python python_files
+    echo "$prog: checking ${#python[@]} Python file(s)" >&2
+    check ruff ruff check "${python[@]}"
+    check ruff-format ruff format --diff "${python[@]}"
+fi
+
+if defines js_files; then
+    collect js js_files
+    echo "$prog: checking ${#js[@]} JavaScript file(s)" >&2
+    check semistandard semistandard "${js[@]}"
+fi
+
+if defines css_files || defines html_files; then
+    files_web web
+    echo "$prog: checking ${#web[@]} CSS and HTML file(s)" >&2
+    check prettier prettier --check "${web[@]}"
+fi
+
+# Empty where the whole tree is the Ansible project: ansible-lint gets no path.
+if defines ansible_files; then
+    collect ansible --may-be-empty ansible_files
+    echo "$prog: checking Ansible" >&2
+    check ansible-lint env "${ansible_env[@]}" "$lib/ansible/test" \
+        "${ansible[@]}"
+fi
+
+if defines lint_extra; then
+    lint_extra
+fi
+
+finish

@@ -1,0 +1,121 @@
+#!/usr/bin/env -S python3 -W error
+"""Write a kubeconform schema for each kind in a Kubernetes OpenAPI spec.
+
+Reads the Swagger 2.0 spec Kubernetes publishes as
+api/openapi-spec/swagger.json and writes into DIR a file for each group,
+version and kind it defines, named as kubeconform's schema location
+`{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json` finds it. Each
+file holds the kind's schema, with every definition it reaches under
+`definitions`, so it stands alone, and is strict as the API server is: an
+object with properties takes no others. Fails where two definitions claim the
+same file.
+"""
+
+import copy
+import json
+import sys
+from pathlib import Path
+
+PROG = "kubernetes/schemas"
+
+REF = "#/definitions/"
+
+# Each unmarshals from a JSON number as well as a string, which the spec's
+# `type: string` leaves out.
+NUMBER_OR_STRING = ("io.k8s.apimachinery.pkg.api.resource.Quantity",)
+
+
+def nullable(schema):
+    """Return schema accepting null as well."""
+    if isinstance(schema.get("type"), str):
+        return {**schema, "type": [schema["type"], "null"]}
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+def strict(schema):
+    """Return schema with IntOrString as either type and objects closed.
+
+    An optional property also takes null, which the API server reads as unset
+    and manifests a chart renders often hold.
+    """
+    if schema.get("format") == "int-or-string":
+        return {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+    out = dict(schema)
+    if "properties" in out:
+        required = set(out.get("required", []))
+        out["properties"] = {
+            k: strict(v) if k in required else nullable(strict(v))
+            for k, v in out["properties"].items()
+        }
+        out.setdefault("additionalProperties", False)
+    for key in ("items", "additionalProperties"):
+        if isinstance(out.get(key), dict):
+            out[key] = strict(out[key])
+    for key in ("allOf", "anyOf", "oneOf"):
+        if key in out:
+            out[key] = [strict(s) for s in out[key]]
+    return out
+
+
+def refs(schema):
+    """Yield the name of each definition schema refers to directly."""
+    if isinstance(schema, dict):
+        ref = schema.get("$ref")
+        if isinstance(ref, str) and ref.startswith(REF):
+            yield ref.removeprefix(REF)
+        for value in schema.values():
+            yield from refs(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            yield from refs(value)
+
+
+def reached(definitions, name):
+    """Return the names of every definition name reaches, itself included."""
+    seen = {name}
+    todo = [name]
+    while todo:
+        for ref in refs(definitions[todo.pop()]):
+            if ref not in seen:
+                seen.add(ref)
+                todo.append(ref)
+    return seen
+
+
+def file_name(gvk):
+    # kubeconform's .Group is the apiVersion's part before the slash, which
+    # for the core group, with no slash, is the version itself.
+    group = gvk["group"] or gvk["version"]
+    return f"{gvk['kind']}-{group}-{gvk['version']}.json".lower()
+
+
+def main(argv):
+    if len(argv) != 3:
+        print(f"Usage: {PROG} SWAGGER DIR", file=sys.stderr)
+        return 2
+    spec = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
+    out = Path(argv[2])
+    definitions = {}
+    for name, schema in spec["definitions"].items():
+        if name in NUMBER_OR_STRING:
+            definitions[name] = {"oneOf": [{"type": "string"}, {"type": "number"}]}
+        else:
+            definitions[name] = strict(schema)
+
+    written = {}
+    for name, schema in spec["definitions"].items():
+        for gvk in schema.get("x-kubernetes-group-version-kind", []):
+            path = out / file_name(gvk)
+            if path in written:
+                sys.exit(f"{PROG}: {path}: both {written[path]} and {name}")
+            written[path] = name
+            doc = copy.deepcopy(definitions[name])
+            doc["definitions"] = {
+                n: definitions[n] for n in sorted(reached(definitions, name))
+            }
+            path.write_text(json.dumps(doc, sort_keys=True), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
