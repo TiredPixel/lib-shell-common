@@ -1,23 +1,19 @@
 ---
 # TRACK USES actions/checkout@v7
 # TRACK USES actions/create-github-app-token@v3
-# One run at a time for each pull request, none cancelled once running: GitHub
-# keeps a single run pending in the group, the latest, and each run reads the
-# pull request's state afresh, so the last one posts the current state, however
-# many comments Codex's edits queue. The gate's run again for another pull
-# request after a close or a push runs in the first one's group, so beside the
-# other's own runs, a gap the gate's header names.
+# One run at a time per pull request, none cancelled once running: each reads
+# the pull request afresh, so the last posts its current state.
 concurrency:
   cancel-in-progress: false
   group: review-${{ github.event.number || github.event.issue.number }}
 jobs:
   review:
-    # A comment on a plain issue has no checks to post, and the gate, unable to
-    # read issues, fails on a number naming no pull request.
+    # A comment on a plain issue has no checks to post, and the gate fails on a
+    # number naming no pull request.
     if: github.event.pull_request || github.event.issue.pull_request
-    # Contents read, for the default branch's checkout; the checks are written
-    # with the review app's token, since GitHub counts a check run towards a
-    # required check only from the app the rule names.
+    # Contents read for the checkout alone: the checks are written with the
+    # review app's token, since GitHub counts a check run towards a required
+    # check only from the app the rule names.
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -29,13 +25,11 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.repository.default_branch }}
-      # Minted here, in the workflow only a person may change, by an action
-      # pinned by full SHA, so the key never reaches the gate's own code, which
-      # an ordinary commit can move.
+      # Minted here, in the workflow only a person may change, so the key never
+      # leaves the workflow.
       - id: token
         name: Mint review app token
-        # The action's name and a full commit SHA leave no way to break the
-        # line.
+        # A full commit SHA cannot be wrapped.
         # yamllint disable-line rule:line-length
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
         with:
@@ -49,9 +43,6 @@ jobs:
           app: ${{ steps.token.outputs.app-slug }}
           checks: ${{ vars.REVIEW_GATE_CHECKS }}
           token: ${{ steps.token.outputs.token }}
-    # The gate's own run, which takes seconds, bounded so a hung one stops well
-    # before GitHub's default timeout; a Codex review takes as long as it takes,
-    # the check waiting meanwhile.
     timeout-minutes: 5
 name: Review
 "on":
@@ -60,6 +51,9 @@ name: Review
       - created
       - deleted
       - edited
+  # Runs the default branch's copy, so a pull request cannot change the workflow
+  # to take the key; a public repository needs an Actions event policy allowing
+  # this event explicitly (lib-shell-common's README, Setting a repository up).
   pull_request_target:
     types:
       # Closing a pull request lets another open one on the same head commit,
