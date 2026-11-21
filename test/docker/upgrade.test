@@ -1554,45 +1554,6 @@ if [ "$rc" != 1 ] || [ -s "$test_tmp/out" ] ||
     test_fail in-place-dir-link "exit $rc: $(<"$test_tmp/err")"
 fi
 
-# Every FREEZE line, exact or mistyped, in every file named is listed as grep
-# lists it, before anything is looked up or written.
-f=$test_tmp/freeze
-mkdir -p "$f/.github/workflows"
-fdf=$'# FROMFREEZE r/x:1\nFROM r/x:1\n  #argfreeze V github:o/p\nARG V=1\n# TRACK ARG W github:o/p\nARG W=1\n'
-fdf+=$'# ARG FREEZE V github:o/p\n# arg_freeze V github:o/p\n#ARGS-FREEZE V github:o/p\n# ARGFREEZER notes\n'
-fwf=$'steps:\n# USESFREEZE o/r@v1\n  - uses: o/r@v0\n#UsesFreeze o/a@v2\n# uses - freeze o/r@v1\n'
-printf '%s' "$fdf" >"$f/Dockerfile"
-printf '%s' "$fwf" >"$f/.github/workflows/w.yml"
-said=$(printf '%s\n' "Dockerfile:1:# FROMFREEZE r/x:1" "Dockerfile:3:  #argfreeze V github:o/p" \
-    "Dockerfile:7:# ARG FREEZE V github:o/p" "Dockerfile:8:# arg_freeze V github:o/p" \
-    "Dockerfile:9:#ARGS-FREEZE V github:o/p" \
-    ".github/workflows/w.yml:2:# USESFREEZE o/r@v1" ".github/workflows/w.yml:4:#UsesFreeze o/a@v2" \
-    ".github/workflows/w.yml:5:# uses - freeze o/r@v1" \
-    "docker/upgrade: FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES")
-rc=0
-(cd "$f" && "$upgrade" Dockerfile .github/workflows/w.yml) >"$test_tmp/out" \
-    2>"$test_tmp/err" || rc=$?
-if [ "$rc" != 1 ] || [ "$(<"$test_tmp/err")" != "$said" ]; then
-    test_fail freeze "exit $rc, stderr: $(<"$test_tmp/err")"
-elif [ -s "$test_tmp/out" ]; then
-    test_fail freeze "something was looked up: $(<"$test_tmp/out")"
-elif [ "$(<"$f/Dockerfile")" != "$(printf '%s' "$fdf")" ] ||
-    [ "$(<"$f/.github/workflows/w.yml")" != "$(printf '%s' "$fwf")" ] ||
-    [ -e "$f/.github/workflows.new" ]; then
-    test_fail freeze "a file was written"
-fi
-
-# A FREEZE line is still listed, from the workflows alone.
-printf '%s\n' "# USESFREEZE" "  - uses: o/r@v0" >"$f/.github/workflows/4.yml"
-said=$(printf '%s\n' ".github/workflows/4.yml:1:# USESFREEZE" \
-    "docker/upgrade: FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES")
-rc=0
-(cd "$f" && "$upgrade" --workflows .github/workflows/4.yml) >"$test_tmp/out" \
-    2>"$test_tmp/err" || rc=$?
-if [ "$rc" != 1 ] || [ "$(<"$test_tmp/err")" != "$said" ]; then
-    test_fail workflows-only-freeze "exit $rc: $(<"$test_tmp/err")"
-fi
-
 # Progress goes to stderr, a line naming what each pin resolved to and each file
 # written, and docker pull's own output with it; stdout stays empty.
 p=$test_tmp/progress

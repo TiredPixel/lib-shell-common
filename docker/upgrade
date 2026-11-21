@@ -111,10 +111,7 @@
 # which may use no other action.
 #
 # A comment line that reads as a mistyped TRACK line fails, as does a TRACK line
-# of a kind its file does not hold. Before anything else is read, # FROMFREEZE,
-# # ARGFREEZE and # USESFREEZE lines, in any spacing or case, fail the run, since
-# a pin left in that retired form would stop moving with no sign: grep lists
-# every one in every file named.
+# of a kind its file does not hold.
 #
 # FROM and ARG are matched in any case, as Docker reads them, and on logical
 # lines, as docker/dockerfile-parse reads them: continued lines joined at the
@@ -255,29 +252,6 @@ for w in "${!workflows[@]}"; do
             "pending; approve or remove it first"
     fi
 done
-
-# A file that is missing or no regular file is left to the checks that name it.
-# grep failing otherwise than by finding nothing stops the run with its status.
-inputs=()
-for input in "$dockerfile" "${workflows[@]}"; do
-    if [ -n "$input" ] && [ -f "$input" ]; then
-        inputs+=("$input")
-    fi
-done
-if [ ${#inputs[@]} -gt 0 ]; then
-    status=0
-    grep -Hn -i -E -e \
-        '^[[:space:]]*#[[:space:]]*(from|args?|uses)[-_[:space:]]*freeze([^[:alnum:]_]|$)' \
-        -- "${inputs[@]}" >&2 || status=$?
-    case $status in
-    0)
-        say "FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES"
-        exit 1
-        ;;
-    1) ;;
-    *) exit "$status" ;;
-    esac
-fi
 
 if [ -n "$dockerfile" ]; then
     # A symbolic link is followed, so the link stays.
