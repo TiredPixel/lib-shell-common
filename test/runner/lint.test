@@ -220,4 +220,25 @@ lint: checking Ansible' env -C "$t" "$script"
 test_calls actionlint-config actionlint \
     '-config-file .github/actionlint.yaml .github/workflows/build.yml'
 
+# The formatter's arguments reach the checks, so both enforce one layout.
+: >"$test_tmp/yq.calls"
+t=$(tree overrides)
+echo '{}' >"$t/a.json"
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+jq_args=(--indent 4 --sort-keys .)
+yq_args=(-P -I4 'sort_keys(..)')
+json_files() { printf '%s\0' a.json; }
+ansible_files() { :; }
+EOF
+test_check overrides 0 '' 'lint: checking 1 sorted YAML file(s)
+lint/yaml-keys: checked 1 file(s)
+lint: checking 1 YAML file(s) with yamllint
+lint: checking 1 workflow(s)
+lint: checking 1 JSON file(s)
+lint/json-keys: checked 1 file(s)
+lint: checking Ansible' env -C "$t" "$script"
+test_calls overrides yq "-P -I4 sort_keys\\(..\\) .github/workflows/build.yml"
+test_calls overrides jq '--indent 4 --sort-keys . a.json'
+
 test_finish

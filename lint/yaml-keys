@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
 # Check every YAML path given on stdin, NUL-separated, against what
-# `yq -P 'sort_keys(..)'` would write, or with --keep-order `yq -P .`, and
-# report the ones that differ, each as a unified diff on stdout from the file to
-# that form. Reports and never rewrites: this is the read-only half of a
-# formatting pass, and the writing half is the caller's. Both should take the
-# same path set, or one will rewrite a file the other never checks.
+# `yq -P 'sort_keys(..)'` would write, with --keep-order `yq -P .`, or after --
+# yq with the arguments given, as the caller's formatter runs it, and report the
+# ones that differ, each as a unified diff on stdout from the file to that form.
+# Reports and never rewrites: this is the read-only half of a formatting pass,
+# and the writing half is the caller's. Both should take the same path set, or
+# one will rewrite a file the other never checks.
 #
 # Every offender is named rather than only the first, since one formatting run
 # fixes them all either way -- stopping at the first only costs the reader a
@@ -20,19 +21,32 @@ shopt -s inherit_errexit failglob
 prog=lint/yaml-keys
 
 usage() {
-    echo "Usage: $prog [--keep-order] < PATHS" >&2
+    echo "Usage: $prog [--keep-order | -- YQ_ARG...] < PATHS" >&2
     exit 2
 }
 
-expr='sort_keys(..)'
+args=(-P 'sort_keys(..)')
 form=sorted
 what='keys not sorted'
-if [ "${1-}" = --keep-order ]; then
-    expr=.
+case ${1-} in
+--keep-order)
+    args=(-P .)
     form='laid out'
     what='not laid out'
     shift
-fi
+    ;;
+--)
+    shift
+    [ $# -gt 0 ] || usage
+    # Reported as sorted only where these are the default's arguments.
+    if [ "$*" != "${args[*]}" ]; then
+        form=formatted
+        what='not as formatted'
+    fi
+    args=("$@")
+    set --
+    ;;
+esac
 [ $# -eq 0 ] || usage
 
 unsorted=0
@@ -50,7 +64,7 @@ while IFS= read -r -d '' f <&3 || [ -n "$f" ]; do
 
     # Written to a file rather than piped into diff, so yq's own status is seen
     # and a file it cannot parse is not reported as merely unsorted.
-    if ! yq -P "$expr" "$f" >"$sorted"; then
+    if ! yq "${args[@]}" "$f" >"$sorted"; then
         echo "$prog: $f: yq could not read it, so its keys were not checked" >&2
         unreadable=1
         continue
@@ -76,7 +90,14 @@ done 3<&0 </dev/null
 echo "$prog: checked $checked file(s)" >&2
 
 if [ "$unsorted" -ne 0 ]; then
-    echo "$prog: rewrite with yq -i -P '$expr'" >&2
+    hint=()
+    for arg in "${args[@]}"; do
+        case $arg in
+        -*) hint+=("$arg") ;;
+        *) hint+=("'$arg'") ;;
+        esac
+    done
+    echo "$prog: rewrite with yq -i ${hint[*]}" >&2
 fi
 
 if [ "$unsorted" -ne 0 ] || [ "$unreadable" -ne 0 ]; then

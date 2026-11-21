@@ -77,6 +77,30 @@ test_check keep-order 1 "$space_diff" \
     "lint/json-keys: with space.json: not laid out
 $(checked 3)" keys_on --keep-order -- top.json "with space.json" sorted.json
 
+# After --, the arguments are jq's, and only others than the default's change
+# what a difference is called.
+printf '{\n    "a": 1\n}\n' >indented.json
+quoted=$(printf %q "$keys")
+test_check args-pass 0 '' "$(checked 1)" bash -c \
+    "printf '%s\0' indented.json | $quoted -- --indent 4 --sort-keys ."
+test_check args-fail 1 '--- sorted.json
++++ sorted.json (formatted)
+@@ -1,6 +1,6 @@
+ {
+-  "a": 1,
+-  "b": {
+-    "c": 2
+-  }
++    "a": 1,
++    "b": {
++        "c": 2
++    }
+ }' "lint/json-keys: sorted.json: not as formatted
+$(checked 1)" bash -c \
+    "printf '%s\0' sorted.json | $quoted -- --indent 4 --sort-keys ."
+test_check args-default 1 "$top_diff" "lint/json-keys: top.json: keys not sorted
+$(checked 1)" bash -c "printf '%s\0' top.json | $quoted -- --sort-keys ."
+
 # A file jq cannot parse is named after jq's own error, and the others are still
 # checked.
 jq_err=$(jq . invalid.json 2>&1) || [ $? -eq 5 ]
@@ -92,9 +116,10 @@ test_stub diff 'echo "fake diff: read error" >&2; exit 2'
 test_check diff-fails 2 '' 'fake diff: read error' \
     keys_on -- sorted.json top.json
 
-for args in top.json --sort-keys "--keep-order top.json"; do
+for args in top.json --sort-keys "--keep-order top.json" --; do
     read -r -a words <<<"$args"
-    test_usage "argument $args" 'lint/json-keys [--keep-order] < PATHS' \
+    test_usage "argument $args" \
+        'lint/json-keys [--keep-order | -- JQ_ARG...] < PATHS' \
         "$keys" "${words[@]}"
 done
 

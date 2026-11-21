@@ -111,13 +111,36 @@ lint/yaml-keys: checked 2 file(s)
 lint/yaml-keys: rewrite with yq -i -P '.'" \
     bash -c "printf '%s\0' top.yml flow.yml | $(printf %q "$keys") --keep-order"
 
+# After --, the arguments are yq's, and only others than the default's change
+# what a difference is called.
+printf 'a:\n    b: 1\n' >indented.yml
+quoted=$(printf %q "$keys")
+test_check args-pass 0 '' 'lint/yaml-keys: checked 1 file(s)' bash -c \
+    "printf '%s\0' indented.yml | $quoted -- -P -I4 'sort_keys(..)'"
+test_check args-fail 1 '--- sorted.yml
++++ sorted.yml (formatted)
+@@ -1,4 +1,4 @@
+ a: 1
+ b:
+-  c: 2
+-  d: 3
++    c: 2
++    d: 3' "lint/yaml-keys: sorted.yml: not as formatted
+lint/yaml-keys: checked 1 file(s)
+lint/yaml-keys: rewrite with yq -i -P -I4 'sort_keys(..)'" bash -c \
+    "printf '%s\0' sorted.yml | $quoted -- -P -I4 'sort_keys(..)'"
+test_check args-default 1 "$top_diff" "lint/yaml-keys: top.yml: keys not sorted
+lint/yaml-keys: checked 1 file(s)
+$hint" bash -c "printf '%s\0' top.yml | $quoted -- -P 'sort_keys(..)'"
+
 # An empty set is reported, not refused.
 test_check none 0 '' "lint/yaml-keys: checked 0 file(s)" "$keys"
 
 # A path given as an argument is refused, not ignored while stdin is read.
-for args in top.yml --sort-keys "--keep-order top.yml"; do
+for args in top.yml --sort-keys "--keep-order top.yml" --; do
     read -r -a words <<<"$args"
-    test_usage "argument $args" 'lint/yaml-keys [--keep-order] < PATHS' \
+    test_usage "argument $args" \
+        'lint/yaml-keys [--keep-order | -- YQ_ARG...] < PATHS' \
         "$keys" "${words[@]}"
 done
 

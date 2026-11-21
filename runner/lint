@@ -60,7 +60,8 @@ if defines yaml_files; then
 fi
 yaml+=("${workflow[@]}")
 echo "$prog: checking ${#yaml[@]} sorted YAML file(s)" >&2
-check yaml-keys "$lib/lint/yaml-keys" < <(printf '%s\0' "${yaml[@]}")
+check yaml-keys "$lib/lint/yaml-keys" -- "${yq_args[@]}" \
+    < <(printf '%s\0' "${yaml[@]}")
 if defines yaml_unsorted_files; then
     collect yaml_unsorted yaml_unsorted_files
     echo "$prog: checking ${#yaml_unsorted[@]} unsorted YAML file(s)" >&2
@@ -89,7 +90,8 @@ fi
 if defines json_files; then
     collect json json_files
     echo "$prog: checking ${#json[@]} JSON file(s)" >&2
-    check json-keys "$lib/lint/json-keys" < <(printf '%s\0' "${json[@]}")
+    check json-keys "$lib/lint/json-keys" -- "${jq_args[@]}" \
+        < <(printf '%s\0' "${json[@]}")
 fi
 
 if defines json_ordered_files; then

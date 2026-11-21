@@ -381,7 +381,7 @@ Other comment lines may sit between, so a `# hadolint ignore=` for the same `RUN
 
 ## Checking YAML and JSON key order
 
-`lint/yaml-keys` reads NUL-separated paths on stdin and, for each file whose keys are not in the order `yq -P 'sort_keys(..)'` writes, prints a unified diff from the file to its sorted form; it never writes, and fails where any file is unsorted or yq cannot read it. `lint/json-keys` does the same for JSON against `jq --sort-keys .`. With `--keep-order`, each checks a file whose key order is its own against the layout alone, `yq -P .` or `jq .`. A repository gives each the same paths as its formatter, or one rewrites a file the other never checks.
+`lint/yaml-keys` reads NUL-separated paths on stdin and, for each file whose keys are not in the order `yq -P 'sort_keys(..)'` writes, prints a unified diff from the file to its sorted form; it never writes, and fails where any file is unsorted or yq cannot read it. `lint/json-keys` does the same for JSON against `jq --sort-keys .`. With `--keep-order`, each checks a file whose key order is its own against the layout alone, `yq -P .` or `jq .`. After `--`, each checks against what its tool writes with the arguments given, which is how `runner/lint` passes `yq_args` and `jq_args`, so an override binds the check and the formatter alike. A repository gives each the same paths as its formatter, or one rewrites a file the other never checks.
 
 ```sh
 git ls-files -z '*.yml' '*.yaml' | lib/shell-common/lint/yaml-keys
