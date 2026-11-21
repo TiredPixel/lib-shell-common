@@ -31,14 +31,19 @@ record=$1
 dir=$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 top=$(git rev-parse --show-toplevel)
 
-# Exits 1 where checkout $1 differs from its HEAD or holds an untracked file git
-# does not ignore, its own submodules passed over, listing each path after $2
-# and then saying the words after it.
+# Exits 1 where checkout $1's index or working tree differs from its HEAD or it
+# holds an untracked file git does not ignore, its own submodules passed over,
+# listing each path once after $2 and then saying the words after it. The index
+# is read apart, since a staged edit whose file was put back matches HEAD in the
+# working tree, and docker/upgrade-commit's add would then discard it.
 refuse_changes() {
     local changes path
     changes=$(
-        git -C "$1" diff --name-only --ignore-submodules=all HEAD
-        git -C "$1" ls-files --others --exclude-standard
+        {
+            git -C "$1" diff --name-only --ignore-submodules=all HEAD
+            git -C "$1" diff --cached --name-only --ignore-submodules=all
+            git -C "$1" ls-files --others --exclude-standard
+        } | awk '!seen[$0]++'
     )
     [ -n "$changes" ] || return 0
     while IFS= read -r path; do

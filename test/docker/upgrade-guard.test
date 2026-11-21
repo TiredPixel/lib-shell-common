@@ -98,13 +98,20 @@ git -C "$w/app" add .github
 git -C "$w/app" commit -q -m proposal
 check skip-pending 0 '' --skip-pending tmp/upgrade.record
 
-# A staged, an unstaged and an untracked change are each refused, listed.
-for how in staged unstaged untracked; do
+# A staged change, one whose file was put back to HEAD's, an unstaged and an
+# untracked change are each refused, listed once.
+for how in staged staged-restored unstaged untracked; do
     fixture
     case $how in
     staged)
         printf 'more\n' >>"$w/app/notes.txt"
         git -C "$w/app" add notes.txt
+        want=notes.txt
+        ;;
+    staged-restored)
+        printf 'more\n' >>"$w/app/notes.txt"
+        git -C "$w/app" add notes.txt
+        git -C "$w/app" show HEAD:notes.txt >"$w/app/notes.txt"
         want=notes.txt
         ;;
     unstaged)
