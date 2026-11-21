@@ -123,7 +123,7 @@ run() {
         while IFS= read -r line <&3; do
             line=${line//"$w"/W}
             case $line in
-            upgrade-pull:* | submodule-init:* | +* | /* | W/*)
+            project/upgrade-pull:* | submodule-init:* | +* | /* | W/*)
                 test_fail "$1" "std$stream has a line of its own: $line"
                 ;;
             esac
@@ -468,6 +468,36 @@ if ! grep -qxF "project/upgrade-pull: HEAD is detached; check out a branch" \
     test_fail detached "stderr lacks the refusal: $(output)"
 fi
 
+# With no origin/HEAD to read, an origin whose HEAD is dangling or detached names
+# no default branch, so the run stops before anything moves, where it would take
+# the branch it is on for a feature branch and branch each listed project. The
+# refusal is the script's own line, so each case runs it apart from run.
+for how in dangling detached; do
+    fixture
+    printf 'lib\n' >"$w/app/.projects"
+    no_origin_head
+    upcommit app app2
+    upcommit lib lib2
+    if [ "$how" = dangling ]; then
+        git -C "$w/app.git" symbolic-ref HEAD refs/heads/gone
+    else
+        git -C "$w/app.git" update-ref --no-deref HEAD \
+            "$(git -C "$w/app.git" rev-parse main)"
+    fi
+    before=$(head_of "$w/app")
+    before_lib=$(head_of "$w/app/lib")
+    before_branch=$(branch_of "$w/app/lib")
+    rc=0
+    (cd "$w/app" && "$pull") >"$w/out" 2>"$w/err" || rc=$?
+    expect "origin-$how" status "$rc" 1
+    expect "origin-$how" stderr "$(<"$w/err")" \
+        "project/upgrade-pull: origin names no default branch"
+    expect "origin-$how" "app's commit" "$(head_of "$w/app")" "$before"
+    expect "origin-$how" "lib's commit" "$(head_of "$w/app/lib")" "$before_lib"
+    expect "origin-$how" "lib's branch" "$(branch_of "$w/app/lib")" \
+        "$before_branch"
+done
+
 # Outside any repository, git's own message stands alone, with no claim of a
 # detached HEAD.
 fixture
@@ -476,7 +506,7 @@ rc=0
 (cd "$w/none" && GIT_CEILING_DIRECTORIES=$w "$pull") >"$w/out" 2>"$w/err" ||
     rc=$?
 expect_failure no-repo
-if grep -q "^upgrade-pull:" "$w/err"; then
+if grep -q "^project/upgrade-pull:" "$w/err"; then
     test_fail no-repo "stderr has a line of its own: $(output)"
 fi
 

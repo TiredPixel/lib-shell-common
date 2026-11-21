@@ -166,6 +166,31 @@ if check no-tests "$t" 1 "gate: no test/**/*.test found"; then
     logged no-tests ""
 fi
 
+# A symbolic link to a test is a test, wherever its target lies.
+t=$(tree linked lib/real.test)
+mkdir -- "$t/test/a"
+ln -s -- ../../lib/real.test "$t/test/a/linked.test"
+if check linked "$t" 0 "gate: running 1 shell test(s)"$'\n'"said ./test/a/linked.test"$'\n'"gate: 1 of 1 passed"; then
+    ran linked test/a/linked.test
+fi
+
+# A dangling link fails rather than being skipped. bash's message for it carries
+# a line number of the script, so the case checks the summary apart from check.
+t=$(tree dangling test/a/one.test)
+ln -s -- missing.test "$t/test/a/gone.test"
+: >"$FAKE_LOG"
+rc=0
+env -C "$t" "$script" gate </dev/null >"$test_tmp/out" 2>"$test_tmp/err" ||
+    rc=$?
+if [ "$rc" != 1 ]; then
+    test_fail dangling "exit $rc, not 1"$'\n'"$(<"$test_tmp/err")"
+elif ! grep -qxF "gate: test/a/gone.test failed" "$test_tmp/err" ||
+    ! grep -qxF "gate: 1 of 2 passed" "$test_tmp/err"; then
+    test_fail dangling "stderr is:"$'\n'"$(<"$test_tmp/err")"
+else
+    ran dangling test/a/one.test
+fi
+
 # The gated cases hold each test until released, so once the script has started
 # some and the kernel shows it blocked waiting for a child, it has started every
 # test it will before one ends, and its children are exactly those, whatever the

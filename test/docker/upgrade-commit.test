@@ -290,6 +290,47 @@ for how in unstaged staged; do
     fi
 done
 
+# A record docker/upgrade could not have written is refused.
+n_bad=0
+for bad in $'/x\n/y\n' $'\nV 1 -> 2\n' $'/x\n\n' $'/x\n\nV 1 -> 2\n\nW 1 -> 2\n'; do
+    n_bad=$((n_bad + 1))
+    fixture
+    printf '%s' "$bad" >"$w/record"
+    case $n_bad in
+    4) said="docker/upgrade-commit: $w/record:4: a second blank line" ;;
+    *) said="docker/upgrade-commit: $w/record: not a record docker/upgrade --record writes" ;;
+    esac
+    test_check "bad-record-$n_bad" 1 '' "$said" \
+        env -C "$w/app" "$commit" "$w/record"
+    unchanged "bad-record-$n_bad"
+done
+
+# A missing record, or one that is no regular file, commits nothing.
+fixture
+test_check record-missing 1 '' \
+    "docker/upgrade-commit: $w/absent: no such file" \
+    env -C "$w/app" "$commit" "$w/absent" .
+unchanged record-missing
+mkdir "$w/dir"
+test_check record-directory 1 '' \
+    "docker/upgrade-commit: $w/dir: not a regular file" \
+    env -C "$w/app" "$commit" "$w/dir" .
+unchanged record-directory
+
+# Another file named as the record stays, and with . its contents reach neither
+# the index nor a commit.
+fixture
+printf 'TOKEN=secret\n' >"$w/app/.env"
+test_check not-a-record 1 '' \
+    "docker/upgrade-commit: .env: not a record docker/upgrade --record writes" \
+    env -C "$w/app" "$commit" .env .
+unchanged not-a-record
+if [ ! -f "$w/app/.env" ]; then
+    test_fail not-a-record "the file was removed"
+elif [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
+    test_fail not-a-record "the index is now: $(git -C "$w/app" diff --cached --name-only)"
+fi
+
 # A recorded path git cannot add fails the run, and the record stays. git's
 # words vary by release, so only the path is matched.
 fixture

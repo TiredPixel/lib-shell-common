@@ -20,11 +20,15 @@ usage() {
 record=$1
 
 # A pipeline rather than a process substitution, so pipefail sees git's status,
-# and lastpipe so mapfile runs in this shell.
+# and lastpipe so mapfile runs in this shell. The index is read apart, since a
+# staged edit whose file was put back matches HEAD in the working tree.
 shopt -s lastpipe
 top=$(git rev-parse --show-toplevel)
-git -C "$top" diff --name-only -z --no-renames --ignore-submodules=all HEAD |
-    mapfile -t -d '' changed
+{
+    git -C "$top" diff --name-only -z --no-renames --ignore-submodules=all HEAD
+    git -C "$top" diff --cached --name-only -z --no-renames \
+        --ignore-submodules=all
+} | mapfile -t -d '' changed
 if [ ${#changed[@]} -gt 0 ]; then
     git -C "$top" restore --source=HEAD --staged --worktree -- \
         "${changed[@]/#/:(literal)}"

@@ -4,9 +4,9 @@
 # in anywhere. The fake docker logs each call's arguments, then the password it
 # read on stdin, a line each. The fake git puts HEAD on branch FAKE_BRANCH, a/b
 # unless a case says otherwise, "HEAD" where that is the detached state. Each
-# case writes .dockerrepo and checks the server docker login is given, or that
-# none is, which is Docker Hub, or that the run is refused before docker is
-# called.
+# case writes .dockerrepo, or leaves it out, and checks the server docker login
+# is given, or that none is, which is Docker Hub, or that the run is refused
+# before docker is called.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -24,12 +24,15 @@ export FAKE_LOG=$test_tmp/docker.calls
 : >"$FAKE_LOG"
 export DOCKER_USERNAME=u DOCKER_PASSWORD=p FAKE_BRANCH=a/b
 
-# Runs docker/login with .dockerrepo holding $3 and the environment after $5,
-# and checks its status is $2, docker was called as $4 has it, its stdout is
-# empty and its stderr is want_err.
+# Runs docker/login with .dockerrepo holding $3, or with none where $3 is -,
+# and the environment after $5, and checks its status is $2, docker was called
+# as $4 has it, its stdout is empty and its stderr is want_err.
 check() {
     local calls=$4
-    echo "$3" >"$test_tmp/project/.dockerrepo"
+    rm -f -- "$test_tmp/project/.dockerrepo"
+    if [ "$3" != - ]; then
+        echo "$3" >"$test_tmp/project/.dockerrepo"
+    fi
     test_check "$1" "$2" '' "$want_err" env -C "$test_tmp/project" \
         -u CIRCLE_BRANCH -u CIRCLE_TAG -u GITHUB_HEAD_REF -u GITHUB_REF_NAME \
         "${@:5}" "$dir/login"
@@ -58,7 +61,16 @@ logs_in hub-dotted-name a.b ""
 # does not stop it.
 logs_in detached ghcr.io/o/n ghcr.io FAKE_BRANCH=HEAD
 
-# A missing credential stops the run before docker is called.
+# A missing or empty .dockerrepo, or a missing credential, stops the run before
+# docker is called.
+no_repo="docker/login: REPO: .dockerrepo missing or empty; write the image"
+no_repo+=" repository, such as ghcr.io/OWNER/NAME, to it"
+want_err="cat: .dockerrepo: No such file or directory"$'\n'"$no_repo"
+check missing-dockerrepo 1 - ""
+want_err=$no_repo
+check empty-dockerrepo 1 "" ""
+check blank-dockerrepo 1 "   " ""
+
 for var in DOCKER_USERNAME DOCKER_PASSWORD; do
     want_err="docker/login: $var: not set or empty; export the registry credentials"
     want_err+=" to log in with"

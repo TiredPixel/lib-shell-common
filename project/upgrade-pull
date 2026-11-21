@@ -55,6 +55,10 @@ else
             ;;
         esac
     done 3<<<"$heads"
+    if [ -z "$default" ]; then
+        echo "$prog: origin names no default branch" >&2
+        exit 1
+    fi
 fi
 
 # --ff-only here and below, whatever the caller's pull.rebase or pull.ff: a

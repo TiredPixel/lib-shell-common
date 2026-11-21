@@ -578,6 +578,10 @@ FAKE_REDIRECT=https://github.com/o/p/releases check arg-no-release \
 FAKE_REDIRECT='' check arg-no-redirect $'# TRACK ARG V github:o/p\nARG V=1\n' 1 "no redirect" \
     $'# TRACK ARG V github:o/p\nARG V=1'
 
+FAKE_REDIRECT=https://github.com/o/p/releases/tag/nightly check arg-not-a-version \
+    $'# TRACK ARG V github:o/p\nARG V=1\n' 1 "tag nightly is not a version" \
+    $'# TRACK ARG V github:o/p\nARG V=1'
+
 # The ARG's lookup fails after the FROM has resolved, and neither is written.
 FAKE_CURL=fail check nothing-written-on-failure \
     $'# TRACK FROM r/x:1\n# TRACK ARG V github:o/p\nFROM r/x:1\nARG V=1\n' 6 "" \
@@ -1020,6 +1024,35 @@ flow wf-names-nothing "$df" "$wf" 1 "TRACK USES o/r@v1 names no uses: o/r line" 
 
 wf=$(printf '%s\n' "# TRACK USES o/r@v1" "# TRACK USES o/r@v2" "  - uses: o/r@v0")
 flow wf-pinned-twice "$df" "$wf" 1 "TRACK USES o/r is pinned twice" "$df" "$wf" "fake curl:"
+
+# A version comment above, in any number of words and across blank lines.
+n=0
+for above in "  # v1" "  #v1"$' \t' "  # o/r v1.2.3" "  # 1.2"$'\n' $'  # v1\n\n \t'; do
+    n=$((n + 1))
+    wf=$(printf '%s\n' "# TRACK USES o/r@v1" "$above" "  - uses: o/r@$c1")
+    flow "wf-comment-above-$n" "$df" "$wf" 1 \
+        "uses: o/r@$c1 has a version comment above it; TRACK USES o/r@v1 says what it follows" \
+        "$df" "$wf" "fake curl:"
+done
+
+# A comment above that names no version stays, as the shipped workflows' do.
+wf=$(printf '%s\n' "# TRACK USES o/r@v1" \
+    "  # yamllint disable-line rule:line-length" "  - uses: o/r@v0")
+flow wf-comment-above-other "$df" "$wf" 0 "" "$dfafter" "$(printf '%s\n' \
+    "# TRACK USES o/r@v1" "  # yamllint disable-line rule:line-length" \
+    "  - uses: o/r@$c3")"
+
+# A uses: on the first line, or with only blank lines above it, has no line
+# above it, whatever the last line holds, an indented version comment included.
+n=0
+for lead in "" $'\n \n'; do
+    for rest in $'\n  # v1\n# TRACK USES o/r@v1' $'\n# TRACK USES o/r@v1\n  # v1'; do
+        n=$((n + 1))
+        wf=$lead$'  - uses: o/r@v0'$rest
+        flow "wf-first-line-$n" "$df" "$wf" 0 "" "$dfafter" \
+            "$lead"$'  - uses: o/r@'"$c3$rest"
+    done
+done
 
 # OWNER/REPO is matched in any case, each uses: keeping its own.
 wf=$(printf '%s\n' "# TRACK USES actions/checkout@v7" "  - uses: Actions/Checkout@v0" \
@@ -1475,6 +1508,89 @@ rc=0
 if [ "$rc" != 0 ] || [ -s "$test_tmp/out" ] ||
     [ "$(<"$test_tmp/err")" != "docker/upgrade: $f/action.yml: no # TRACK USES line, so there is nothing to re-pin" ]; then
     test_fail in-place-action-no-track "exit $rc: $(<"$test_tmp/err")"
+fi
+
+# A file that would be written in place but links to a live workflow, under any
+# name, directly or through another link, is refused before any lookup, and the
+# workflow is left alone; a link to a workflows directory outside .github is
+# written through as any other.
+l=$test_tmp/inplace-link
+mkdir -p "$l/.github/workflows" "$l/x" "$l/workflows"
+printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" >"$l/.github/workflows/w.yml"
+ln -s ../.github/workflows/w.yml "$l/x/w.yml"
+ln -s ../.github/workflows/w.yml "$l/x/action.yml"
+ln -s w.yml "$l/x/chain.yml"
+for name in w.yml action.yml chain.yml; do
+    rc=0
+    "$upgrade" --workflows "$l/x/$name" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != 1 ] || [ -s "$test_tmp/out" ] ||
+        [ "$(<"$test_tmp/err")" != "docker/upgrade: $l/x/$name: links to $real/inplace-link/.github/workflows/w.yml, a workflow, which is never written; name the workflow itself to have it proposed" ]; then
+        test_fail in-place-link "$name: exit $rc: $(<"$test_tmp/err")"
+    elif [ "$(<"$l/.github/workflows/w.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@v0' ] ||
+        [ -e "$l/.github/workflows.new" ]; then
+        test_fail in-place-link "$name: the workflow was written or proposed"
+    fi
+done
+printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" >"$l/workflows/w.yml"
+ln -s ../workflows/w.yml "$l/x/other.yml"
+rc=0
+"$upgrade" --workflows "$l/x/other.yml" >"$test_tmp/out" 2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 0 ] || [ -s "$test_tmp/out" ] || ! [ -L "$l/x/other.yml" ] ||
+    [ "$(<"$l/workflows/w.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@'"$c3" ]; then
+    test_fail in-place-link-other "exit $rc: $(<"$test_tmp/err")"
+fi
+
+# A .github/workflows that is itself a link is refused, and what it holds left.
+ld=$test_tmp/inplace-dir-link
+mkdir -p "$ld/.github" "$ld/ci"
+printf '%s\n' "# TRACK USES o/r@v1" "  - uses: o/r@v0" >"$ld/ci/w.yml"
+ln -s ../ci "$ld/.github/workflows"
+rc=0
+"$upgrade" --workflows "$ld/.github/workflows/w.yml" >"$test_tmp/out" \
+    2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 1 ] || [ -s "$test_tmp/out" ] ||
+    [ "$(<"$test_tmp/err")" != "docker/upgrade: $ld/.github/workflows/w.yml: is in a .github/workflows that links to $real/inplace-dir-link/ci, and a workflow is never written" ] ||
+    [ "$(<"$ld/ci/w.yml")" != $'# TRACK USES o/r@v1\n  - uses: o/r@v0' ]; then
+    test_fail in-place-dir-link "exit $rc: $(<"$test_tmp/err")"
+fi
+
+# Every FREEZE line, exact or mistyped, in every file named is listed as grep
+# lists it, before anything is looked up or written.
+f=$test_tmp/freeze
+mkdir -p "$f/.github/workflows"
+fdf=$'# FROMFREEZE r/x:1\nFROM r/x:1\n  #argfreeze V github:o/p\nARG V=1\n# TRACK ARG W github:o/p\nARG W=1\n'
+fdf+=$'# ARG FREEZE V github:o/p\n# arg_freeze V github:o/p\n#ARGS-FREEZE V github:o/p\n# ARGFREEZER notes\n'
+fwf=$'steps:\n# USESFREEZE o/r@v1\n  - uses: o/r@v0\n#UsesFreeze o/a@v2\n# uses - freeze o/r@v1\n'
+printf '%s' "$fdf" >"$f/Dockerfile"
+printf '%s' "$fwf" >"$f/.github/workflows/w.yml"
+said=$(printf '%s\n' "Dockerfile:1:# FROMFREEZE r/x:1" "Dockerfile:3:  #argfreeze V github:o/p" \
+    "Dockerfile:7:# ARG FREEZE V github:o/p" "Dockerfile:8:# arg_freeze V github:o/p" \
+    "Dockerfile:9:#ARGS-FREEZE V github:o/p" \
+    ".github/workflows/w.yml:2:# USESFREEZE o/r@v1" ".github/workflows/w.yml:4:#UsesFreeze o/a@v2" \
+    ".github/workflows/w.yml:5:# uses - freeze o/r@v1" \
+    "docker/upgrade: FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES")
+rc=0
+(cd "$f" && "$upgrade" Dockerfile .github/workflows/w.yml) >"$test_tmp/out" \
+    2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 1 ] || [ "$(<"$test_tmp/err")" != "$said" ]; then
+    test_fail freeze "exit $rc, stderr: $(<"$test_tmp/err")"
+elif [ -s "$test_tmp/out" ]; then
+    test_fail freeze "something was looked up: $(<"$test_tmp/out")"
+elif [ "$(<"$f/Dockerfile")" != "$(printf '%s' "$fdf")" ] ||
+    [ "$(<"$f/.github/workflows/w.yml")" != "$(printf '%s' "$fwf")" ] ||
+    [ -e "$f/.github/workflows.new" ]; then
+    test_fail freeze "a file was written"
+fi
+
+# A FREEZE line is still listed, from the workflows alone.
+printf '%s\n' "# USESFREEZE" "  - uses: o/r@v0" >"$f/.github/workflows/4.yml"
+said=$(printf '%s\n' ".github/workflows/4.yml:1:# USESFREEZE" \
+    "docker/upgrade: FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES")
+rc=0
+(cd "$f" && "$upgrade" --workflows .github/workflows/4.yml) >"$test_tmp/out" \
+    2>"$test_tmp/err" || rc=$?
+if [ "$rc" != 1 ] || [ "$(<"$test_tmp/err")" != "$said" ]; then
+    test_fail workflows-only-freeze "exit $rc: $(<"$test_tmp/err")"
 fi
 
 # Progress goes to stderr, a line naming what each pin resolved to and each file
@@ -2130,11 +2246,24 @@ for kind in npm pypi; do
 done
 # What npm gives that is not the lock asked for fails the run, writing nothing.
 printf 'not JSON\n' >"$test_tmp/npm-bad.json"
-lockcase lock-npm-gives "$ndf"
-FAKE_NPM_LOCK=$test_tmp/npm-bad.json lockgo
-if expect lock-npm-gives 1 \
-    "TRACK LOCK js: lock-resolve gave no package-lock.json listing packages, each with a version"; then
-    [ ! -e "$d/Dockerfile.lock" ] || test_fail lock-npm-gives "a lock was written"
+npm_lock "$test_tmp/npm-old.json" n-d node_modules/n-d@3.0.0
+npm_lock "$test_tmp/npm-missing.json" n-d node_modules/dep-b@1.0.0
+n=0
+for data in "npm-bad|TRACK LOCK js: lock-resolve gave no package-lock.json listing packages, each with a version" \
+    "npm-old|TRACK LOCK js: npm locked n-d at 3.0.0, not 3.4.5" \
+    "npm-missing|TRACK LOCK js: npm locked n-d at nothing, not 3.4.5"; do
+    n=$((n + 1))
+    lockcase "lock-npm-gives-$n" "$ndf"
+    FAKE_NPM_LOCK=$test_tmp/${data%%|*}.json lockgo
+    if expect "lock-npm-gives-$n" 1 "${data#*|}"; then
+        [ ! -e "$d/Dockerfile.lock" ] || test_fail "lock-npm-gives-$n" "a lock was written"
+    fi
+done
+# A version held back is held exactly, so one npm reads as a range fails.
+lockcase lock-npm-range $'# TRACK FROM r/x:1\n# TRACK LOCK js npm:n-d@3.4\nFROM r/x@'"$new"
+lockgo
+if expect lock-npm-range 1 "TRACK LOCK js: npm locked n-d at 3.4.5, not 3.4"; then
+    [ ! -e "$d/Dockerfile.lock" ] || test_fail lock-npm-range "a lock was written"
 fi
 n=0
 for data in '{}' '<html>'; do
@@ -2281,6 +2410,45 @@ lockgo
 if expect lock-link-other-unrecorded 0 ""; then
     holds lock-link-other-unrecorded "$d/lib/Dockerfile" $'# TRACK FROM r/x:1\nFROM r/x@'"$new"
 fi
+
+# A lock's directory, its NAME directory or a lock file that is a symbolic link
+# is refused before anything is looked up, and what it names is left alone.
+lockcase lock-file-link "$pdf"
+mkdir -p "$d/Dockerfile.lock/m" "$d/shared"
+printf 'm-d==1.0 --hash=sha256:%s\n' "$hd" >"$d/shared/req.txt"
+ln -s ../../shared/req.txt "$d/Dockerfile.lock/m/requirements.txt"
+lockgo
+if expect lock-file-link 1 "docker/upgrade: $d/Dockerfile.lock/m/requirements.txt: is a symbolic link, which a lock is never written through" \
+    "fake "; then
+    holds lock-file-link "$d/shared/req.txt" "m-d==1.0 --hash=sha256:$hd"
+fi
+rm -- "$d/Dockerfile.lock/m/requirements.txt"
+rmdir -- "$d/Dockerfile.lock/m"
+ln -s ../shared "$d/Dockerfile.lock/m"
+lockgo
+expect lock-name-link 1 "docker/upgrade: $d/Dockerfile.lock/m: is a symbolic link" "fake " || [ $? -eq 1 ]
+rm -- "$d/Dockerfile.lock/m"
+rmdir -- "$d/Dockerfile.lock"
+ln -s shared "$d/Dockerfile.lock"
+lockgo
+expect lock-dir-link 1 "docker/upgrade: $d/Dockerfile.lock: is a symbolic link" "fake " || [ $? -eq 1 ]
+
+# Nor is a lock written in a repository nested in the Dockerfile's, such as a
+# submodule, at its NAME directory or at the lock's directory.
+lockcase lock-name-nested "$pdf"
+commit_all "$d"
+mkdir -p "$d/Dockerfile.lock/m"
+"$REAL_GIT" -C "$d/Dockerfile.lock/m" init -q
+lockgo
+if expect lock-name-nested 1 "docker/upgrade: $d/Dockerfile.lock/m: is in the repository $real/lock-name-nested/Dockerfile.lock/m, not $real/lock-name-nested, which a lock is never written in" \
+    "fake "; then
+    [ ! -e "$d/Dockerfile.lock/m/requirements.txt" ] ||
+        test_fail lock-name-nested "the lock was written"
+fi
+rm -rf -- "$d/Dockerfile.lock/m/.git"
+"$REAL_GIT" -C "$d/Dockerfile.lock" init -q
+lockgo
+expect lock-dir-nested 1 "docker/upgrade: $d/Dockerfile.lock: is in the repository $real/lock-name-nested/Dockerfile.lock, not $real/lock-name-nested" "fake " || [ $? -eq 1 ]
 
 # lock-resolve refuses what docker/upgrade would never give it.
 for given in "" pypi "npm a" "npm a b c" "npm .a b" "gem a"; do

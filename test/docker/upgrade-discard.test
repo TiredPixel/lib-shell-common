@@ -81,6 +81,13 @@ test_check submodule 0 '' "Submodule path 'lib': checked out '$recorded'" \
     env -C "$w/app" "$discard" tmp/upgrade.record lib
 discarded submodule "$recorded"
 
+# A staged edit whose file was put back to HEAD's goes too.
+fixture
+git -C "$w/app" show HEAD:notes.txt >"$w/app/notes.txt"
+test_check staged-restored 0 '' '' \
+    env -C "$w/app" "$discard" tmp/upgrade.record
+discarded staged-restored "$(git -C "$w/app/lib" rev-parse HEAD)"
+
 # A missing record lists nothing to clean, so what it would have listed stays.
 fixture
 rm "$w/app/tmp/upgrade.record"

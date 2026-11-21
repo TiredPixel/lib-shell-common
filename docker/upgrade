@@ -40,7 +40,9 @@
 #       [A-Za-z0-9_][A-Za-z0-9_.-]*, and a line names one registry, each
 #       PACKAGE once, compared as pip or npm would. Nothing of the lock already
 #       there is kept, so an edit made to it by hand is undone, as the diff
-#       shows
+#       shows. BASENAME.lock, its NAME directory and the lock's files must not
+#       be symbolic links, nor either directory in a submodule or another
+#       repository nested there, since either would carry the write elsewhere
 #
 # A TRACK LOCK with stage=STAGE resolves in the image of the FROM line naming
 # that stage, AS STAGE, both read in any case, as Docker reads them: the digest
@@ -88,11 +90,12 @@
 # OWNER/REPO is matched in any case, as GitHub reads it. A uses: that no
 # TRACK USES covers is left alone, as are ./PATH and docker://. A covered uses:
 # line is rewritten as uses: OWNER/REPO[/PATH]@COMMIT, so a comment at its end
-# goes. Lines are read as text, not parsed as YAML, so a uses: line inside a
-# block scalar, such as a run: body, is re-pinned too, and any other line
-# holding uses:, a comment line aside, that names a covered OWNER/REPO fails
-# rather than being passed over. Workflows and other files are re-pinned only
-# when named, as by Makefile's upgrade-pre.
+# goes; one with a comment naming a version on the nearest line above, at its
+# indent, fails, since that comment would go stale. Lines are read as text, not
+# parsed as YAML, so a uses: line inside a block scalar, such as a run: body, is
+# re-pinned too, and any other line holding uses:, a comment line aside, that
+# names a covered OWNER/REPO fails rather than being passed over. Workflows and
+# other files are re-pinned only when named, as by Makefile's upgrade-pre.
 #
 # A workflow, a file in a .github/workflows directory, is never written, since
 # what may change one is not always what runs this: what it becomes, where
@@ -100,13 +103,18 @@
 # directory beside that one, made where it is missing, to be reviewed and moved
 # into place. A proposal already there for a named workflow fails the run. Any
 # other file named is written in place, through any symbolic link, as the
-# Dockerfile is, since nothing guards it as workflows are guarded. One holding
-# no TRACK USES line fails the run, as named by mistake, unless it is an action,
-# named action.yml or action.yaml as GitHub reads an action's metadata, which
-# may use no other action.
+# Dockerfile is, since nothing guards it as workflows are guarded, except that a
+# link resolving to a file in a .github/workflows directory, whatever its name,
+# fails the run, since writing through it would change that workflow. One
+# holding no TRACK USES line fails the run, as named by mistake, unless it is an
+# action, named action.yml or action.yaml as GitHub reads an action's metadata,
+# which may use no other action.
 #
 # A comment line that reads as a mistyped TRACK line fails, as does a TRACK line
-# of a kind its file does not hold.
+# of a kind its file does not hold. Before anything else is read, # FROMFREEZE,
+# # ARGFREEZE and # USESFREEZE lines, in any spacing or case, fail the run, since
+# a pin left in that retired form would stop moving with no sign: grep lists
+# every one in every file named.
 #
 # FROM and ARG are matched in any case, as Docker reads them, and on logical
 # lines, as docker/dockerfile-parse reads them: continued lines joined at the
@@ -218,11 +226,26 @@ for w in "${!workflows[@]}"; do
     parent=$(readlink -f -- "$(dirname -- "$workflow")")
     if [ "${parent##*/}" != workflows ] ||
         [ "$(basename -- "${parent%/*}")" != .github ]; then
+        # A .github/workflows that is itself a link still holds live workflows.
+        named=$(dirname -- "$workflow")
+        if [ "${named##*/}" = workflows ] &&
+            [ "$(basename -- "$(dirname -- "$named")")" = .github ]; then
+            refuse "$workflow" "is in a .github/workflows that links to" \
+                "$parent, and a workflow is never written"
+        fi
         case ${workflow##*/} in
         action.yml | action.yaml) kind_of[w]="an action" ;;
         *) kind_of[w]="a file written in place" ;;
         esac
         proposals[w]=$(readlink -f -- "$workflow")
+        # Written through any link, so one into a workflows directory would
+        # change the live workflow.
+        parent=${proposals[$w]%/*}
+        if [ "${parent##*/}" = workflows ] &&
+            [ "$(basename -- "${parent%/*}")" = .github ]; then
+            refuse "$workflow" "links to ${proposals[$w]}, a workflow, which" \
+                "is never written; name the workflow itself to have it proposed"
+        fi
         continue
     fi
     kind_of[w]="a workflow"
@@ -232,6 +255,29 @@ for w in "${!workflows[@]}"; do
             "pending; approve or remove it first"
     fi
 done
+
+# A file that is missing or no regular file is left to the checks that name it.
+# grep failing otherwise than by finding nothing stops the run with its status.
+inputs=()
+for input in "$dockerfile" "${workflows[@]}"; do
+    if [ -n "$input" ] && [ -f "$input" ]; then
+        inputs+=("$input")
+    fi
+done
+if [ ${#inputs[@]} -gt 0 ]; then
+    status=0
+    grep -Hn -i -E -e \
+        '^[[:space:]]*#[[:space:]]*(from|args?|uses)[-_[:space:]]*freeze([^[:alnum:]_]|$)' \
+        -- "${inputs[@]}" >&2 || status=$?
+    case $status in
+    0)
+        say "FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES"
+        exit 1
+        ;;
+    1) ;;
+    *) exit "$status" ;;
+    esac
+fi
 
 if [ -n "$dockerfile" ]; then
     # A symbolic link is followed, so the link stays.
@@ -768,6 +814,12 @@ declare -A was_roots=()
 declare -A was_unread=()
 declare -A versions=()
 locked="^([a-z0-9]([a-z0-9-]*[a-z0-9])?)==($pypi_version)( --hash=sha256:[0-9a-f]{64})+\$"
+# The repository holding the Dockerfile as named, where there is one.
+home=""
+if [ ${#lock_names[@]} -gt 0 ]; then
+    home=$(git -C "$(dirname -- "$dockerfile")" rev-parse --show-toplevel \
+        2>/dev/null) || home=""
+fi
 for name in "${lock_names[@]}"; do
     was_keys[$name]=""
     was_roots[$name]=""
@@ -777,6 +829,23 @@ for name in "${lock_names[@]}"; do
         files=(package.json package-lock.json)
     fi
     lock_files[$name]=${files[*]}
+    # A link would carry the write out of the lock's directory, even out of the
+    # repository, so none is followed.
+    for path in "$lockdir" "$lockdir/$name" "${files[@]/#/$lockdir/$name/}"; do
+        [ ! -L "$path" ] ||
+            refuse "$path" "is a symbolic link, which a lock is never written" \
+                "through"
+    done
+    # Nor is a lock written in a submodule or another repository nested there.
+    for path in "$lockdir" "$lockdir/$name"; do
+        if [ -z "$home" ] || [ ! -d "$path" ]; then
+            continue
+        fi
+        there=$(git -C "$path" rev-parse --show-toplevel)
+        [ "$there" = "$home" ] ||
+            refuse "$path" "is in the repository $there, not $home, which a" \
+                "lock is never written in"
+    done
     lock_path=$(readlink -m -- "$lockdir/$name")
     for file in "${files[@]}"; do
         lock_file[$name$'\t'$file]=$lock_path/$file
@@ -835,6 +904,8 @@ trackuses='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([A-Za-z0-9._+-]+)$'
 uses='^([[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+)([^[:space:]#][^[:space:]]*)'
 uses+='([[:space:]]+#.*)?[[:space:]]*$'
 action='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(/[^@[:space:]]+)?@[^@[:space:]]+$'
+# A comment naming a version, such as v7 or 7.0.1, in any number of words.
+version_comment='(^|[^[:alnum:]])(v[0-9]+|[0-9]+\.[0-9]+)([^[:alnum:]]|$)'
 for w in "${!workflows[@]}"; do
     workflow=${workflows[$w]}
     mapfile -t wlines <"$workflow"
@@ -885,6 +956,17 @@ for w in "${!workflows[@]}"; do
                 key=${BASH_REMATCH[1],,}
                 [ -n "${follows[$key]+set}" ] || continue
                 pin=${named[$key]}@${follows[$key]}
+                indent=${head%%[^[:space:]]*}
+                j=$((i - 1))
+                while [ "$j" -ge 0 ] && [[ "${wlines[j]}" =~ ^[[:space:]]*$ ]]; do
+                    j=$((j - 1))
+                done
+                if [ "$j" -ge 0 ] && [[ "${wlines[j]}" == "$indent#"* ]] &&
+                    [[ "${wlines[j]}" =~ $version_comment ]]; then
+                    refuse_at "$workflow" $((i + 1)) "uses: $reference has a" \
+                        "version comment above it; TRACK USES $pin says what" \
+                        "it follows"
+                fi
                 covers[$key]=1
                 w_of+=("$w")
                 i_of+=("$i")
@@ -964,6 +1046,8 @@ for data in "${args[@]}"; do
                 "release: ${url:-no redirect}"
         tag=${BASH_REMATCH[1]}
         version=${tag#v}
+        [[ "$version" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]] ||
+            die "TRACK ARG $name: $project's latest tag $tag is not a version"
         ;;
     sha256:*) continue ;;
     esac
@@ -1188,6 +1272,12 @@ for name in "${lock_names[@]}"; do
     read_npm_lock "$lock" ||
         die "TRACK LOCK $name: lock-resolve gave no package-lock.json listing" \
             "packages, each with a version"
+    for ((d = 0; d < ${#deps[@]}; d += 2)); do
+        path=node_modules/${deps[d]}
+        [ "${versions[$path]:-}" = "${deps[d + 1]}" ] ||
+            die "TRACK LOCK $name: npm locked ${deps[d]} at" \
+                "${versions[$path]:-nothing}, not ${deps[d + 1]}"
+    done
     for path in "${!versions[@]}"; do
         now_v[$name$'\t'$path]=${versions[$path]}
         now_keys[$name]+=" $path"

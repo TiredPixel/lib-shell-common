@@ -24,6 +24,14 @@ usage() {
 record=$1
 extra=("${@:2}")
 
+if [ ! -e "$record" ]; then
+    echo "$prog: $record: no such file" >&2
+    exit 1
+elif [ ! -f "$record" ]; then
+    echo "$prog: $record: not a regular file" >&2
+    exit 1
+fi
+
 nothing() {
     echo "$prog: $record: nothing moved, so there is nothing to commit" >&2
     rm -- "$record"
@@ -31,7 +39,8 @@ nothing() {
 }
 
 # Empty where no pin moved; else the paths written, then a blank line, then the
-# moves.
+# moves. Anything else is refused before it is staged or removed, since RECORD
+# can name any file, and its lines would be taken as paths and a commit's body.
 mapfile -t lines <"$record"
 paths=()
 moves=()
@@ -45,6 +54,16 @@ if [ ${#lines[@]} -gt 0 ]; then
     done
     paths=("${lines[@]:0:${blank:-0}}")
     moves=("${lines[@]:${blank:-0}+1}")
+    if [ -z "$blank" ] || [ ${#paths[@]} -eq 0 ] || [ ${#moves[@]} -eq 0 ]; then
+        echo "$prog: $record: not a record docker/upgrade --record writes" >&2
+        exit 1
+    fi
+    for i in "${!moves[@]}"; do
+        if [ -z "${moves[$i]}" ]; then
+            echo "$prog: $record:$((blank + i + 2)): a second blank line" >&2
+            exit 1
+        fi
+    done
 fi
 if [ ${#paths[@]} -eq 0 ] && [ ${#extra[@]} -eq 0 ]; then
     nothing

@@ -32,7 +32,10 @@ logs=$(mktemp -d)
 trap 'rm -rf -- "$logs"' EXIT
 
 if [ ${#tests[@]} -eq 0 ]; then
-    find test -type f -name '*.test' -print0 | LC_ALL=C sort -z >"$logs/list"
+    # A link is listed whatever its target, so a dangling one fails when run
+    # rather than passing unseen.
+    find test \( -type f -o -type l \) -name '*.test' -print0 |
+        LC_ALL=C sort -z >"$logs/list"
     mapfile -t -d '' tests <"$logs/list"
     if [ ${#tests[@]} -eq 0 ]; then
         echo "$prog: no test/**/*.test found" >&2
