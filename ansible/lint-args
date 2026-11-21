@@ -1,25 +1,18 @@
 # shellcheck shell=bash
-#
-# Sourced by ansible/format and ansible/test, so the writing and checking passes
-# take the same options and cannot disagree. Sets no shell options, since it
-# runs under its caller's.
 
-# Read only by the scripts that source this file, so it looks unused here.
-# shellcheck disable=SC2034
+# Sets no shell options, since it runs under its caller's.
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
 ansible_lint_args=(
-    # No installing requirements.yml, no refreshing schemas and, from
-    # ansible-lint 24.9.0, no asking GitHub for a newer ansible-lint, so a run
-    # reaches no network.
+    # A run reaches no network: no requirements.yml install, schema refresh or
+    # version check.
     --offline
-    # The scripts run from the repository's root. Without this, ansible-lint
-    # looks upward for .git, .hg or its own config file and, where a container's
-    # copy or mount has none, takes / as the project root. Its cache goes in the
-    # project root's .ansible/ where that is writable, and no option moves it.
+    # Without it, ansible-lint looks upward for .git and, in a container's copy
+    # or mount of the tree, which has none, takes / as the project root.
     --project-dir .
-    # Warnings fail as errors do.
+    # --strict, so a warning fails as an error does.
     --strict
-    # lib/ holds submodules, which are linted in their own repositories; vault
-    # files are encrypted, so there is nothing to lint in them.
+    # Submodules are linted in their own repositories, and vault files are
+    # encrypted.
     --exclude lib/
     --exclude 'group_vars/*/*vault.yml'
 )

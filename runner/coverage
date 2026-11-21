@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+#
+# Runs the shell tests, or those named, under kcov, measuring the repository's
+# own scripts, and writes the report to stdout as a tar, since the container it
+# runs in mounts nothing; the tar is written whether or not the tests pass, and
+# the exit status is theirs. --extract, on the host, reads such a tar from stdin
+# and puts it in place of tmp/coverage/ only once it is wholly unpacked, so a
+# run cut short leaves the last report. Runs from the root of the repository.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=${0##*/}
+lib=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+out=$PWD/tmp/coverage
+
+usage() {
+    echo "Usage: $prog [test/PATH.test...]" >&2
+    echo "       $prog --extract" >&2
+    exit 2
+}
+
+remove() {
+    if [ -e "$1" ]; then
+        echo "$prog: removing $1" >&2
+        rm -rf -- "${1:?}"
+    fi
+}
+
+if [ "${1-}" = --extract ]; then
+    [ $# -eq 1 ] || usage
+    remove "$out.new"
+    mkdir -p -- "$out.new"
+    # index.html is the last member the tar holds, so its presence shows the
+    # stream ended where it should.
+    if ! tar -x --no-same-owner -f - -C "$out.new" ||
+        ! [ -f "$out.new/index.html" ]; then
+        echo "$prog: no complete report on stdin;" \
+            "tmp/coverage/ is left as it was" >&2
+        remove "$out.new"
+        exit 1
+    fi
+    remove "$out"
+    mv -- "$out.new" "$out"
+    echo "$prog: report written to tmp/coverage/index.html" >&2
+    exit 0
+fi
+
+# shellcheck source=SCRIPTDIR/../testing/common
+source "$lib/testing/common"
+for t in "$@"; do
+    is_shell_test "$t" || usage
+done
+# shellcheck source=bin/settings
+source bin/settings
+
+# The tar alone goes to stdout.
+exec 3>&1 1>&2
+
+COVERAGE_RUN_DIR=$(mktemp -d)
+trap 'rm -rf -- "$COVERAGE_RUN_DIR"' EXIT
+export COVERAGE_ROOT=$PWD COVERAGE_RUN_DIR
+report=$COVERAGE_RUN_DIR/report
+mkdir -- "$COVERAGE_RUN_DIR/bin" "$COVERAGE_RUN_DIR/python" "$report"
+
+# kcov traces each bash the tests start through BASH_ENV, with a PS4 naming
+# BASH_SOURCE, which a bash -c body lacks, so a body under set -u would fail on
+# its first traced command; kcov could not name the body's lines anyway. The
+# bash first on PATH runs each such body without BASH_ENV.
+bash=$(command -v bash)
+cat >"$COVERAGE_RUN_DIR/bin/bash" <<EOF
+#!$bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+if [ "\${1-}" = -c ]; then
+    unset BASH_ENV
+fi
+exec $(printf %q "$bash") "\$@"
+EOF
+chmod +x -- "$COVERAGE_RUN_DIR/bin/bash"
+PATH=$COVERAGE_RUN_DIR/bin:$PATH
+
+kcov_args=()
+if declare -F coverage_kcov_args >/dev/null; then
+    coverage_kcov_args >"$COVERAGE_RUN_DIR/kcov-args"
+    mapfile -t -d '' kcov_args <"$COVERAGE_RUN_DIR/kcov-args"
+fi
+if declare -F coverage_python >/dev/null; then
+    coverage_python
+fi
+
+rc=0
+kcov --include-path="$PWD" --exclude-path="$PWD/lib,$PWD/test" \
+    "${kcov_args[@]}" "$report/shell" "$lib/testing/run" "$prog" "$@" || rc=$?
+
+if declare -F coverage_python >/dev/null; then
+    measured=0
+    data=$(find "$COVERAGE_RUN_DIR/python" -name '.coverage.*' -print -quit)
+    if [ -n "$data" ]; then
+        python3 -m coverage combine --quiet --rcfile=coverage.toml
+        # A Python process outside the measured paths, such as a linter's,
+        # leaves data naming no file, which html refuses.
+        measured=$(python3 -c 'import coverage, sys
+data = coverage.CoverageData(sys.argv[1])
+data.read()
+print(len(data.measured_files()))' "$COVERAGE_RUN_DIR/python/.coverage")
+    fi
+    if [ "$measured" -gt 0 ]; then
+        python3 -m coverage html --quiet --rcfile=coverage.toml
+        python3 -m coverage report --show-missing --rcfile=coverage.toml
+    else
+        echo "$prog: no Python of the repository's own ran," \
+            "so no Python report" >&2
+    fi
+fi
+
+if declare -F coverage_extra >/dev/null; then
+    coverage_extra "$report" "$@"
+fi
+
+# kcov links a run's name to its directory by an absolute path, which would
+# dangle once the report leaves the container, so each such link is made
+# relative.
+find "$report" -type l -print0 >"$COVERAGE_RUN_DIR/links"
+while IFS= read -r -d '' l <&4; do
+    target=$(readlink -- "$l")
+    if [[ $target == "$report"/* ]]; then
+        target=$(realpath -ms --relative-to="$(dirname -- "$l")" -- "$target")
+        ln -sfn -- "$target" "$l"
+    fi
+done 4<"$COVERAGE_RUN_DIR/links"
+
+{
+    printf '%s\n' '<!DOCTYPE html>' '<html lang="en">' \
+        '<head><meta charset="utf-8"><title>Coverage</title></head>' \
+        '<body><ul>'
+    for d in "$report"/*/; do
+        d=${d%/}
+        printf '<li><a href="%s/index.html">%s</a></li>\n' \
+            "${d##*/}" "${d##*/}"
+    done
+    printf '%s\n' '</ul></body>' '</html>'
+} >"$report/index.html"
+
+cd -- "$report"
+{
+    find . -mindepth 1 -maxdepth 1 ! -name index.html -print0
+    printf '%s\0' ./index.html
+} | tar --null -T - -cf - >&3
+exit "$rc"

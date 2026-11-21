@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+#
+# Runs in scratch trees whose bin/coverage links to runner/coverage and whose
+# bin/settings defines the hooks a case needs, with kcov and python3 faked. The
+# fake kcov writes a report into its output directory, with a link into it by
+# its absolute path and one out of it, as kcov does, prints on stdout what
+# BASH_ENV a bash running a file and a bash -c body each see, and exits with
+# FAKE_KCOV's status; where FAKE_PYDATA is set, it also leaves Python data. The
+# fake python3 prints FAKE_MEASURED for the measured-files count and writes a
+# report for html. Each run's scratch directory is named RUN in the fakes' calls
+# and in stderr.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/runner/coverage
+
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub kcov '
+for out in "$@"; do
+    [[ $out == --* ]] || break
+done
+mkdir -p -- "$out/run.1"
+echo shell >"$out/index.html"
+ln -s -- "$out/run.1" "$out/run"
+ln -s -- /dev/null "$out/abs"
+[ -z "${FAKE_PYDATA-}" ] || : >"$COVERAGE_RUN_DIR/python/.coverage.1"
+echo "echo \"fake kcov: file \$BASH_ENV\"" >"$COVERAGE_RUN_DIR/file"
+BASH_ENV=/dev/null bash "$COVERAGE_RUN_DIR/file"
+BASH_ENV=/dev/null bash -c "echo \"fake kcov: -c \${BASH_ENV-unset}\""
+exit "${FAKE_KCOV:-0}"'
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub python3 '
+case $* in
+-c*) echo "$FAKE_MEASURED" ;;
+*" html "*)
+    mkdir -- "$COVERAGE_RUN_DIR/report/python"
+    echo python >"$COVERAGE_RUN_DIR/report/python/index.html"
+    ;;
+esac'
+mkdir -- "$test_tmp/tmpdir"
+export TMPDIR=$test_tmp/tmpdir
+scratch="s#$TMPDIR/tmp\.[[:alnum:]]+#RUN#g"
+
+# Makes a tree at $test_tmp/$1 whose bin/settings is stdin, and prints its path.
+tree() {
+    local t=$test_tmp/$1
+    mkdir -p -- "$t/bin" "$t/test/a" "$t/test/b/c"
+    ln -s -- "$script" "$t/bin/coverage"
+    cat >"$t/bin/settings"
+    : >"$t/test/a/one.test"
+    : >"$t/test/b/c/two.test"
+    echo "$t"
+}
+
+# Prints each entry under directory $1, sorted, a link with its target.
+# shellcheck disable=SC2317 # Called through test_check.
+entries() {
+    find "$1" -mindepth 1 \( -type l -printf '%P -> %l\n' \) -o -printf '%P\n' |
+        LC_ALL=C sort
+}
+
+# Runs bin/coverage in tree $2 with the arguments after $4, and fails case $1
+# unless it exits $3 with stderr $4 and a tar on stdout ending in index.html,
+# and leaves no scratch directory. Unpacks the tar into $test_tmp/$1.out and
+# leaves it in $test_tmp/$1.tar.
+run() {
+    local case=$1 t=$2 status=$3 err=$4 rc=0 last
+    shift 4
+    env -C "$t" bin/coverage "$@" </dev/null >"$test_tmp/$case.tar" \
+        2>"$test_tmp/err" || rc=$?
+    sed -i -E "$scratch" -- "$test_tmp"/*.calls "$test_tmp/err"
+    mkdir -- "$test_tmp/$case.out"
+    if [ "$rc" != "$status" ]; then
+        test_fail "$case" "exit $rc, not $status: $(<"$test_tmp/err")"
+    elif [ "$(<"$test_tmp/err")" != "$err" ]; then
+        test_fail "$case" "stderr is: $(<"$test_tmp/err")"
+    elif [ -n "$(ls -A -- "$TMPDIR")" ]; then
+        test_fail "$case" "left in TMPDIR: $(ls -A -- "$TMPDIR")"
+    elif ! last=$(tar -tf "$test_tmp/$case.tar" 2>&1 | tail -n 1) ||
+        [ "$last" != ./index.html ]; then
+        test_fail "$case" "the tar ends in: $last"
+    else
+        tar -xf "$test_tmp/$case.tar" -C "$test_tmp/$case.out"
+    fi
+}
+
+# Fails case $1 unless its unpacked report holds the entries in $2, one per
+# line, and its index links each directory after $2.
+report() {
+    local case=$1 want=$2 d
+    shift 2
+    test_check "$case" 0 "$want" '' entries "$test_tmp/$case.out"
+    {
+        printf '%s\n' '<!DOCTYPE html>' '<html lang="en">' \
+            '<head><meta charset="utf-8"><title>Coverage</title></head>' \
+            '<body><ul>'
+        for d in "$@"; do
+            printf '<li><a href="%s/index.html">%s</a></li>\n' "$d" "$d"
+        done
+        printf '%s\n' '</ul></body>' '</html>'
+    } >"$test_tmp/index"
+    test_check "$case" 0 '' '' diff -u -- "$test_tmp/index" \
+        "$test_tmp/$case.out/index.html"
+}
+
+shell='shell
+shell/abs -> /dev/null
+shell/index.html
+shell/run -> run.1
+shell/run.1'
+kcov="RUN/report/shell $root/testing/run coverage"
+said=$'fake kcov: file /dev/null\nfake kcov: -c unset'
+
+# kcov runs testing/run over every test, measuring the tree but lib/ and test/,
+# and the link into the report is made relative.
+t=$(tree full </dev/null)
+printf -v measure '%q ' "--include-path=$t" "--exclude-path=$t/lib,$t/test"
+run full "$t" 0 "$said"
+test_calls full kcov "$measure$kcov"
+report full $'index.html\n'"$shell" shell
+
+t=$(tree named </dev/null)
+printf -v measure '%q ' "--include-path=$t" "--exclude-path=$t/lib,$t/test"
+run named "$t" 0 "$said" test/a/one.test test/b/c/two.test
+test_calls named kcov "$measure$kcov test/a/one.test test/b/c/two.test"
+
+# A failing run still writes its report, and its status is the tests'.
+t=$(tree fails </dev/null)
+printf -v measure '%q ' "--include-path=$t" "--exclude-path=$t/lib,$t/test"
+FAKE_KCOV=3 run fails "$t" 3 "$said"
+test_calls fails kcov "$measure$kcov"
+report fails $'index.html\n'"$shell" shell
+
+# kcov takes the extra arguments, and the extra report, given the report
+# directory and the names, is linked from the index.
+t=$(
+    tree extra <<'EOF'
+coverage_kcov_args() {
+    printf '%s\0' --x '--y z'
+}
+coverage_extra() {
+    echo "extra $*"
+    mkdir -- "$1/extra"
+    echo extra >"$1/extra/index.html"
+}
+EOF
+)
+printf -v measure '%q ' "--include-path=$t" "--exclude-path=$t/lib,$t/test"
+run extra "$t" 0 "$said"$'\nextra RUN/report test/a/one.test' test/a/one.test
+test_calls extra kcov "$measure--x --y\\ z $kcov test/a/one.test"
+report extra $'extra\nextra/index.html\nindex.html\n'"$shell" extra shell
+
+# shellcheck disable=SC2016 # The tree's bin/settings expands it.
+python='coverage_python() {
+    echo "python $COVERAGE_ROOT"
+}'
+measured='import coverage, sys
+data = coverage.CoverageData(sys.argv[1])
+data.read()
+print(len(data.measured_files()))'
+printf -v measured %q "$measured"
+combine='-m coverage combine --quiet --rcfile=coverage.toml'
+count="-c $measured RUN/python/.coverage"
+none="coverage: no Python of the repository's own ran, so no Python report"
+
+# The Python hook runs before kcov, and with no data left, nothing reads it.
+t=$(tree python-none <<<"$python")
+run python-none "$t" 0 "python $t"$'\n'"$said"$'\n'"$none"
+test_calls python-none python3
+report python-none $'index.html\n'"$shell" shell
+
+# Data that names no file of the repository's own gets no report.
+t=$(tree python-unmeasured <<<"$python")
+FAKE_PYDATA=1 FAKE_MEASURED=0 run python-unmeasured "$t" 0 \
+    "python $t"$'\n'"$said"$'\n'"$none"
+test_calls python-unmeasured python3 "$combine" "$count"
+report python-unmeasured $'index.html\n'"$shell" shell
+
+t=$(tree python <<<"$python")
+FAKE_PYDATA=1 FAKE_MEASURED=2 run python "$t" 0 "python $t"$'\n'"$said"
+test_calls python python3 "$combine" "$count" \
+    '-m coverage html --quiet --rcfile=coverage.toml' \
+    '-m coverage report --show-missing --rcfile=coverage.toml'
+report python $'index.html\npython\npython/index.html\n'"$shell" python shell
+
+usage='coverage [test/PATH.test...]'$'\n''       coverage --extract'
+t=$(tree refused </dev/null)
+for args in --tar test/a/missing.test test/a bin/coverage \
+    "test/a/one.test -x" "--extract x"; do
+    read -r -a names <<<"$args"
+    test_usage "refused $args" "$usage" env -C "$t" bin/coverage "${names[@]}"
+done
+
+# Makes tree $1's last report, and a file beside it, for a case to check what
+# --extract does to them.
+last_report() {
+    mkdir -p -- "$1/tmp/coverage/sub"
+    echo last >"$1/tmp/coverage/index.html"
+    : >"$1/tmp/coverage/sub/f"
+    : >"$1/tmp/keep"
+}
+
+# Runs bin/coverage --extract in tree $2 on stdin from file $3, and fails case
+# $1 unless it exits $4 with no stdout and with stderr ending in $5, and leaves
+# tree $2's tmp/ holding the entries in $6.
+extract() {
+    local case=$1 t=$2 in=$3 status=$4 err=$5 want=$6 rc=0 lines
+    lines=$(wc -l <<<"$err")
+    env -C "$t" bin/coverage --extract <"$in" >"$test_tmp/out" \
+        2>"$test_tmp/err" || rc=$?
+    if [ "$rc" != "$status" ]; then
+        test_fail "$case" "exit $rc, not $status: $(<"$test_tmp/err")"
+    elif [ -s "$test_tmp/out" ]; then
+        test_fail "$case" "stdout is: $(<"$test_tmp/out")"
+    elif [ "$(tail -n "$lines" -- "$test_tmp/err")" != "$err" ]; then
+        test_fail "$case" "stderr is: $(<"$test_tmp/err")"
+    fi
+    test_check "$case" 0 "$want" '' entries "$t/tmp"
+}
+
+written='coverage: report written to tmp/coverage/index.html'
+new=$'coverage\ncoverage/index.html\n'${shell//shell/coverage/shell}
+last='coverage
+coverage/index.html
+coverage/sub
+coverage/sub/f
+keep'
+
+# With no report yet, the tar becomes tmp/coverage/, tmp/ made with it.
+t=$(tree extract-fresh </dev/null)
+extract extract-fresh "$t" "$test_tmp/full.tar" 0 "$written" "$new"
+
+# The tar replaces the last report, a stale tmp/coverage.new/ removed first, and
+# nothing beside them is touched.
+t=$(tree extract-replaces </dev/null)
+last_report "$t"
+mkdir -p -- "$t/tmp/coverage.new/stale"
+extract extract-replaces "$t" "$test_tmp/full.tar" 0 \
+    "coverage: removing $t/tmp/coverage.new
+coverage: removing $t/tmp/coverage
+$written" "$new"$'\nkeep'
+
+# Nothing on stdin, a tar cut short, one cut inside index.html's data, which
+# leaves part of it unpacked for only tar's status to catch, input that is no
+# tar and a tar with no index.html each leave the last report, whatever tar
+# itself says first.
+: >"$test_tmp/empty"
+head -c 1024 "$test_tmp/full.tar" >"$test_tmp/short.tar"
+mkdir -- "$test_tmp/big" "$test_tmp/no-index"
+head -c 4096 /dev/zero | tr '\0' x >"$test_tmp/big/index.html"
+tar -C "$test_tmp/big" -cf "$test_tmp/big.tar" ./index.html
+# Past the member's 512-byte header and partway into its data.
+head -c 1536 "$test_tmp/big.tar" >"$test_tmp/cut-index.tar"
+echo "not a tar" >"$test_tmp/junk"
+: >"$test_tmp/no-index/f"
+tar -C "$test_tmp/no-index" -cf "$test_tmp/no-index.tar" ./f
+for in in empty short.tar cut-index.tar junk no-index.tar; do
+    t=$(tree "extract-$in" </dev/null)
+    last_report "$t"
+    extract "extract $in" "$t" "$test_tmp/$in" 1 \
+        "coverage: no complete report on stdin; tmp/coverage/ is left as it was
+coverage: removing $t/tmp/coverage.new" "$last"
+done
+
+test_finish

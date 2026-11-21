@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
-[ "$*" = describe ] || exit 2
+if [[ $FAKE_GIT == exact-* ]]; then
+    [ "$*" = "describe --exact-match" ] || exit 2
+else
+    [ "$*" = describe ] || exit 2
+fi
 # A no-tag message as git gives it where LC_ALL is C, else the no-names one in
 # German.
 no_tag() {
@@ -14,6 +18,10 @@ no_tag() {
 }
 case $FAKE_GIT in
 tagged) echo v1.2-3-gabcdef0 ;;
+exact-tagged) echo v1.2 ;;
+exact-untagged)
+    no_tag "fatal: no tag exactly matches 'abcdef0123456789abcdef0123456789abcdef01'"
+    ;;
 warned)
     echo "warning: tag 'v1.2' is externally known as 'v1.3'" >&2
     echo v1.2

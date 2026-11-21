@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# Tests project/each against real repositories in a scratch dir: a project named
-# ap\tp, backslash and all, whose submodules lib1 and lib2 are listed in its
-# .projects, with a plain directory sub. The command swept is a recorder that
-# logs its directory and arguments, a line to a call, and exits 3 where the
-# directory holds a file named fail. Every case builds its fixture afresh.
-#
-# Run: test/project/each.test. Exits 1 naming each case that failed.
+# Runs against real repositories in a scratch dir: a project named ap\tp,
+# backslash and all, whose submodules lib1 and lib2 are listed in its .projects,
+# with a plain directory sub. The command swept is a recorder that logs its
+# directory and arguments, a line to a call, and exits 3 where the directory
+# holds a file named fail. Every case builds its fixture afresh.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-each=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/each
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+each=$root/project/each
 
 # Nothing from the caller's configuration reaches the fixtures. File URLs are
 # refused to submodules by default.
@@ -23,27 +23,16 @@ export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
-cat >"$work/record" <<'EOF'
+cat >"$test_tmp/record" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 echo "$PWD $*" >>"$FAKE_LOG"
 [ ! -f fail ] || exit 3
 EOF
-chmod +x "$work/record"
-
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
+chmod +x "$test_tmp/record"
 
 name='ap\tp'
-failures=0
 n=0
 
 # A fresh fixture in $w, with the project at $app, its submodules lib1 and lib2
@@ -51,7 +40,7 @@ n=0
 fixture() {
     local sub
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     app=$w/$name
     mkdir "$w"
     git init -q "$app"
@@ -71,7 +60,7 @@ fixture() {
 # $w/err.
 run() {
     rc=0
-    (cd "$app/$1" && "$each" "$work/record" a b) >"$w/out" 2>"$w/err" ||
+    (cd "$app/$1" && "$each" "$test_tmp/record" a b) >"$w/out" 2>"$w/err" ||
         rc=$?
 }
 
@@ -79,9 +68,9 @@ run() {
 # called as $3 has it.
 expect() {
     if [ "$rc" != "$2" ]; then
-        fail "$1" "exit $rc, not $2: $(<"$w/err")"
+        test_fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
-        fail "$1" "the calls were: $(<"$FAKE_LOG")"
+        test_fail "$1" "the calls were: $(<"$FAKE_LOG")"
     fi
 }
 
@@ -95,13 +84,13 @@ swept() {
 fixture
 run .
 expect top 0 "$(swept)"
-want=$(printf '%s\n' "each-without-project: lib1" "each-without-project: lib2" \
-    "each: $name")
+want=$(printf '%s\n' "project/each-without-project: lib1" "project/each-without-project: lib2" \
+    "project/each: $name")
 if [ "$(<"$w/err")" != "$want" ]; then
-    fail top "stderr is: $(<"$w/err")"
+    test_fail top "stderr is: $(<"$w/err")"
 fi
 if [ -s "$w/out" ]; then
-    fail top "stdout is: $(<"$w/out")"
+    test_fail top "stdout is: $(<"$w/out")"
 fi
 
 # The command's stdout passes through untouched, a line it ends without a
@@ -111,16 +100,14 @@ rc=0
 (cd "$app" && "$each" printf %s x) >"$w/out" 2>"$w/err" || rc=$?
 expect stdout 0 ""
 if [ "$(<"$w/out")" != xxx ]; then
-    fail stdout "stdout is: $(<"$w/out")"
+    test_fail stdout "stdout is: $(<"$w/out")"
 fi
 
 # With no command, the usage is printed and nothing runs.
 fixture
-rc=0
-(cd "$app" && "$each") >"$w/out" 2>"$w/err" || rc=$?
-expect usage 2 ""
-if [ "$(<"$w/err")" != "Usage: each COMMAND [ARG...]" ]; then
-    fail usage "stderr is: $(<"$w/err")"
+test_usage usage 'project/each COMMAND [ARG...]' env -C "$app" "$each"
+if [ -s "$FAKE_LOG" ]; then
+    test_fail usage "the calls were: $(<"$FAKE_LOG")"
 fi
 
 # From a subdirectory, the command runs at the top level too.
@@ -152,10 +139,8 @@ expect no-list 0 "$app a b"
 fixture
 mkdir "$w/plain"
 rc=0
-(cd "$w/plain" && GIT_CEILING_DIRECTORIES=$work "$each" "$work/record" a b) \
+(cd "$w/plain" && GIT_CEILING_DIRECTORIES=$test_tmp "$each" "$test_tmp/record" a b) \
     >/dev/null 2>"$w/err" || rc=$?
 expect outside-repository 128 ""
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

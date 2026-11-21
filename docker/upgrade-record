@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# Adds a step's moves, read on stdin, to RECORD, the record docker/upgrade
+# --record writes and docker/upgrade-commit reads. It adds each PATH, a path the
+# step may write, to RECORD's paths, making RECORD where it is missing or empty.
+# A line is SUBJECT OLD -> NEW, or SUBJECT: TEXT for a summary. A SUBJECT
+# already recorded keeps its first OLD and takes the latest NEW or TEXT, so a
+# step rerun after a stop neither repeats nor loses a move. With no line on
+# stdin, a RECORD there is left as it is and a missing one is made empty, as
+# docker/upgrade leaves it where nothing moved, so docker/upgrade-commit always
+# has a record to read. Whatever arrives before a failing mover stops is
+# recorded. Prints each line it adds.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=docker/upgrade-record
+
+usage() {
+    echo "Usage: $prog RECORD PATH... < MOVES" >&2
+    exit 2
+}
+
+[ $# -ge 2 ] || usage
+record=$1
+
+mapfile -t input
+if [ ${#input[@]} -eq 0 ]; then
+    if [ ! -e "$record" ]; then
+        mkdir -p -- "$(dirname -- "$record")"
+        : >"$record"
+    fi
+    exit 0
+fi
+
+# Splits line $1 into subject, old and new, old empty for SUBJECT: TEXT, where
+# new is the TEXT. A SUBJECT may hold spaces, or a colon with no space after it,
+# so the arrow form is split at the last ' -> ' and then the last space.
+split() {
+    local before
+    old=
+    if [[ $1 == *' -> '* ]]; then
+        before=${1% -> *}
+        new=${1:${#before}+4}
+        subject=${before% *}
+        old=${before##* }
+        if [[ $before == *' '* ]] && [ -n "$subject" ] && [ -n "$old" ] &&
+            [ -n "$new" ]; then
+            return 0
+        fi
+        old=
+    fi
+    if [[ $1 == *': '* ]]; then
+        subject=${1%%: *}
+        new=${1#*: }
+        [ -n "$subject" ] && [ -n "$new" ] && return 0
+    fi
+    return 1
+}
+
+for i in "${!input[@]}"; do
+    if ! split "${input[$i]}"; then
+        echo "$prog: stdin:$((i + 1)): not SUBJECT OLD -> NEW or SUBJECT: TEXT" >&2
+        exit 1
+    fi
+done
+
+# Read as docker/upgrade-commit reads it: the paths, a blank line, the moves.
+lines=()
+if [ -e "$record" ]; then
+    mapfile -t lines <"$record"
+fi
+paths=()
+moves=()
+if [ ${#lines[@]} -gt 0 ]; then
+    blank=""
+    for i in "${!lines[@]}"; do
+        if [ -z "${lines[$i]}" ]; then
+            blank=$i
+            break
+        fi
+    done
+    paths=("${lines[@]:0:${blank:-0}}")
+    moves=("${lines[@]:${blank:-0}+1}")
+fi
+
+declare -A have
+for path in "${paths[@]}"; do
+    have[$path]=1
+done
+for path in "${@:2}"; do
+    if [ -z "${have[$path]:-}" ]; then
+        paths+=("$path")
+        have[$path]=1
+    fi
+done
+
+# Each recorded move by its SUBJECT, a line split by none keyed by itself.
+declare -A at first_old
+for i in "${!moves[@]}"; do
+    if split "${moves[$i]}"; then
+        at[$subject]=$i
+        first_old[$subject]=$old
+    fi
+done
+for line in "${input[@]}"; do
+    split "$line"
+    if [ -n "${at[$subject]:-}" ]; then
+        i=${at[$subject]}
+        if [ -n "$old" ] && [ -n "${first_old[$subject]}" ]; then
+            old=${first_old[$subject]}
+            line="$subject $old -> $new"
+        fi
+    else
+        i=${#moves[@]}
+        at[$subject]=$i
+    fi
+    first_old[$subject]=$old
+    moves[i]=$line
+    printf '%s\n' "$line"
+done
+
+mkdir -p -- "$(dirname -- "$record")"
+temp=$(mktemp "$record.XXXXXX")
+trap 'rm -f -- "$temp"' EXIT
+printf '%s\n' "${paths[@]}" "" "${moves[@]}" >"$temp"
+mv -f -- "$temp" "$record"

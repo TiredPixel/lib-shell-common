@@ -1,0 +1,37 @@
+# shellcheck shell=bash
+#
+# The file is written back through cat > rather than replaced, so its inode is
+# kept and a bind of the file alone sees the write. That truncates the file
+# first, so a scratch copy of the original is held until the write succeeds.
+
+# Runs the command after $1 with file $1 as stdin and writes its output back to
+# the file only where it differs. A write that fails puts the original back, or,
+# where that fails too, leaves its copy and names it. Each step's failure is
+# returned, since check calls this under ||, where errexit is off.
+rewrite() {
+    local rewrite_file=$1 rewrite_out rewrite_copy='' rewrite_status=0
+
+    shift
+    rewrite_out=$(mktemp) || return
+    if ! "$@" <"$rewrite_file" >"$rewrite_out"; then
+        rewrite_status=1
+    elif ! cmp -s -- "$rewrite_file" "$rewrite_out"; then
+        if ! rewrite_copy=$(mktemp) ||
+            ! cat -- "$rewrite_file" >"$rewrite_copy"; then
+            rewrite_status=1
+        elif cat -- "$rewrite_out" >"$rewrite_file"; then
+            echo "${prog:-${0##*/}}: $rewrite_file: rewritten" >&2
+        else
+            rewrite_status=1
+            # A write refused at the open has left the file as it was.
+            if ! cmp -s -- "$rewrite_copy" "$rewrite_file" &&
+                ! cat -- "$rewrite_copy" >"$rewrite_file"; then
+                echo "${prog:-${0##*/}}: $rewrite_file: original kept in" \
+                    "$rewrite_copy" >&2
+                rewrite_copy=
+            fi
+        fi
+    fi
+    rm -- "$rewrite_out" ${rewrite_copy:+"$rewrite_copy"} || return
+    return "$rewrite_status"
+}

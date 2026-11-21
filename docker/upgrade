@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 #
-# Usage: docker/upgrade [--record FILE] [DOCKERFILE [WORKFLOW|ACTION...]]
-#        docker/upgrade [--record FILE] --workflows WORKFLOW|ACTION...
-#
 # Re-pin a Dockerfile (default ./Dockerfile), and each GitHub Actions workflow
-# or action named after it, to what its pins name today, so an upgrade moves
+# or other file named after it, to what its pins name today, so an upgrade moves
 # everything forward and the tests that follow it catch what broke. With
-# --workflows, only the workflows and actions named are re-pinned and no
-# Dockerfile is read, linted or written, for a repository whose Dockerfile is
-# not its own to re-pin, such as a link to a submodule's. In the Dockerfile,
-# three kinds of comment line, read wherever they fall in the file, though kept
-# at the top by convention:
+# --workflows, only the workflows and files named are re-pinned and no
+# Dockerfile is read or written, for a repository whose Dockerfile is not its
+# own to re-pin, such as a link to a submodule's. In the Dockerfile, three kinds
+# of comment line, read wherever they fall in the file, though kept at the top
+# by convention:
 #
 #   # TRACK FROM REPO:TAG
 #       every FROM REPO:TAG or FROM REPO@DIGEST line is pinned to the digest
@@ -81,8 +78,8 @@
 # held back the same way, its TRACK LOCK line removed and a comment beside its
 # install saying why: nothing here reads or writes a lock no TRACK LOCK names.
 #
-# In each workflow or action, one kind of comment line, read wherever it falls
-# in the file, though kept at the top by convention:
+# In each workflow or other file, one kind of comment line, read wherever it
+# falls in the file, though kept at the top by convention:
 #
 #   # TRACK USES OWNER/REPO@NAME
 #       every uses: OWNER/REPO[/PATH]@REF line, a step's or a job's, whatever
@@ -92,40 +89,29 @@
 #
 # OWNER/REPO is matched in any case, as GitHub reads it. A uses: that no
 # TRACK USES covers is left alone, as are ./PATH and docker://. A covered uses:
-# with a comment at its end, or with a comment naming a version, such as v7 or
-# 7.0.1, at its indent on the nearest line above it that is not blank, fails,
-# since the TRACK USES line says what it follows and a tag beside it would go
-# stale. Lines are read as text, not parsed as YAML, so a uses: line inside a
-# block scalar, such as a run: body, is re-pinned too, and any other line
-# holding uses:, a comment line aside, that names a covered OWNER/REPO fails
-# rather than being passed over. Workflows and actions are re-pinned only when
-# named, as by Makefile's upgrade-pre.
+# line is rewritten as uses: OWNER/REPO[/PATH]@COMMIT, so a comment at its end
+# goes; one with a comment naming a version on the nearest line above, at its
+# indent, fails, since that comment would go stale. Lines are read as text, not
+# parsed as YAML, so a uses: line inside a block scalar, such as a run: body, is
+# re-pinned too, and any other line holding uses:, a comment line aside, that
+# names a covered OWNER/REPO fails rather than being passed over. Workflows and
+# other files are re-pinned only when named, as by Makefile's upgrade-pre.
 #
-# A workflow is never written, since what may change one is not always what runs
-# this. Each must sit in a .github/workflows directory, and what it becomes,
-# where anything in it moves, is proposed as the file of its name in the
-# workflows.new directory beside that one, made where it is missing, to be
-# reviewed and moved into place. A proposal already there for a named workflow
-# fails the run. An action is a file named action.yml or action.yaml outside a
-# .github/workflows directory, the names GitHub reads an action's metadata
-# from, and is written in place, through any symbolic link, as the Dockerfile
-# is, since nothing guards it as workflows are guarded.
+# A workflow, a file in a .github/workflows directory, is never written, since
+# what may change one is not always what runs this: what it becomes, where
+# anything in it moves, is proposed as the file of its name in the workflows.new
+# directory beside that one, made where it is missing, to be reviewed and moved
+# into place. A proposal already there for a named workflow fails the run. Any
+# other file named is written in place, through any symbolic link, as the
+# Dockerfile is, since nothing guards it as workflows are guarded, except that a
+# link resolving to a file in a .github/workflows directory, whatever its name,
+# fails the run, since writing through it would change that workflow. One
+# holding no TRACK USES line fails the run, as named by mistake, unless it is an
+# action, named action.yml or action.yaml as GitHub reads an action's metadata,
+# which may use no other action.
 #
 # A comment line that reads as a mistyped TRACK line fails, as does a TRACK line
-# of a kind its file does not hold. Before anything else is read, # FROMFREEZE,
-# # ARGFREEZE and # USESFREEZE lines, and TRACK ARG NAME pypi: and npm: pins,
-# which take a TRACK LOCK line instead, each as well as comment lines that read
-# as mistyped ones, fail the run: grep lists every one in every file named.
-#
-# Before any lookup, lint/dockerfile-locks checks the Dockerfile. Where it
-# refuses a RUN, its FILE:LINE: lines stand on stderr above a warning and the
-# upgrade carries on, since a project's own lint runs lint/dockerfile-locks,
-# which fails on them; where the lint itself fails, with any status but 1, such
-# as 3 where jq fails to read an exec-form RUN, so does the run. The lint is the
-# file DOCKERFILE_LOCKS_LINT names, where it is set and not empty, as in a test,
-# else this library's own; a bare name is taken in the current directory, and a
-# path that is not an executable regular file fails the run before anything is
-# read.
+# of a kind its file does not hold.
 #
 # FROM and ARG are matched in any case, as Docker reads them, and on logical
 # lines, as docker/dockerfile-parse reads them: continued lines joined at the
@@ -141,17 +127,17 @@
 # OWNER/REPO pinned twice in one file, a FROM naming REPO in another form, a
 # TRACK ARG whose ARG has no default, more than one value or another form, or a
 # lookup that fails: each would otherwise leave a pin where it was with no sign
-# that it had not moved. So does a sha256 pin's ${VAR} naming no ARG or another
-# sha256 pin, a TRACK LOCK without stage= in a file without exactly one
-# TRACK FROM, or a file named twice. Every pin in every file is checked before
-# any is looked up, and no file is written until every pin has been resolved;
-# each that changes, a lock made, grown or shrunk included, is then written to a
-# temporary file beside where it goes, each directory missing above it made, and
-# only once all are written is each moved into place, through any symbolic link
-# and keeping its file's mode, or at 0644 where it is new. A run that fails
-# removes every temporary file and every directory it made that is left empty.
+# that it had not moved. So does a sha256 pin's ${VAR} naming no ARG, or a
+# TRACK LOCK without stage= in a file without exactly one TRACK FROM. Every pin
+# in every file is checked before any is looked up, and no file is written until
+# every pin has been resolved; each that changes, a lock made, grown or shrunk
+# included, is then written to a temporary file beside where it goes, each
+# directory missing above it made, and only once all are written is each moved
+# into place, through any symbolic link and keeping its file's mode, or at 0644
+# where it is new. A run that fails removes every temporary file and every
+# directory it made that is left empty.
 #
-# With --record, FILE is written last, for docker/upgrade-commit: the path of
+# With --record, RECORD is written last, for docker/upgrade-commit: the path of
 # each file written, one to a line, then a blank line, then a line for each
 # value a pin moved from, as SUBJECT OLD -> NEW, SUBJECT as its TRACK line
 # writes it: NAME for a TRACK ARG, REPO:TAG for a TRACK FROM, OLD a digest or
@@ -165,19 +151,21 @@
 # and each package-lock.json package under packages with a version; where it
 # reads otherwise, or the lock changed and no move is itemised, the line is
 # LOCK NAME: files changed. Where nothing moved, it is empty. Since the commit
-# takes each path whole, the run first fails where FILE holds an earlier run's
+# takes each path whole, the run first fails where RECORD holds an earlier run's
 # record that is not empty, or where the Dockerfile, followed through any
 # symbolic link, or its BASENAME.lock directory differs from what git has
 # committed, or where the Dockerfile is a symbolic link into another repository,
-# such as a submodule, where the commit cannot add it; each action named is
+# such as a submodule, where the commit cannot add it; each other file named is
 # checked as the Dockerfile is, with or without --workflows, where only the
-# earlier record and the actions are checked.
+# earlier record and those files are checked.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=docker/upgrade
+
 usage() {
-    echo "Usage: ${0##*/} [--record FILE] [DOCKERFILE [WORKFLOW|ACTION...]]" >&2
-    echo "       ${0##*/} [--record FILE] --workflows WORKFLOW|ACTION..." >&2
+    echo "Usage: $prog [--record RECORD] [DOCKERFILE [WORKFLOW | FILE...]]" >&2
+    echo "       $prog [--record RECORD] --workflows WORKFLOW | FILE..." >&2
     exit 2
 }
 
@@ -195,21 +183,15 @@ if [ "$dockerfile" = --workflows ]; then
     dockerfile=""
 fi
 workflows=("${@:2}")
-here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-locklint=${DOCKERFILE_LOCKS_LINT:-$here/../lint/dockerfile-locks}
-# A bare name would be looked up on PATH rather than run from where it is.
-case $locklint in
-*/*) ;;
-*) locklint=./$locklint ;;
-esac
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 refuse() {
-    echo "${0##*/}: $1: ${*:2}" >&2
+    echo "$prog: $1: ${*:2}" >&2
     exit 1
 }
 
 say() {
-    echo "${0##*/}: $*" >&2
+    echo "$prog: $*" >&2
 }
 
 # Copies stdin to stderr, a line at a time as it comes, and to stdout, so a
@@ -226,77 +208,45 @@ die() {
     refuse "$dockerfile" "$@"
 }
 
-# A refusal naming a line, in the GNU Coding Standards' FILE:LINE: form.
+# A refusal naming a line, as FILE:LINE: after the program's name.
 refuse_at() {
-    echo "$1:$2: ${*:3}" >&2
+    echo "$prog: $1:$2: ${*:3}" >&2
     exit 1
 }
 
-[ -e "$locklint" ] || refuse "$locklint" "no such file"
-if ! [ -f "$locklint" ] || ! [ -x "$locklint" ]; then
-    refuse "$locklint" "not an executable regular file"
-fi
-# Every file named, so none is left out where no Dockerfile is.
-inputs=()
-if [ -n "$dockerfile" ]; then
-    [ -e "$dockerfile" ] || die "no such file"
-    [ -f "$dockerfile" ] || die "not a regular file"
-    inputs+=("$dockerfile")
-fi
-inputs+=("${workflows[@]}")
-for w in "${!workflows[@]}"; do
-    workflow=${workflows[$w]}
-    [ -e "$workflow" ] || refuse "$workflow" "no such file"
-    [ -f "$workflow" ] || refuse "$workflow" "not a regular file"
-    if [ -n "$dockerfile" ] && [ "$workflow" -ef "$dockerfile" ]; then
-        refuse "$workflow" "is named twice"
-    fi
-    for other in "${workflows[@]:0:w}"; do
-        [ ! "$workflow" -ef "$other" ] || refuse "$workflow" "is named twice"
-    done
-done
-
-# Lists every line in every file named that grep finds for the extended regular
-# expression $1, read in any case, then says $2 and marks the run to fail where
-# it finds any. grep failing otherwise stops the run with its status.
-retired=""
-retire() {
-    local status=0
-    grep -Hn -i -E -e "$1" -- "${inputs[@]}" >&2 || status=$?
-    case $status in
-    0)
-        say "$2"
-        retired=1
-        ;;
-    1) ;;
-    *) exit "$status" ;;
-    esac
-}
-retire '^[[:space:]]*#[[:space:]]*(from|args?|uses)[-_[:space:]]*freeze([^[:alnum:]_]|$)' \
-    "FREEZE pins are now TRACK FROM, TRACK ARG and TRACK USES"
-retire '^[[:space:]]*#[[:space:]]*track[-_[:space:]]*args?[[:space:]]+[^[:space:]]+[[:space:]]+(pypi|npm):' \
-    "pypi: and npm: pins are now TRACK LOCK"
-[ -z "$retired" ] || exit 1
-
-# Where each workflow's proposal goes, or an action is written, by the index of
-# the workflow or action in workflows; kind_of says which each is.
+# Where each workflow's proposal goes, or another file is written, by its index
+# in workflows; kind_of says which each is.
 proposals=()
 kind_of=()
 for w in "${!workflows[@]}"; do
     workflow=${workflows[$w]}
-    dir=$(readlink -f -- "$(dirname -- "$workflow")")
-    if [ "${dir##*/}" != workflows ] ||
-        [ "$(basename -- "${dir%/*}")" != .github ]; then
+    parent=$(readlink -f -- "$(dirname -- "$workflow")")
+    if [ "${parent##*/}" != workflows ] ||
+        [ "$(basename -- "${parent%/*}")" != .github ]; then
+        # A .github/workflows that is itself a link still holds live workflows.
+        named=$(dirname -- "$workflow")
+        if [ "${named##*/}" = workflows ] &&
+            [ "$(basename -- "$(dirname -- "$named")")" = .github ]; then
+            refuse "$workflow" "is in a .github/workflows that links to" \
+                "$parent, and a workflow is never written"
+        fi
         case ${workflow##*/} in
-        action.yml | action.yaml) ;;
-        *) refuse "$workflow" "is not in a .github/workflows directory" ;;
+        action.yml | action.yaml) kind_of[w]="an action" ;;
+        *) kind_of[w]="a file written in place" ;;
         esac
-        kind_of[w]="an action"
         proposals[w]=$(readlink -f -- "$workflow")
+        # Written through any link, so one into a workflows directory would
+        # change the live workflow.
+        parent=${proposals[$w]%/*}
+        if [ "${parent##*/}" = workflows ] &&
+            [ "$(basename -- "${parent%/*}")" = .github ]; then
+            refuse "$workflow" "links to ${proposals[$w]}, a workflow, which" \
+                "is never written; name the workflow itself to have it proposed"
+        fi
         continue
     fi
     kind_of[w]="a workflow"
-    proposals[w]=${dir%/*}/workflows.new/${workflow##*/}
+    proposals[w]=${parent%/*}/workflows.new/${workflow##*/}
     if [ -e "${proposals[$w]}" ] || [ -L "${proposals[$w]}" ]; then
         refuse "${proposals[$w]}" "is a proposal for $workflow already" \
             "pending; approve or remove it first"
@@ -312,8 +262,8 @@ if [ -n "$dockerfile" ]; then
 fi
 
 # The commit takes the record's paths whole, so a record still there would be
-# lost, and an edit already in the Dockerfile, its locks or an action would be
-# committed with the pins.
+# lost, and an edit already in the Dockerfile, its locks or a file written in
+# place would be committed with the pins.
 if [ -n "$record" ]; then
     if [ -s "$record" ]; then
         refuse "$record" "is an earlier upgrade's record still pending;" \
@@ -355,7 +305,7 @@ fi
 # joined by any blanks, - or _, read lowercased.
 track='^[[:space:]]*#[[:space:]]*track[-_[:space:]]*(from|arg|uses|lock)s?([^a-z0-9_]|$)'
 
-source "$here/dockerfile-parse"
+source "$dir/dockerfile-parse"
 # Each set by dockerfile_parse, bodies though nothing here reads it.
 # shellcheck disable=SC2034
 declare error escape lines logical ends comments bodies
@@ -373,12 +323,11 @@ fetch() {
     curl --connect-timeout 10 --max-time 60 "$@"
 }
 
-# Sets refs to the names of the ${VAR}s in $1, failing on any other $.
+# Sets refs to the names of the ${VAR}s in $1.
 refs_in() {
     local rest=$1
     refs=()
-    while [[ "$rest" == *'$'* ]]; do
-        [[ "$rest" =~ ^[^$]*\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$ ]] || return 1
+    while [[ "$rest" =~ \$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$ ]]; do
         refs+=("${BASH_REMATCH[1]}")
         rest=${BASH_REMATCH[2]}
     done
@@ -579,17 +528,11 @@ for data in "${args[@]}"; do
     [ "${kinds[$name]}" = sha256 ] || continue
     read -r -a urls <<<"${source#sha256:}"
     for url in "${urls[@]}"; do
-        refs_in "$url" || die "TRACK ARG $name: $url holds a \$ not in \${VAR}"
+        refs_in "$url"
         for ref in "${refs[@]}"; do
-            case ${kinds[$ref]:-} in
-            sha256) die "TRACK ARG $name: \${$ref} is itself a sha256 pin" ;;
-            "")
-                scan_arg "$ref" "TRACK ARG $name: \${$ref}"
-                [[ "$value" != *'$'* ]] ||
-                    die "TRACK ARG $name: \${$ref} is $value, not a literal"
-                resolved[$ref]=$value
-                ;;
-            esac
+            [ -z "${kinds[$ref]:-}" ] || continue
+            scan_arg "$ref" "TRACK ARG $name: \${$ref}"
+            resolved[$ref]=$value
         done
     done
 done
@@ -620,8 +563,8 @@ lock_names=()
 lockforms="NAME [stage=STAGE] pypi:PACKAGE[==VERSION]... or"
 lockforms+=" NAME [stage=STAGE] npm:PACKAGE[@VERSION]..."
 # PEP 508's name; npm's rules for a new package's name, lower case and
-# optionally scoped (npm Docs, package.json, "name", docs.npmjs.com, checked
-# 2026-11).
+# optionally scoped (npm Docs, package.json, "name", docs.npmjs.com, read
+# 2026-11-20).
 pypi_name='[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?'
 npm_name='(@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*'
 # A PEP 440 version may open with an epoch, N!, as in 1!2.0.
@@ -877,11 +820,11 @@ for name in "${lock_names[@]}"; do
             refuse "$path" "is in the repository $there, not $home, which a" \
                 "lock is never written in"
     done
-    dir=$(readlink -m -- "$lockdir/$name")
+    lock_path=$(readlink -m -- "$lockdir/$name")
     for file in "${files[@]}"; do
-        lock_file[$name$'\t'$file]=$dir/$file
+        lock_file[$name$'\t'$file]=$lock_path/$file
     done
-    old=$dir/${files[-1]}
+    old=$lock_path/${files[-1]}
     [ -e "$old" ] || continue
     if [ "${lock_kinds[$name]}" = npm ]; then
         if read_npm_lock "$(<"$old")"; then
@@ -907,7 +850,7 @@ for name in "${lock_names[@]}"; do
     done
 done
 
-# Here and below, a workflow is a workflow or an action alike, as workflows
+# Here and below, a workflow is a workflow or another file alike, as workflows
 # names them. Each workflow's covered uses: lines, by the index of the workflow
 # in w_of and of the line in i_of, with what the line keeps before the reference
 # in head_of, the action named, without its REF, in action_of, the REF in ref_of
@@ -967,9 +910,12 @@ for w in "${!workflows[@]}"; do
         named[${repo,,}]=$repo
         order+=("${repo,,}")
     done
-    [ ${#order[@]} -gt 0 ] ||
-        say "$workflow: no # TRACK USES line, so there is" \
-            "nothing to re-pin"
+    if [ ${#order[@]} = 0 ]; then
+        [ "${kind_of[$w]}" != "a file written in place" ] ||
+            refuse "$workflow" "no # TRACK USES line, so there is nothing to" \
+                "re-pin"
+        say "$workflow: no # TRACK USES line, so there is nothing to re-pin"
+    fi
     for i in "${!wlines[@]}"; do
         line=${wlines[$i]}
         [[ "$line" == *uses:* ]] || continue
@@ -977,7 +923,6 @@ for w in "${!workflows[@]}"; do
         if [[ "$line" =~ $uses ]]; then
             head=${BASH_REMATCH[1]}
             reference=${BASH_REMATCH[3]}
-            comment=${BASH_REMATCH[4]}
             case $reference in
             ./* | docker://*) continue ;;
             esac
@@ -985,10 +930,6 @@ for w in "${!workflows[@]}"; do
                 key=${BASH_REMATCH[1],,}
                 [ -n "${follows[$key]+set}" ] || continue
                 pin=${named[$key]}@${follows[$key]}
-                [ -z "$comment" ] ||
-                    refuse_at "$workflow" $((i + 1)) "uses: $reference has a" \
-                        "comment at its end; TRACK USES $pin says what it" \
-                        "follows"
                 indent=${head%%[^[:space:]]*}
                 j=$((i - 1))
                 while [ "$j" -ge 0 ] && [[ "${wlines[j]}" =~ ^[[:space:]]*$ ]]; do
@@ -1029,22 +970,6 @@ for w in "${!workflows[@]}"; do
     done
 done
 
-# The lint's own check, so an upgrade does not pass unremarked a Dockerfile the
-# lint would fail. A leading - would read as an option.
-status=0
-case $dockerfile in
-"") ;;
--*) "$locklint" "./$dockerfile" || status=$? ;;
-*) "$locklint" "$dockerfile" || status=$? ;;
-esac
-case $status in
-0) ;;
-1)
-    say "$dockerfile: each line above is refused by lint/dockerfile-locks"
-    ;;
-*) die "lint/dockerfile-locks failed with status $status" ;;
-esac
-
 # What each line of the file becomes, keyed by its index, so the file is
 # rewritten once, after every pin has resolved.
 declare -A rewrite=()
@@ -1063,10 +988,6 @@ for data in "${froms[@]}"; do
     digest=""
     while IFS= read -r line <&3; do
         [[ "$line" =~ ^Digest:\ (sha256:[0-9a-f]{64})$ ]] || continue
-        if [ -n "$digest" ] && [ "$digest" != "${BASH_REMATCH[1]}" ]; then
-            die "docker pull gave $repo:$tag more than one digest:" \
-                "$digest and ${BASH_REMATCH[1]}"
-        fi
         digest=${BASH_REMATCH[1]}
     done 3<<<"$pulled"
     [ -n "$digest" ] || die "docker pull gave $repo:$tag no digest"
@@ -1089,7 +1010,7 @@ for data in "${args[@]}"; do
         # GitHub answers /releases/latest with a redirect to the latest
         # release's tag, without the API or a token. A project with no release
         # redirects elsewhere, which the match refuses. GitHub's docs (Linking
-        # to releases, docs.github.com, checked 2026-11) document the link, not
+        # to releases, docs.github.com, read 2026-11-20) document the link, not
         # the redirect or what a project with no release gets.
         what="$project's latest release"
         url=$(fetch -fsS -o /dev/null -w '%{redirect_url}' \
@@ -1152,11 +1073,6 @@ for data in "${args[@]}"; do
         [ ${#hashes[@]} -gt 0 ] ||
             die "TRACK ARG $name: ${urls[1]} gives no SHA-256 for $asset"
         hash=${hashes[0]}
-        for h in "${hashes[@]}"; do
-            [ "$h" = "$hash" ] ||
-                die "TRACK ARG $name: ${urls[1]} gives $asset different" \
-                    "SHA-256s, ${hashes[*]}"
-        done
     else
         what="SHA-256 of ${urls[0]}"
         hash=$(fetch -fsSL "${urls[0]}" | sha256sum)
@@ -1223,7 +1139,7 @@ package_json='{
 # lock-resolve runs under bash, which Alpine lacks until apk adds it.
 bootstrap='if ! command -v bash >/dev/null; then
     if ! command -v apk >/dev/null; then
-        echo "lock-resolve: the image has no bash, nor apk to add it" >&2
+        echo "docker/lock-resolve: the image has no bash, nor apk to add it" >&2
         exit 1
     fi
     apk add --no-cache bash </dev/null >&2 || exit
@@ -1235,7 +1151,7 @@ exec bash -s -- "$@"'
 # through sh, past any ENTRYPOINT the image sets.
 resolve_in() {
     docker run -i --rm --entrypoint sh --user 0 "$image" -c "$bootstrap" \
-        lock-resolve "$@" <"$here/lock-resolve"
+        lock-resolve "$@" <"$dir/lock-resolve"
 }
 
 # Sets image to what TRACK LOCK $1 resolves in, pulling a tag first, so it
@@ -1279,22 +1195,16 @@ for name in "${lock_names[@]}"; do
         gated=$(jq -r "$markers" <<<"$report")
         if [ -n "$gated" ]; then
             mapfile -t gated_lines <<<"$gated"
-            printf '%s\n' "${gated_lines[@]/#/${0##*/}: }" >&2
+            printf '%s\n' "${gated_lines[@]/#/$prog: }" >&2
             die "TRACK LOCK $name: each requirement above turns on the" \
                 "platform, so its lock would not hold on another architecture"
         fi
         entries=()
         while IFS=$'\t' read -r key version <&4; do
-            if [[ ! "$key" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] ||
-                [[ ! "$version" =~ ^$pypi_version$ ]]; then
-                die "TRACK LOCK $name: pip's report installs $key $version"
-            fi
-            [ -z "${now_v[$name$'\t'$key]+set}" ] ||
-                die "TRACK LOCK $name: pip's report installs $key twice"
             now_v[$name$'\t'$key]=$version
             now_keys[$name]+=" $key"
             # Every wheel's hash, so the lock holds on every architecture.
-            # PyPI's JSON API (docs.pypi.org/api/json/, checked 2026-11)
+            # PyPI's JSON API (docs.pypi.org/api/json/, read 2026-11-20)
             # documents .urls as the release's files.
             json=$(fetch -fsSL "https://pypi.org/pypi/$key/$version/json")
             wheels=$(jq -r '[.urls[] | select(.packagetype == "bdist_wheel")
@@ -1305,17 +1215,10 @@ for name in "${lock_names[@]}"; do
                 die "TRACK LOCK $name: PyPI lists no wheel for $key $version"
             line=$key==$version
             while IFS= read -r hash <&5; do
-                [[ "$hash" =~ ^[0-9a-f]{64}$ ]] ||
-                    die "TRACK LOCK $name: PyPI gives $key $version the" \
-                        "SHA-256 $hash"
                 line+=" --hash=sha256:$hash"
             done 5<<<"$wheels"
             entries+=("$line")
         done 4<<<"$listed"
-        for package in "${named_here[@]}"; do
-            [ -n "${now_v[$name$'\t'${key_of[$name$'\t'$package]}]+set}" ] ||
-                die "TRACK LOCK $name: pip's report installs no $package"
-        done
         # By name alone, as pip-compile sorts, so mdformat precedes
         # mdformat-gfm.
         lock_new[$name$'\t'requirements.txt]=$(printf '%s\n' "${entries[@]}" |
@@ -1329,12 +1232,9 @@ for name in "${lock_names[@]}"; do
         version=${held[$name$'\t'$package]:-}
         if [ -z "$version" ]; then
             json=$(fetch -fsS "https://registry.npmjs.org/$package/latest")
-            version=$(jq -r '.version // empty' <<<"$json") ||
+            version=$(jq -r -e '.version | strings' <<<"$json") ||
                 die "TRACK LOCK $name: registry.npmjs.org/$package/latest is" \
                     "not npm's JSON"
-            [[ "$version" =~ ^$npm_version$ ]] ||
-                die "TRACK LOCK $name: $package's latest version on npm," \
-                    "${version:-none}, is not a version"
             say "$package's latest version on npm is $version"
         fi
         deps+=("$package" "$version")
@@ -1378,29 +1278,23 @@ for pin in "${pins[@]}"; do
         "https://github.com/$repo" "refs/tags/$name" "refs/tags/$name^{}" \
         "refs/heads/$name") ||
         refuse "$workflow" "TRACK USES $pin: git ls-remote failed or timed out"
-    [ -n "$listed" ] ||
-        refuse "$workflow" "TRACK USES $pin: $repo has no tag or branch $name"
     # An annotated tag is listed twice, the second time peeled to its commit.
     tagged=""
     peeled=""
     head=""
     while IFS=$'\t' read -r sha ref <&3; do
-        [[ "$sha" =~ ^[0-9a-f]{40}$ ]] ||
-            refuse "$workflow" "TRACK USES $pin: git ls-remote gave $sha $ref"
         case $ref in
         "refs/tags/$name") tagged=$sha ;;
         "refs/tags/$name^{}") peeled=$sha ;;
         "refs/heads/$name") head=$sha ;;
-        *) refuse "$workflow" "TRACK USES $pin: git ls-remote gave $sha $ref" ;;
         esac
     done 3<<<"$listed"
     if [ -n "$tagged" ]; then
         commits[$pin]=${peeled:-$tagged}
         say "$repo's commit for tag $name is ${commits[$pin]}"
-    elif [ -n "$peeled" ]; then
-        refuse "$workflow" "TRACK USES $pin: git ls-remote gave" \
-            "refs/tags/$name^{} without refs/tags/$name"
     else
+        [ -n "$head" ] ||
+            refuse "$workflow" "TRACK USES $pin: $repo has no tag or branch $name"
         commits[$pin]=$head
         say "$repo's commit for branch $name is ${commits[$pin]}"
     fi
@@ -1477,20 +1371,20 @@ trap cleanup EXIT
 # Makes absolute directory $1 and each missing above it, one level at a time,
 # adding each to made.
 make_dirs() {
-    local dir=$1 levels=()
+    local path=$1 levels=()
     # The walk up would never end on a relative path whose first part is
-    # missing, since ${dir%/*} leaves a path with no slash as it is.
-    if [ "${dir:0:1}" != / ]; then
-        say "make_dirs: $dir is not absolute"
+    # missing, since ${path%/*} leaves a path with no slash as it is.
+    if [ "${path:0:1}" != / ]; then
+        say "make_dirs: $path is not absolute"
         exit 1
     fi
-    while [ -n "$dir" ] && [ ! -d "$dir" ]; do
-        levels=("$dir" "${levels[@]}")
-        dir=${dir%/*}
+    while [ -n "$path" ] && [ ! -d "$path" ]; do
+        levels=("$path" "${levels[@]}")
+        path=${path%/*}
     done
-    for dir in "${levels[@]}"; do
-        mkdir -- "$dir"
-        made=("$dir" "${made[@]}")
+    for path in "${levels[@]}"; do
+        mkdir -- "$path"
+        made=("$path" "${made[@]}")
     done
 }
 

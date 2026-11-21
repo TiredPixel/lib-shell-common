@@ -9,13 +9,16 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
+prog=project/upgrade-pull
+
+usage() {
+    echo "Usage: $prog" >&2
     exit 2
-fi
+}
+
+[ $# -eq 0 ] || usage
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-prog=${0##*/}
 
 f_projects=.projects
 
@@ -96,7 +99,7 @@ export PROJECT_SUBMODULE_INIT=$dir/submodule-init
 
 unset PROJECT_BRANCH
 if [ "$branch" != "$default" ] && [ -f "$f_projects" ]; then
-    export PROJECT_BRANCH=$branch PROJECT_PROG=$prog
+    export PROJECT_BRANCH=$branch
 
     # A branch of that name that exists only on origin is refused, before any
     # submodule moves: the upgrade would run its Makefile, and anyone able to
@@ -105,20 +108,21 @@ if [ "$branch" != "$default" ] && [ -f "$f_projects" ]; then
     # left off. Each project's directory is printed resolved, so the sweep
     # below knows a listed project however .projects spells its path, as
     # each-without-project does. Assigned on its own, so that errexit sees the
-    # pass fail. The string is for the sh each-without-project runs, which
+    # pass fail. The string is for the bash each-without-project runs, which
     # expands it.
     # shellcheck disable=SC2016
-    PROJECT_LISTED=$("$dir/each-without-project" sh -c '
-        set -eu
+    PROJECT_LISTED=$("$dir/each-without-project" bash -c '
+        set -Eeuo pipefail
+        shopt -s inherit_errexit failglob
         git fetch -q origin
         if ! git show-ref --verify -q "refs/heads/$PROJECT_BRANCH" &&
             git show-ref --verify -q "refs/remotes/origin/$PROJECT_BRANCH"
         then
-            echo "$PROJECT_PROG: $PWD: origin/$PROJECT_BRANCH exists with no" \
+            echo "$0: $PWD: origin/$PROJECT_BRANCH exists with no" \
                 "local $PROJECT_BRANCH; check it out once reviewed" >&2
             exit 1
         fi
-        pwd -P')
+        pwd -P' "$prog")
     export PROJECT_LISTED
 fi
 
@@ -128,35 +132,6 @@ fi
 # would bring each project's own submodules current but never the project, so a
 # stage that reports having pulled everything would leave every project on
 # whatever commit its working tree happened to sit on.
-#
-# checkout before pull, because a submodule is checked out at a recorded commit
-# and a detached HEAD has nothing to pull into. The branch comes from
-# origin/HEAD rather than a literal, so a project whose default branch is not
-# the usual one still follows its own. git submodule update --remote is not
-# used: it also defaults to the remote HEAD, but under --rebase or --merge acts
-# on whatever branch the submodule already has checked out. Only the remote's
-# name is stripped, since a branch name may itself hold a slash.
-#
-# A listed project on the sweep's branch takes it here, in place of its default
-# branch, so its submodules are brought in line with that branch before foreach
-# descends into them. A new one starts from origin's default branch with no
-# upstream, so a push names its own. The string is for the sh foreach runs in
-# each submodule, which expands it.
-# shellcheck disable=SC2016
-git submodule foreach --recursive '
-    set -eu
-    ref=$(git symbolic-ref --short refs/remotes/origin/HEAD)
-    branch=${ref#origin/}
-    if [ -n "${PROJECT_BRANCH:-}" ] &&
-        printf "%s\n" "$PROJECT_LISTED" | grep -qxF -- "$(pwd -P)"; then
-        if git show-ref --verify -q "refs/heads/$PROJECT_BRANCH"; then
-            git checkout --no-recurse-submodules "$PROJECT_BRANCH"
-        else
-            git checkout --no-recurse-submodules -b "$PROJECT_BRANCH" \
-                --no-track "origin/$branch"
-        fi
-    else
-        git checkout --no-recurse-submodules "$branch"
-        git pull --ff-only --no-recurse-submodules
-    fi
-    "$PROJECT_SUBMODULE_INIT"'
+export PROJECT_SUBMODULE_CHECKOUT=$dir/submodule-checkout
+# shellcheck disable=SC2016 # Expanded by the sh foreach runs.
+git submodule foreach --recursive '"$PROJECT_SUBMODULE_CHECKOUT"'

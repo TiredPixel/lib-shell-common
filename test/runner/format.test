@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+#
+# Runs in scratch trees whose bin/settings defines the sets a case needs, with
+# every tool faked, the library's ansible/format running for real over them.
+# Each fake also appends its name to order.calls and exits 7 where FAKE_FAIL
+# names it; shfmt, yq and jq copy stdin to stdout, adding a line where
+# FAKE_REWRITE is set, and ansible-lint logs the ANSIBLE_CONFIG it sees.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/runner/format
+order=$test_tmp/order.calls
+export FORMAT_MOUNTS=1
+
+# Fakes command $1, running the shell code $2 once the shared lines have.
+fake() {
+    test_stub "$1" "echo $1 >>$(printf %q "$order")
+[ \"\${FAKE_FAIL-}\" != $1 ] || exit 7
+${2-}"
+}
+
+for tool in dockerfmt taplo mdformat dotenv-linter ruff semistandard prettier \
+    extra; do
+    fake "$tool"
+done
+for tool in shfmt yq jq; do
+    # shellcheck disable=SC2016 # The fake expands it.
+    fake "$tool" 'cat
+[ -z "${FAKE_REWRITE-}" ] || echo rewritten'
+done
+calls=$(printf %q "$test_tmp/ansible-lint.calls")
+fake ansible-lint "echo \"ANSIBLE_CONFIG=\${ANSIBLE_CONFIG-}\" >>$calls"
+: >"$order"
+
+# Makes a tree at $test_tmp/$1 with one workflow, and prints its path; each case
+# writes the tree's bin/settings.
+tree() {
+    local t=$test_tmp/$1
+    mkdir -p -- "$t/bin" "$t/.github/workflows"
+    echo 'on: push' >"$t/.github/workflows/build.yml"
+    echo "$t"
+}
+
+t=$(tree full)
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+format_before() {
+    [ -z "${FAKE_GUARD-}" ] || {
+        echo 'guard: refused' >&2
+        return 1
+    }
+}
+shell_files() { printf '%s\0' s.sh; }
+envrc_files() { printf '%s\0' .envrc; }
+docker_files() { printf '%s\0' Dockerfile; }
+yaml_files() { printf '%s\0' a.yml; }
+yaml_unsorted_files() { printf '%s\0' u.yml; }
+json_files() { printf '%s\0' a.json; }
+json_ordered_files() { printf '%s\0' o.json; }
+toml_files() { printf '%s\0' a.toml; }
+md_files() { printf '%s\0' README.md; }
+dotenv_files() { printf '%s\0' .env.example; }
+python_files() { printf '%s\0' a.py; }
+js_files() { printf '%s\0' a.js; }
+css_files() { printf '%s\0' a.css; }
+html_files() { printf '%s\0' a.html; }
+ansible_files() { printf '%s\0' play 'p q'; }
+ansible_env=(ANSIBLE_CONFIG=play/ansible.cfg)
+format_extra() {
+    check extra extra
+}
+EOF
+rewritten=(s.sh .envrc a.yml .github/workflows/build.yml u.yml a.json o.json)
+for f in "${rewritten[@]}"; do
+    if [ "$f" != .github/workflows/build.yml ]; then
+        echo "$f" >"$t/$f"
+    fi
+done
+
+progress='format: formatting 1 shell file(s)
+format: formatting 1 direnv file(s)
+format: formatting 1 Dockerfile(s)
+format: formatting 2 sorted YAML file(s)
+format: formatting 1 unsorted YAML file(s)
+format: formatting 1 JSON file(s)
+format: formatting 1 ordered JSON file(s)
+format: formatting 1 TOML file(s)
+format: formatting 1 Markdown file(s)
+format: formatting 1 dotenv file(s)
+format: formatting 1 Python file(s)
+format: formatting 1 JavaScript file(s)
+format: formatting 2 CSS and HTML file(s)
+format: formatting Ansible'
+
+passes=(shfmt shfmt dockerfmt yq yq yq jq jq taplo mdformat dotenv-linter ruff
+    ruff semistandard prettier ansible-lint extra)
+
+test_check full 0 '' "$progress" env -C "$t" "$script"
+test_calls full order "${passes[@]}"
+test_calls full shfmt '-i 4 --filename s.sh' '-i 4 -ln bash --filename .envrc'
+test_calls full dockerfmt '--newline --write Dockerfile'
+test_calls full yq "-P sort_keys\\(..\\)" "-P sort_keys\\(..\\)" '-P .'
+test_calls full jq '--sort-keys .' .
+test_calls full taplo 'fmt a.toml'
+test_calls full mdformat README.md
+test_calls full dotenv-linter 'fix --no-backup .env.example'
+test_calls full ruff 'check --fix-only a.py' 'format a.py'
+test_calls full semistandard '--fix a.js'
+test_calls full prettier '--write a.css a.html'
+test_calls full ansible-lint \
+    "--offline --project-dir . --strict --exclude lib/ --exclude group_vars/\\*/\\*vault.yml --fix -- play p\\ q" \
+    ANSIBLE_CONFIG=play/ansible.cfg
+test_calls full extra ''
+
+# Only a file whose formatted form differs is written back, and named.
+test_check rewrite 0 '' "$(
+    sed -n '1p' <<<"$progress"
+    echo 'format: s.sh: rewritten'
+    sed -n '2p' <<<"$progress"
+    echo 'format: .envrc: rewritten'
+    sed -n '3,4p' <<<"$progress"
+    echo 'format: a.yml: rewritten'
+    echo 'format: .github/workflows/build.yml: rewritten'
+    sed -n '5p' <<<"$progress"
+    echo 'format: u.yml: rewritten'
+    sed -n '6p' <<<"$progress"
+    echo 'format: a.json: rewritten'
+    sed -n '7p' <<<"$progress"
+    echo 'format: o.json: rewritten'
+    sed -n '8,$p' <<<"$progress"
+)" env -C "$t" FAKE_REWRITE=1 "$script"
+if [ "$(<"$t/a.yml")" != $'a.yml\nrewritten' ]; then
+    test_fail rewrite "a.yml holds: $(<"$t/a.yml")"
+fi
+test_calls rewrite order "${passes[@]}"
+
+# A failing pass is named at the end, and every pass after it still runs.
+test_check fails 1 '' "$progress"$'\nformat: failed: ruff ruff-format' \
+    env -C "$t" FAKE_FAIL=ruff "$script"
+test_calls fails order "${passes[@]}"
+
+# The guard runs first, so a refusal there rewrites nothing.
+test_check guard 1 '' 'guard: refused' env -C "$t" FAKE_GUARD=1 "$script"
+test_calls guard order
+
+# Without the mounts format-host sets up, nothing is formatted.
+for mounts in unset 0; do
+    if [ "$mounts" = unset ]; then
+        run=(env -C "$t" -u FORMAT_MOUNTS "$script")
+    else
+        run=(env -C "$t" FORMAT_MOUNTS="$mounts" "$script")
+    fi
+    test_check "mounts-$mounts" 1 '' \
+        'format: the tree is not mounted; run make format' "${run[@]}"
+    test_calls "mounts-$mounts" order
+done
+
+test_usage usage format env -C "$t" "$script" x
+
+# With only an Ansible set, printing nothing, ansible-lint gets no path, and the
+# workflows are still formatted.
+t=$(tree bare)
+cat >"$t/bin/settings" <<'EOF'
+# shellcheck shell=bash
+ansible_files() { :; }
+EOF
+test_check bare 0 '' $'format: formatting 1 sorted YAML file(s)\nformat: formatting Ansible' \
+    env -C "$t" "$script"
+test_calls bare order yq ansible-lint
+test_calls bare ansible-lint \
+    "--offline --project-dir . --strict --exclude lib/ --exclude group_vars/\\*/\\*vault.yml --fix --" \
+    ANSIBLE_CONFIG=
+
+test_finish

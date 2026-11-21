@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=docker/build-compose
+
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
 source "$dir/describe"

@@ -1,0 +1,38 @@
+# shellcheck shell=bash
+#
+# The lister runs as a background job, its status taken through wait, since bash
+# can lose a process substitution's status.
+
+# Reads into the array named by $1 what the command after it prints,
+# NUL-separated, and ends the run where the command fails or, unless
+# --may-be-empty comes first, prints nothing: a set that names nothing is a
+# mistake, never a clean pass. The scratch file is removed once open for both
+# writing and reading, so no later exit leaves it behind.
+collect() {
+    local -n collect_into=$1
+    local collect_empty='' collect_out collect_write collect_read
+    local collect_status=0
+
+    shift
+    if [ "$1" = --may-be-empty ]; then
+        collect_empty=1
+        shift
+    fi
+    collect_out=$(mktemp)
+    exec {collect_write}>"$collect_out"
+    exec {collect_read}<"$collect_out"
+    rm -- "$collect_out"
+    "$@" >&"$collect_write" &
+    wait $! || collect_status=$?
+    exec {collect_write}>&-
+    if [ "$collect_status" -ne 0 ]; then
+        echo "${prog:-${0##*/}}: bin/settings: $1 failed ($collect_status)" >&2
+        exit 1
+    fi
+    mapfile -t -d '' collect_into <&"$collect_read"
+    exec {collect_read}<&-
+    if [ ${#collect_into[@]} -eq 0 ] && [ -z "$collect_empty" ]; then
+        echo "${prog:-${0##*/}}: bin/settings: $1 names nothing" >&2
+        exit 1
+    fi
+}

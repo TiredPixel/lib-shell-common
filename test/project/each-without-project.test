@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 #
-# Tests project/each-without-project against real repositories in a scratch dir:
-# app, whose submodules lib1 and lib2 are listed in its .projects, and whose
-# plain directory sub is not a submodule. The command swept is a recorder that
-# logs its directory and arguments, a line to a call, and exits 3 where the
-# directory holds a file named fail. Every case builds its fixture afresh.
-#
-# Run: test/project/each-without-project.test. Exits 1 naming each case that
-# failed.
+# Runs against real repositories in a scratch dir: app, whose submodules lib1
+# and lib2 are listed in its .projects, and whose plain directory sub is not a
+# submodule. The command swept is a recorder that logs its directory and
+# arguments, a line to a call, and exits 3 where the directory holds a file
+# named fail. Every case builds its fixture afresh.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-each=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/each-without-project
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+each=$root/project/each-without-project
 
 # Nothing from the caller's configuration reaches the fixtures. File URLs are
 # refused to submodules by default.
@@ -26,9 +25,9 @@ export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 # The cases match git's messages, which git translates.
 export LC_ALL=C
 
-p="each-without-project"
+p="project/each-without-project"
 
-cat >"$work/record" <<'EOF'
+cat >"$test_tmp/record" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -38,19 +37,8 @@ fi
 echo "$PWD $*" >>"$FAKE_LOG"
 [ ! -f fail ] || exit 3
 EOF
-chmod +x "$work/record"
+chmod +x "$test_tmp/record"
 
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
-failures=0
 n=0
 
 # A fresh fixture in $w, with app's submodules named $@ (lib1 and lib2 if none)
@@ -58,7 +46,7 @@ n=0
 fixture() {
     local sub
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     git init -q "$w/app"
     if [ $# -eq 0 ]; then
@@ -79,7 +67,7 @@ fixture() {
 # keeping its status in rc, its stdout in $w/out and its stderr in $w/err.
 run() {
     rc=0
-    (cd "$w/app/$1" && "$each" "$work/record" a b) >"$w/out" 2>"$w/err" ||
+    (cd "$w/app/$1" && "$each" "$test_tmp/record" a b) >"$w/out" 2>"$w/err" ||
         rc=$?
 }
 
@@ -87,16 +75,16 @@ run() {
 # called as $3 has it.
 expect() {
     if [ "$rc" != "$2" ]; then
-        fail "$1" "exit $rc, not $2: $(<"$w/err")"
+        test_fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
-        fail "$1" "the calls were: $(<"$FAKE_LOG")"
+        test_fail "$1" "the calls were: $(<"$FAKE_LOG")"
     fi
 }
 
 # Records a failure of case $1 unless stderr holds the line $2.
 expect_err() {
     if ! grep -qxF -- "$2" "$w/err"; then
-        fail "$1" "stderr lacks $2: $(<"$w/err")"
+        test_fail "$1" "stderr lacks $2: $(<"$w/err")"
     fi
 }
 
@@ -107,19 +95,17 @@ fixture
 run .
 expect top 0 "${swept//WORK/$w}"
 if [ "$(<"$w/err")" != "$(printf '%s\n' "$p: lib1" "$p: lib2")" ]; then
-    fail top "stderr is: $(<"$w/err")"
+    test_fail top "stderr is: $(<"$w/err")"
 fi
 if [ -s "$w/out" ]; then
-    fail top "stdout is: $(<"$w/out")"
+    test_fail top "stdout is: $(<"$w/out")"
 fi
 
 # With no command, the usage is printed and nothing runs.
 fixture
-rc=0
-(cd "$w/app" && "$each") >"$w/out" 2>"$w/err" || rc=$?
-expect usage 2 ""
-if [ "$(<"$w/err")" != "Usage: $p [--from PROJECT] COMMAND [ARG...]" ]; then
-    fail usage "stderr is: $(<"$w/err")"
+test_usage usage "$p [--from PROJECT] COMMAND [ARG...]" env -C "$w/app" "$each"
+if [ -s "$FAKE_LOG" ]; then
+    test_fail usage "the calls were: $(<"$FAKE_LOG")"
 fi
 
 # --from with no project, an empty one, or no command after it prints the usage
@@ -131,23 +117,23 @@ from_usage() {
     expect "from-usage $*" 2 ""
 }
 from_usage --from
-from_usage --from "" "$work/record"
+from_usage --from "" "$test_tmp/record"
 from_usage --from lib2
 
 # --from starts the sweep at the project named, skipping those listed before it.
 fixture
 rc=0
-(cd "$w/app" && "$each" --from lib2 "$work/record" a b) >"$w/out" \
+(cd "$w/app" && "$each" --from lib2 "$test_tmp/record" a b) >"$w/out" \
     2>"$w/err" || rc=$?
 expect from 0 "$w/app/lib2 a b"
 if [ "$(<"$w/err")" != "$p: lib2" ]; then
-    fail from "stderr is: $(<"$w/err")"
+    test_fail from "stderr is: $(<"$w/err")"
 fi
 
 # --from the first project sweeps them all.
 fixture
 rc=0
-(cd "$w/app" && "$each" --from lib1 "$work/record" a b) >"$w/out" \
+(cd "$w/app" && "$each" --from lib1 "$test_tmp/record" a b) >"$w/out" \
     2>"$w/err" || rc=$?
 expect from-first 0 "${swept//WORK/$w}"
 
@@ -155,7 +141,7 @@ expect from-first 0 "${swept//WORK/$w}"
 # runs.
 fixture
 rc=0
-(cd "$w/app" && "$each" --from lib3 "$work/record" a b) >"$w/out" \
+(cd "$w/app" && "$each" --from lib3 "$test_tmp/record" a b) >"$w/out" \
     2>"$w/err" || rc=$?
 expect from-unlisted 1 ""
 expect_err from-unlisted "$p: lib3: not listed in $w/app/.projects, so the \
@@ -163,7 +149,7 @@ sweep cannot resume from it"
 fixture
 rm -- "$w/app/.projects"
 rc=0
-(cd "$w/app" && "$each" --from lib1 "$work/record" a b) >"$w/out" \
+(cd "$w/app" && "$each" --from lib1 "$test_tmp/record" a b) >"$w/out" \
     2>"$w/err" || rc=$?
 expect from-no-list 1 ""
 
@@ -231,7 +217,7 @@ fixture
 mkdir "$w/plain"
 printf 'lib1\n' >"$w/plain/.projects"
 rc=0
-(cd "$w/plain" && GIT_CEILING_DIRECTORIES=$work "$each" "$work/record" a b) \
+(cd "$w/plain" && GIT_CEILING_DIRECTORIES=$test_tmp "$each" "$test_tmp/record" a b) \
     >/dev/null 2>"$w/err" || rc=$?
 expect outside-repository 128 ""
 expect_err outside-repository "fatal: not a git repository (or any of the \
@@ -245,6 +231,4 @@ expect backslash 0 "$w/app/lib\\n1 a b
 $w/app/lib2 a b"
 expect_err backslash "$p: lib\\n1"
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

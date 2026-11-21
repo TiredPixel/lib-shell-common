@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# Runs in a scratch tree whose bin/lint is a fake exiting with FAKE_LINT's
+# status, and whose one test prints "said" and exits with FAKE_TEST's status;
+# testing/run runs for real.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/runner/test
+
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub lint 'exit "${FAKE_LINT:-0}"'
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub ran 'exit "${FAKE_TEST:-0}"'
+
+t=$test_tmp/tree
+mkdir -p "$t/bin" "$t/test/a"
+ln -s -- "$test_tmp/path/lint" "$t/bin/lint"
+cat >"$t/test/a/one.test" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+echo said
+ran "$0"
+EOF
+chmod +x -- "$t/test/a/one.test"
+
+ran=$'test: running 1 shell test(s)\ntest: test/a/one.test\nsaid'
+
+test_check full 0 '' "$ran"$'\ntest: 1 of 1 passed' env -C "$t" "$script"
+test_calls full lint ''
+test_calls full ran ./test/a/one.test
+
+test_check named 0 '' "$ran"$'\ntest: 1 of 1 passed' \
+    env -C "$t" "$script" test/a/one.test
+test_calls named lint
+test_calls named ran ./test/a/one.test
+
+# A failed lint ends the run before the tests.
+test_check lint-fails 5 '' '' env -C "$t" FAKE_LINT=5 "$script"
+test_calls lint-fails lint ''
+test_calls lint-fails ran
+
+test_check test-fails 1 '' \
+    "$ran"$'\ntest: test/a/one.test failed\ntest: 0 of 1 passed\ntest: failed: shell' \
+    env -C "$t" FAKE_TEST=3 "$script"
+test_calls test-fails lint ''
+test_calls test-fails ran ./test/a/one.test
+
+for args in test/a/missing.test bin/lint "test/a/one.test -x"; do
+    read -r -a names <<<"$args"
+    test_usage "refused $args" 'test [test/PATH.test...]' \
+        env -C "$t" "$script" "${names[@]}"
+done
+
+test_finish

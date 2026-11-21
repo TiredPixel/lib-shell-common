@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# Runs against real repositories in a scratch dir: app, with submodules lib and
+# other, each with a bare remote and an upstream clone that commits to it. lib's
+# upstream adds a submodule of its own, deep, so its recorded commit is seen
+# checked out after the move.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+prog=project/submodule-upgrade
+upgrade=$root/$prog
+
+# Nothing from the caller's configuration reaches the fixtures, and no fixture
+# finds a repository above the scratch dir. The file protocol, local paths
+# included, is refused to submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$test_tmp
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+n=0
+
+# Creates bare remote $w/$1.git and $w/$1.up, a clone holding one commit on
+# main, pushed.
+mkrepo() {
+    git init -q --bare "$w/$1.git"
+    git init -q "$w/$1.up"
+    git -C "$w/$1.up" commit -q --allow-empty -m init
+    git -C "$w/$1.up" remote add origin "$w/$1.git"
+    git -C "$w/$1.up" push -q -u origin main
+}
+
+# A fresh fixture in $w: app at $w/app with lib and other checked out at their
+# first commits, then lib's upstream one commit on, adding deep.
+fixture() {
+    n=$((n + 1))
+    w=$test_tmp/$n
+    mkdir "$w"
+    mkrepo lib
+    mkrepo other
+    mkrepo deep
+    git init -q "$w/app"
+    git -C "$w/app" submodule add -q "$w/lib.git" lib
+    git -C "$w/app" submodule add -q "$w/other.git" other
+    git -C "$w/app" commit -q -m init
+    git -C "$w/lib.up" submodule add -q "$w/deep.git" deep
+    git -C "$w/lib.up" commit -q -m "add deep"
+    git -C "$w/lib.up" push -q
+}
+
+# Runs the script in app with the arguments after $1, and fails case $1 unless
+# it exits 0 with no stdout; stderr carries git's progress, scratch paths and
+# all.
+upgrades() {
+    local rc=0
+    env -C "$w/app" "$upgrade" "${@:2}" </dev/null >"$test_tmp/upgrade.out" \
+        2>"$test_tmp/upgrade.err" || rc=$?
+    if [ "$rc" -ne 0 ] || [ -s "$test_tmp/upgrade.out" ]; then
+        test_fail "$1" "exit $rc, stdout: $(<"$test_tmp/upgrade.out"), stderr:
+$(<"$test_tmp/upgrade.err")"
+    fi
+}
+
+# Fails case $1 unless app's $2 is on branch $3 at the head of $w/$2.git's $3,
+# with origin/HEAD naming it.
+moved() {
+    local at want head
+    at=$(git -C "$w/app/$2" rev-parse HEAD)
+    want=$(git -C "$w/$2.git" rev-parse "$3")
+    head=$(git -C "$w/app/$2" symbolic-ref HEAD)
+    if [ "$at" != "$want" ] || [ "$head" != "refs/heads/$3" ]; then
+        test_fail "$1" "$2 is at $at on $head, not $want on $3"
+    fi
+    head=$(git -C "$w/app/$2" symbolic-ref refs/remotes/origin/HEAD)
+    [ "$head" = "refs/remotes/origin/$3" ] ||
+        test_fail "$1" "$2's origin/HEAD is $head"
+}
+
+# A detached submodule moves to its origin's default branch, its own submodule
+# checked out at the commit it records, and the parent's other submodule stays.
+fixture
+before=$(git -C "$w/app/other" rev-parse HEAD)
+upgrades moves lib
+moved moves lib main
+[ "$(git -C "$w/app/lib/deep" rev-parse HEAD)" = \
+    "$(git -C "$w/app/lib" rev-parse HEAD:deep)" ] ||
+    test_fail moves "deep is not at the commit lib records"
+[ "$(git -C "$w/app/other" rev-parse HEAD)" = "$before" ] ||
+    test_fail moves "other moved"
+
+# A default branch renamed upstream since the clone is followed, and each PATH
+# given moves.
+fixture
+git -C "$w/lib.up" switch -q -c trunk/next
+git -C "$w/lib.up" commit -q --allow-empty -m next
+git -C "$w/lib.up" push -q -u origin trunk/next
+git -C "$w/lib.git" symbolic-ref HEAD refs/heads/trunk/next
+git -C "$w/other.up" commit -q --allow-empty -m on
+git -C "$w/other.up" push -q
+upgrades renamed lib other
+moved renamed lib trunk/next
+moved renamed other main
+
+# A PATH that is not a checked-out submodule here is refused before any PATH
+# moves: an uninitialised submodule, a directory of the parent, one inside a
+# submodule, and one missing.
+fixture
+git -C "$w/app" submodule deinit -q other
+mkdir "$w/app/docs" "$w/app/lib/sub"
+at=$(git -C "$w/app/lib" rev-parse HEAD)
+for path in other docs lib/sub missing; do
+    test_check "refused-$path" 1 '' \
+        "$prog: $path: not a checked-out submodule of this repository" \
+        env -C "$w/app" "$upgrade" lib "$path"
+done
+[ "$(git -C "$w/app/lib" rev-parse HEAD)" = "$at" ] ||
+    test_fail refused "lib moved"
+
+test_usage usage "$prog PATH..." "$upgrade"
+
+test_finish

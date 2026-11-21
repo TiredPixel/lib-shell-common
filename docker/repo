@@ -13,8 +13,10 @@
 # below cannot.
 REPO=$(cat -- .dockerrepo) || REPO=""
 
-if [ -z "$REPO" ]; then
-    echo "${0##*/}: REPO: .dockerrepo missing or empty;" \
+# Whitespace alone counts as empty, since docker/login would then name no
+# registry and send its credential to Docker Hub.
+if [ -z "${REPO//[[:space:]]/}" ]; then
+    echo "${prog:-${0##*/}}: REPO: .dockerrepo missing or empty;" \
         "write the image repository, such as ghcr.io/OWNER/NAME, to it" >&2
     exit 1
 fi

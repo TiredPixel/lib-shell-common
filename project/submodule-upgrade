@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#
+# Moves each PATH, a submodule checked out here, to the head of the branch its
+# origin names as default now, fast-forward only, then brings PATH's own
+# submodules to the commits it records. The branch is asked of origin each run
+# and written to origin/HEAD, since by default a fetch leaves the one cached at
+# clone as it was. git submodule update --remote is not used: under --rebase or
+# --merge it acts on whatever branch the submodule already has checked out.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=project/submodule-upgrade
+
+usage() {
+    echo "Usage: $prog PATH..." >&2
+    exit 2
+}
+
+[ $# -ge 1 ] || usage
+
+dir=$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+top=$(git rev-parse --show-toplevel)
+
+# An empty directory, as an uninitialised submodule is, answers with this
+# repository, which has no superproject here.
+for path; do
+    super=$(git -C "$path" rev-parse --show-superproject-working-tree \
+        2>/dev/null) || super=
+    prefix=$(git -C "$path" rev-parse --show-prefix 2>/dev/null) || prefix=x
+    if [ "$super" != "$top" ] || [ -n "$prefix" ]; then
+        echo "$prog: $path: not a checked-out submodule of this repository" >&2
+        exit 1
+    fi
+done
+
+for path; do
+    git -C "$path" fetch -q origin
+    symref=$(git -C "$path" ls-remote --symref origin HEAD)
+    read -r _ ref _ <<<"$symref"
+    branch=${ref#refs/heads/}
+    git -C "$path" remote set-head origin "$branch"
+    git -C "$path" checkout -q --no-recurse-submodules "$branch"
+    git -C "$path" pull -q --ff-only --no-recurse-submodules origin "$branch"
+    (cd "$path" && "$dir/submodule-init") >&2
+    git -C "$path" submodule update -q --init --checkout --recursive
+done

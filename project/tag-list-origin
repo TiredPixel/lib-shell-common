@@ -13,17 +13,21 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
+prog=project/tag-list-origin
+
+usage() {
+    echo "Usage: $prog" >&2
     exit 2
-fi
+}
+
+[ $# -eq 0 ] || usage
 
 limit=60
 status=0
 timeout --foreground "$limit" git ls-remote --tags --refs origin || status=$?
 
 if [ "$status" -eq 124 ]; then
-    echo "${0##*/}: $PWD: origin did not answer within $limit s" >&2
+    echo "$prog: $PWD: origin did not answer within $limit s" >&2
 fi
 
 exit "$status"

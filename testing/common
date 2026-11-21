@@ -1,0 +1,23 @@
+# shellcheck shell=bash
+#
+# Sourced by the test runners once prog is set. Sets workers to
+# PYTEST_XDIST_AUTO_NUM_WORKERS, which pytest-xdist also reads, or to the CPU
+# count where that is unset or empty, and refuses any value but a whole number
+# of at least 1, which xdist would take with only a warning.
+
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+if [ -z "${PYTEST_XDIST_AUTO_NUM_WORKERS-}" ]; then
+    unset PYTEST_XDIST_AUTO_NUM_WORKERS
+    workers=$(nproc)
+elif [[ $PYTEST_XDIST_AUTO_NUM_WORKERS =~ ^[1-9][0-9]*$ ]]; then
+    workers=$PYTEST_XDIST_AUTO_NUM_WORKERS
+else
+    printf '%s: PYTEST_XDIST_AUTO_NUM_WORKERS is %q,' "${prog:-${0##*/}}" \
+        "$PYTEST_XDIST_AUTO_NUM_WORKERS" >&2
+    echo ' not a whole number of at least 1' >&2
+    exit 1
+fi
+
+is_shell_test() {
+    [[ $1 == test/*.test ]] && [ -f "$1" ]
+}

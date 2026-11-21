@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# Runs in place against real repositories in a scratch dir: a parent, app, whose
+# .projects names its submodule lib, so the real project/each sweeps lib, then
+# app.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/project/tag-next
+
+# Nothing from the caller's configuration reaches the fixtures, and nothing
+# above the scratch dir is taken for a repository. File URLs are refused to
+# submodules by default.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+export GIT_CEILING_DIRECTORIES=$test_tmp
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
+export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
+export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
+
+n=0
+
+# A fresh fixture in $w, as the header describes.
+fixture() {
+    n=$((n + 1))
+    w=$test_tmp/$n
+    mkdir "$w"
+    git init -q --bare "$w/lib.git"
+    git init -q "$w/lib.up"
+    git -C "$w/lib.up" commit -q --allow-empty -m init
+    git -C "$w/lib.up" push -q "$w/lib.git" main
+    git init -q "$w/app"
+    git -C "$w/app" submodule add -q "$w/lib.git" lib
+    echo lib >"$w/app/.projects"
+    git -C "$w/app" add .projects
+    git -C "$w/app" commit -q -m init
+}
+
+# Tags repository $w/$1 with each tag after it.
+tag() {
+    local r=$1 t
+    shift
+    for t in "$@"; do
+        git -C "$w/$r" tag "$t"
+    done
+}
+
+# Runs project/tag-next in app.
+# shellcheck disable=SC2317 # Called through test_check.
+next() (
+    cd -- "$w/app"
+    "$script"
+)
+
+# project/each names each project on stderr as it sweeps.
+swept=$'project/each-without-project: lib\nproject/each: app'
+
+# The newest across the sweep, in version order, and only of the MAJOR.MINOR
+# form.
+fixture
+tag app 1.2 1.10 v9.0 9.0.1
+tag app/lib 1.9 2.3 2.3-rc
+test_check newest 0 2.4 "$swept" next
+
+# A minor with a leading zero is decimal.
+fixture
+tag app 1.08
+test_check leading-zero 0 1.9 "$swept" next
+
+test_usage argument project/tag-next "$script" x
+
+test_finish

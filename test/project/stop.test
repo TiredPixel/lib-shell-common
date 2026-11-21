@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# Tests project/stop against real repositories in a scratch dir, app and its
-# submodule lib, listed in its .projects, with docker faked on PATH. The fake
-# logs the project it runs in and its arguments, a line to a call. compose
-# config --services prints the project's file fake-services, if any, or fails
-# where it holds fake-config-fails; compose stop exits FAKE_STOP_RC. Any other
-# call fails. Every case builds its fixture afresh and runs project/stop in app.
-#
-# Run: test/project/stop.test. Exits 1 naming each case that failed.
+# Runs against real repositories in a scratch dir, app and its submodule lib,
+# listed in its .projects, with docker faked on PATH. The fake logs the project
+# it runs in and its arguments, a line to a call. compose config --services
+# prints the project's file fake-services, if any, or fails where it holds
+# fake-config-fails; compose stop exits FAKE_STOP_RC. Any other call fails.
+# Every case builds its fixture afresh and runs project/stop in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-stop=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/stop
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+stop=$root/project/stop
 
 # Nothing from the caller's configuration reaches the fixtures. File URLs are
 # refused to submodules by default.
@@ -24,8 +24,7 @@ export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
-mkdir "$work/bin"
-cat >"$work/bin/docker" <<'EOF'
+cat >"$test_tmp/path/docker" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -44,20 +43,8 @@ case $* in
 *) exit 2 ;;
 esac
 EOF
-chmod +x "$work/bin/docker"
-export PATH=$work/bin:$PATH
+chmod +x "$test_tmp/path/docker"
 
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
-failures=0
 n=0
 
 # A fresh fixture in $w: app and lib, each with a compose.yaml and the service
@@ -65,7 +52,7 @@ n=0
 fixture() {
     local p
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     git init -q "$w/lib"
     git -C "$w/lib" commit -q --allow-empty -m init
@@ -87,13 +74,13 @@ check() {
     local rc=0
     (cd "$w/app" && "$stop") >"$w/out" 2>"$w/err" || rc=$?
     if [ "$rc" != "$2" ]; then
-        fail "$1" "exit $rc, not $2: $(<"$w/err")"
+        test_fail "$1" "exit $rc, not $2: $(<"$w/err")"
     elif [ "$(<"$FAKE_LOG")" != "$3" ]; then
-        fail "$1" "docker was called as: $(<"$FAKE_LOG")"
+        test_fail "$1" "docker was called as: $(<"$FAKE_LOG")"
     elif [ -s "$w/out" ]; then
-        fail "$1" "stdout is: $(<"$w/out")"
+        test_fail "$1" "stdout is: $(<"$w/out")"
     elif [ "$(<"$w/err")" != "$4" ]; then
-        fail "$1" "stderr is: $(<"$w/err")"
+        test_fail "$1" "stderr is: $(<"$w/err")"
     fi
 }
 
@@ -103,25 +90,12 @@ down() {
 }
 
 # What the sweep writes to stderr as it enters lib, and then app.
-lib="each-without-project: lib"
-both="$lib"$'\n'"each: app"
+lib="project/each-without-project: lib"
+both="$lib"$'\n'"project/each: app"
 
 # Each project is stopped.
 fixture
 check both 0 "$(down lib && down app)" "$both"
-
-# Every name compose looks for is taken.
-for f in compose.yml docker-compose.yaml docker-compose.yml; do
-    fixture
-    mv -- "$w/app/compose.yaml" "$w/app/$f"
-    rm -- "$w/app/lib/compose.yaml"
-    check "$f" 0 "$(down app)" "$both"
-done
-
-# A project with no compose file is passed over without asking compose.
-fixture
-rm -- "$w/app/compose.yaml" "$w/app/lib/compose.yaml"
-check no-compose 0 "" "$both"
 
 # A project with no service to stop, such as one whose services all sit behind a
 # profile, is passed over.
@@ -143,15 +117,9 @@ FAKE_STOP_RC=1 check stop-fails 1 "$(down lib)" "$lib"
 
 # Any argument is a usage error, refused before docker is called.
 fixture
-rc=0
-(cd "$w/app" && "$stop" x) >"$w/out" 2>"$w/err" || rc=$?
-if [ "$rc" != 2 ] || [ -s "$w/out" ] ||
-    [ "$(<"$w/err")" != "Usage: stop" ]; then
-    fail argument "exit $rc: $(<"$w/out")$(<"$w/err")"
-elif [ -s "$FAKE_LOG" ]; then
-    fail argument "docker was called as: $(<"$FAKE_LOG")"
+test_usage argument project/stop env -C "$w/app" "$stop" x
+if [ -s "$FAKE_LOG" ]; then
+    test_fail argument "docker was called as: $(<"$FAKE_LOG")"
 fi
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

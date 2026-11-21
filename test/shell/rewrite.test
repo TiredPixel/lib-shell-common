@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#
+# Sources shell/rewrite and runs rewrite on a scratch file, with TMPDIR a
+# scratch directory that each case checks is left empty.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+# shellcheck source=shell/rewrite
+source "$root/shell/rewrite"
+
+prog=format
+f=$test_tmp/f
+mkdir -- "$test_tmp/tmpdir"
+export TMPDIR=$test_tmp/tmpdir
+
+# Fails case $1 unless file f holds $2, and is the inode $3, and TMPDIR is
+# empty.
+holds() {
+    if [ "$(<"$f")" != "$2" ]; then
+        test_fail "$1" "f holds: $(<"$f")"
+    elif [ "$(stat -c %i -- "$f")" != "$3" ]; then
+        test_fail "$1" "f is a new inode"
+    elif [ -n "$(ls -A -- "$TMPDIR")" ]; then
+        test_fail "$1" "left in TMPDIR: $(ls -A -- "$TMPDIR")"
+    fi
+}
+
+echo b >"$f"
+inode=$(stat -c %i -- "$f")
+
+test_check changed 0 '' "format: $f: rewritten" rewrite "$f" sed s/b/a/
+holds changed a "$inode"
+
+test_check unchanged 0 '' '' rewrite "$f" cat
+holds unchanged a "$inode"
+
+test_check fails 1 '' 'said' rewrite "$f" sh -c 'echo said >&2; echo x; exit 3'
+holds fails a "$inode"
+
+# bash's own message for the failed redirection names the file.
+chmod -w -- "$f"
+rc=0
+rewrite "$f" sed s/a/c/ 2>"$test_tmp/err" || rc=$?
+chmod u+w -- "$f"
+if [ "$rc" != 1 ]; then
+    test_fail write-fails "exit $rc, not 1: $(<"$test_tmp/err")"
+elif [[ $(<"$test_tmp/err") != *": $f: Permission denied" ]]; then
+    test_fail write-fails "stderr is: $(<"$test_tmp/err")"
+fi
+holds write-fails a "$inode"
+
+# Stands in for cat. Copying f fails while copy_fails is set. Each of the next
+# write_fails writes to f leaves a part of the new content and fails, as on a
+# full filesystem, the shell having already truncated f.
+copy_fails=0
+write_fails=0
+cat() {
+    if [ "$copy_fails" -eq 1 ] && [ "$2" = "$f" ]; then
+        return 1
+    fi
+    if [ "$write_fails" -gt 0 ] && [ /dev/stdout -ef "$f" ]; then
+        write_fails=$((write_fails - 1))
+        printf x
+        return 1
+    fi
+    command cat "$@"
+}
+
+write_fails=1
+test_check write-stops 1 '' '' rewrite "$f" sed s/a/c/
+holds write-stops a "$inode"
+
+# With no copy of the original to fall back on, f is not written.
+copy_fails=1
+test_check copy-fails 1 '' '' rewrite "$f" sed s/a/c/
+copy_fails=0
+holds copy-fails a "$inode"
+
+# Where the original cannot be written back either, its copy is kept and named.
+write_fails=2
+rc=0
+rewrite "$f" sed s/a/c/ 2>"$test_tmp/err" || rc=$?
+kept=$(find "$TMPDIR" -type f)
+if [ "$rc" != 1 ]; then
+    test_fail restore-fails "exit $rc, not 1: $(<"$test_tmp/err")"
+elif [ "$(<"$test_tmp/err")" != "format: $f: original kept in $kept" ]; then
+    test_fail restore-fails "stderr is: $(<"$test_tmp/err")"
+elif [ "$(<"$kept")" != a ]; then
+    test_fail restore-fails "the copy holds: $(<"$kept")"
+fi
+rm -- "$kept"
+echo a >"$f"
+holds restore-fails a "$inode"
+
+test_finish

@@ -1,103 +1,84 @@
 #!/usr/bin/env bash
 #
-# Tests terraform/plan-cli in a scratch project with terraform faked on PATH, so
-# nothing is initialised or planned. The fake terraform logs each call's
-# arguments, then "plan present" where .terraform.plan exists as it runs; it
-# fails where its first argument is FAKE_FAIL, and writes "plan" to the file
-# plan -out names.
-#
-# Run: test/terraform/plan-cli.test. Exits 1 naming each case that failed.
+# terraform is faked on PATH, so nothing is initialised or planned. The fake
+# logs each call's arguments, then "plan present" where .terraform.plan exists
+# as it runs; it fails where its first argument is FAKE_FAIL, and writes "plan"
+# to the file plan -out names.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-script=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../terraform")/plan-cli
-fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/terraform/plan-cli")
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/bin"
-cp -p -- "$fixtures/terraform" "$work/bin/"
+script=$root/terraform/plan-cli
 
-export FAKE_LOG=$work/log
-export PATH=$work/bin:$PATH
-
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
+cp -p -- "$root/test/fixtures/terraform/plan-cli/terraform" "$test_tmp/path/"
+export FAKE_LOG=$test_tmp/terraform.calls
+: >"$FAKE_LOG"
 
 init='init -lockfile=readonly'
 plan='plan -out .terraform.plan'
-removing='plan-cli: .terraform.plan: removing an earlier plan'
+removing='terraform/plan-cli: .terraform.plan: removing an earlier plan'
 
-# Runs plan-cli in a fresh project, holding a plan where $2 is "stale", with the
-# fake failing at $3, or nowhere where that is empty, and checks it exits $4,
-# prints nothing on stdout and $5 on stderr, calls terraform as $6, and leaves
-# the fake's plan where $7 is "plan", else none.
-check() {
-    local name=$1 stale=$2 rc=0
-    rm -rf -- "$work/project"
-    mkdir "$work/project"
-    if [ "$stale" = stale ]; then
-        echo stale >"$work/project/.terraform.plan"
+# Makes the project afresh and enters it, holding an earlier plan where $1 is
+# "stale".
+project() {
+    cd -- "$test_tmp"
+    rm -rf -- project
+    mkdir -- project
+    if [ "${1-}" = stale ]; then
+        echo stale >project/.terraform.plan
     fi
-    : >"$FAKE_LOG"
-    (cd "$work/project" && FAKE_FAIL=$3 "$script") >"$work/out" \
-        2>"$work/err" || rc=$?
-    if [ "$rc" -ne "$4" ]; then
-        fail "$name" "exit $rc, not $4: $(<"$work/err")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ "$(<"$work/err")" != "$5" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"
-    elif [ "$(<"$FAKE_LOG")" != "$6" ]; then
-        fail "$name" "terraform was called as: $(<"$FAKE_LOG")"
-    elif [ "$7" = plan ]; then
-        if ! [ -f "$work/project/.terraform.plan" ] ||
-            [ "$(<"$work/project/.terraform.plan")" != plan ]; then
-            fail "$name" "the plan is not the fake's"
+    cd -- project
+}
+
+# Fails case $1 unless the plan holds $2, or, where that is empty, no plan is
+# left.
+plan_is() {
+    if [ -z "$2" ]; then
+        if [ -e .terraform.plan ]; then
+            test_fail "$1" ".terraform.plan is left"
         fi
-    elif [ -e "$work/project/.terraform.plan" ]; then
-        fail "$name" ".terraform.plan is left"
+    elif ! [ -f .terraform.plan ] || [ "$(<.terraform.plan)" != "$2" ]; then
+        test_fail "$1" "the plan is not $2"
     fi
 }
 
 # The lock file is read-only, so the plan cannot take a provider version nobody
 # committed.
-check plans "" "" 0 "" "$init"$'\n'"$plan" plan
+project
+test_check plans 0 '' '' "$script"
+test_calls plans terraform "$init" "$plan"
+plan_is plans plan
 
 # The earlier plan is removed, and said so, before terraform first runs.
-check stale stale "" 0 "$removing" "$init"$'\n'"$plan" plan
-check stale-init-fails stale init 1 "$removing"$'\n'"fake terraform: init failed" \
-    "$init" ""
+project stale
+test_check stale 0 '' "$removing" "$script"
+test_calls stale terraform "$init" "$plan"
+plan_is stale plan
+project stale
+test_check stale-init-fails 1 '' \
+    "$removing"$'\n''fake terraform: init failed' env FAKE_FAIL=init "$script"
+test_calls stale-init-fails terraform "$init"
+plan_is stale-init-fails ''
 
-check init-fails "" init 1 "fake terraform: init failed" "$init" ""
-check plan-fails "" plan 1 "fake terraform: plan failed" "$init"$'\n'"$plan" ""
+project
+test_check init-fails 1 '' 'fake terraform: init failed' \
+    env FAKE_FAIL=init "$script"
+test_calls init-fails terraform "$init"
+plan_is init-fails ''
+
+project
+test_check plan-fails 1 '' 'fake terraform: plan failed' \
+    env FAKE_FAIL=plan "$script"
+test_calls plan-fails terraform "$init" "$plan"
+plan_is plan-fails ''
 
 # Any argument is a usage error, refused before the earlier plan is removed or
 # terraform runs, so -target=x never plans everything.
-rm -rf -- "$work/project"
-mkdir "$work/project"
-echo stale >"$work/project/.terraform.plan"
-: >"$FAKE_LOG"
-rc=0
-(cd "$work/project" && "$script" -target=x) >"$work/out" 2>"$work/err" ||
-    rc=$?
-if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
-    [ "$(<"$work/err")" != "Usage: plan-cli" ]; then
-    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
-elif [ -s "$FAKE_LOG" ]; then
-    fail argument "terraform was called as: $(<"$FAKE_LOG")"
-elif [ "$(<"$work/project/.terraform.plan")" != stale ]; then
-    fail argument "the earlier plan was replaced"
-fi
+project stale
+test_usage argument terraform/plan-cli "$script" -target=x
+plan_is argument stale
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

@@ -2,18 +2,21 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
-    exit 2
-fi
+prog=docker/login
 
-# repo rather than init, since logging in needs no tag, so a detached HEAD with
-# no CI variable to name it does not stop it.
+usage() {
+    echo "Usage: $prog" >&2
+    exit 2
+}
+
+[ $# -eq 0 ] || usage
+
+# repo rather than init, since logging in needs no tag.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/repo"
 
 for var in DOCKER_USERNAME DOCKER_PASSWORD; do
     if [ -z "${!var:-}" ]; then
-        echo "${0##*/}: $var: not set or empty;" \
+        echo "$prog: $var: not set or empty;" \
             "export the registry credentials to log in with" >&2
         exit 1
     fi
@@ -23,7 +26,7 @@ done
 # is a registry host only where it holds a . or a :, is localhost or holds an
 # upper-case letter, and otherwise the image is on Docker Hub, which docker
 # login reaches by naming no server (splitDockerDomain in
-# distribution/reference's normalize.go, checked 2026-11).
+# distribution/reference's normalize.go, read 2026-11-20).
 server=()
 case $REPO in
 */*)

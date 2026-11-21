@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# Tests project/pull against real repositories in a scratch dir: a parent, app,
-# whose submodule lib has a submodule of its own, deep, each with a bare remote
-# and an upstream clone that commits to it. Every case builds its fixture afresh
-# and runs project/pull in app.
-#
-# Run: test/project/pull.test. Exits 1 naming each case that failed.
+# Runs against real repositories in a scratch dir: a parent, app, whose
+# submodule lib has a submodule of its own, deep, each with a bare remote and an
+# upstream clone that commits to it. Every case builds its fixture afresh and
+# runs project/pull in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-pull=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/pull
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+pull=$root/project/pull
 
 # Nothing from the caller's configuration reaches the fixtures. File URLs are
 # refused to submodules by default.
@@ -22,17 +22,6 @@ export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=test
 export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2=test@example.com
 export GIT_CONFIG_KEY_3=init.defaultBranch GIT_CONFIG_VALUE_3=main
 
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
-failures=0
 n=0
 
 # Creates bare remote $w/$1.git and $w/$1.up, a clone holding one commit.
@@ -80,7 +69,7 @@ upmove() {
 # initialised.
 fixture() {
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     mkrepo deep
     mkrepo lib
@@ -95,7 +84,7 @@ fixture() {
 is_repo() {
     local top
     top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || top=
-    [[ -n $top && $top -ef $1 ]]
+    [ -n "$top" ] && [ "$top" -ef "$1" ]
 }
 
 # The commit $1 has checked out, or "no repository".
@@ -132,14 +121,14 @@ run() {
 # Records a failure of case $1 where $3 is not $4, $2 naming what was asked.
 expect() {
     if [ "$3" != "$4" ]; then
-        fail "$1" "$2 is $3, not $4: $(output)"
+        test_fail "$1" "$2 is $3, not $4: $(output)"
     fi
 }
 
 # Records a failure of case $1 unless project/pull failed.
 expect_failure() {
     if [ "$rc" -eq 0 ]; then
-        fail "$1" "exit 0, not a failure: $(output)"
+        test_fail "$1" "exit 0, not a failure: $(output)"
     fi
 }
 
@@ -273,9 +262,7 @@ rc=0
 (cd "$w/app" && "$pull" x) >"$w/out" 2>"$w/err" || rc=$?
 expect argument status "$rc" 2
 expect argument stdout "$(<"$w/out")" ""
-expect argument stderr "$(<"$w/err")" "Usage: pull"
+expect argument stderr "$(<"$w/err")" "Usage: project/pull"
 expect argument "app's commit" "$(head_of "$w/app")" "$before"
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

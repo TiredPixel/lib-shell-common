@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#
+# Gives kubeconform each manifest on stdin, since it passes over a named file
+# without a .yml, .yaml or .json suffix, such as a secrets example. -strict,
+# since only it rejects a duplicated key.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=lint/kubernetes
+
+usage() {
+    echo "Usage: $prog < PATHS" >&2
+    exit 2
+}
+
+[ $# -eq 0 ] || usage
+
+schemas='/opt/kube-schemas/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json'
+invalid=0
+checked=0
+
+while IFS= read -r -d '' f <&3; do
+    checked=$((checked + 1))
+    if ! kubeconform -strict -schema-location "$schemas" - <"$f"; then
+        echo "$prog: $f: not valid" >&2
+        invalid=1
+    fi
+done 3<&0 </dev/null
+
+echo "$prog: checked $checked file(s)" >&2
+exit "$invalid"

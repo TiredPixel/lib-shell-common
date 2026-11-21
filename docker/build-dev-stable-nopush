@@ -2,10 +2,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
+prog=docker/build-dev-stable-nopush
+
+usage() {
+    echo "Usage: $prog" >&2
     exit 2
-fi
+}
+
+[ $# -eq 0 ] || usage
 
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 
@@ -13,14 +17,10 @@ dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 init_detached=commit source "$dir/init"
 source "$dir/describe"
 source "$dir/image-source"
+source "$dir/build-image"
 
-docker build \
-    --target dev \
-    --cache-from "$REPO:$TAG.dev" \
-    --cache-from "$REPO:latest.dev" \
-    --cache-from "$REPO:testing.dev" \
-    --cache-from "$REPO:stable.dev" \
-    --build-arg BUILDKIT_INLINE_CACHE=1 \
-    --build-arg GIT_DESCRIBE="$describe" \
-    --build-arg IMAGE_SOURCE="$image_source" \
-    -t "$REPO:$TAG.dev" .
+build_image dev "$REPO:$TAG.dev" \
+    "$REPO:$TAG.dev" \
+    "$REPO:latest.dev" \
+    "$REPO:testing.dev" \
+    "$REPO:stable.dev"

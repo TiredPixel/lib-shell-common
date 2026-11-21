@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# Tests project/make-if-declared with real GNU make in scratch projects, each
-# holding the Makefile its case writes, and then with make faked on PATH for the
-# wording this make never prints: older GNU make's `build' quoting, and BSD
-# make's, which is assumed, not checked against a BSD make. The fake requires
-# LC_ALL=C and exactly -q and one target, prints FAKE_ERR on stderr and exits 2.
-#
-# Run: test/project/make-if-declared.test. Exits 1 naming each case that failed.
+# Runs real GNU make in scratch projects, each holding the Makefile its case
+# writes, and then with make faked on PATH for the wording this make never
+# prints: older GNU make's `build' quoting, and BSD make's, which is assumed,
+# not checked against a BSD make. The fake requires LC_ALL=C and exactly -q and
+# one target, prints FAKE_ERR on stderr and exits 2.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-declared=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../project")/make-if-declared
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/fake"
-cat >"$work/fake/make" <<'EOF'
+declared=$root/project/make-if-declared
+
+mkdir "$test_tmp/fake"
+cat >"$test_tmp/fake/make" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -26,30 +26,19 @@ fi
 printf '%s\n' "$FAKE_ERR" >&2
 exit 2
 EOF
-chmod +x "$work/fake/make"
+chmod +x "$test_tmp/fake/make"
 
 # Anything but C, so only make-if-declared setting LC_ALL=C itself satisfies the
 # fake make.
 export LC_ALL=C.UTF-8
 
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
-
-failures=0
 n=0
 
 # A fresh project in $w, with the Makefile named $1 holding $2, unless $1 is
 # empty.
 project() {
     n=$((n + 1))
-    w=$work/$n
+    w=$test_tmp/$n
     mkdir "$w"
     if [ -n "$1" ]; then
         printf '%b' "$2" >"$w/$1"
@@ -65,21 +54,21 @@ run() {
     shift 2
     (cd "$w" && "$declared" "$@") >/dev/null 2>"$w/err" || rc=$?
     if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$w/err")"
+        test_fail "$name" "exit $rc, not $status: $(<"$w/err")"
     fi
 }
 
 # Records a failure of case $1 unless the log is $2.
 expect_log() {
     if [ "$(<"$FAKE_LOG")" != "$2" ]; then
-        fail "$1" "the log is: $(<"$FAKE_LOG")"
+        test_fail "$1" "the log is: $(<"$FAKE_LOG")"
     fi
 }
 
 # Records a failure of case $1 unless stderr holds $2.
 expect_err() {
     if ! grep -qF -- "$2" "$w/err"; then
-        fail "$1" "stderr lacks $2: $(<"$w/err")"
+        test_fail "$1" "stderr lacks $2: $(<"$w/err")"
     fi
 }
 
@@ -153,7 +142,7 @@ expect_err keep-going-missing-include "No rule to make target 'other.mk'"
 project "" ""
 run no-makefile 1 build
 expect_err no-makefile \
-    "make-if-declared: $w: no Makefile, so make build cannot be swept here"
+    "project/make-if-declared: $w: no Makefile, so make build cannot be swept here"
 
 # A missing or empty target is refused with the usage before make is asked.
 for args in no-target empty-target; do
@@ -161,13 +150,13 @@ for args in no-target empty-target; do
     target=()
     [ "$args" = no-target ] || target=('')
     run "$args" 2 "${target[@]}"
-    if [ "$(<"$w/err")" != "Usage: make-if-declared TARGET [COMMAND...]" ]; then
-        fail "$args" "stderr is: $(<"$w/err")"
+    if [ "$(<"$w/err")" != "Usage: project/make-if-declared TARGET [COMMAND...]" ]; then
+        test_fail "$args" "stderr is: $(<"$w/err")"
     fi
     expect_log "$args" ""
 done
 
-export PATH=$work/fake:$PATH
+export PATH=$test_tmp/fake:$PATH
 
 # The wording make never prints here is matched as exactly.
 for err in \
@@ -195,6 +184,4 @@ project Makefile "build:\n"
 FAKE_ERR="make: *** No rule to make target 'build'.  Stop." \
     run literal-target 1 'b*'
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

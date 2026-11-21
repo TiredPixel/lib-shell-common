@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# kubeconform is faked: it prints its stdin's first line and fails where that
+# line is "bad".
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/lint/kubernetes
+
+# shellcheck disable=SC2016 # The fake expands it.
+test_stub kubeconform 'read -r line
+echo "fake kubeconform: $line"
+[ "$line" != bad ]'
+
+mkdir -- "$test_tmp/k"
+echo good >"$test_tmp/k/a.yaml"
+echo bad >"$test_tmp/k/b.yaml"
+echo bad >"$test_tmp/k/c.yaml"
+echo good >"$test_tmp/k/secret example"
+cd -- "$test_tmp/k"
+
+# Gives lint/kubernetes its arguments NUL-separated on stdin.
+# shellcheck disable=SC2317 # Called through test_check.
+paths() {
+    printf '%s\0' "$@" | "$script"
+}
+
+printf -v call '%q ' -strict -schema-location \
+    '/opt/kube-schemas/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json'
+call+=-
+
+# A file with no suffix goes on stdin as any other does.
+test_check valid 0 $'fake kubeconform: good\nfake kubeconform: good' \
+    'lint/kubernetes: checked 2 file(s)' paths a.yaml "secret example"
+test_calls valid kubeconform "$call" "$call"
+
+# Every manifest is checked, and each that fails is named.
+test_check invalid 1 \
+    $'fake kubeconform: bad\nfake kubeconform: good\nfake kubeconform: bad' \
+    "lint/kubernetes: b.yaml: not valid
+lint/kubernetes: c.yaml: not valid
+lint/kubernetes: checked 3 file(s)" paths b.yaml a.yaml c.yaml
+test_calls invalid kubeconform "$call" "$call" "$call"
+
+test_check none 0 '' 'lint/kubernetes: checked 0 file(s)' "$script"
+test_calls none kubeconform
+
+test_usage argument 'lint/kubernetes < PATHS' "$script" a.yaml
+
+test_finish

@@ -11,7 +11,7 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-prog=${0##*/}
+prog=project/each-without-project
 
 f_projects=.projects
 
@@ -79,7 +79,7 @@ if [ -f "$f_projects" ]; then
         # same way, so it is refused rather than visited: for the reason
         # project/release-assert gives, its top level is this repository's.
         top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || top=
-        if [[ ! $top -ef $project ]]; then
+        if [ ! "$top" -ef "$project" ]; then
             echo "$prog: $project: submodule of $PWD not checked out," \
                 "so it cannot be swept; project/submodule-init checks it out" >&2
 

@@ -1,0 +1,65 @@
+# shellcheck shell=bash
+# Left untooled: INI and its dialects, ignore and plain-text files, and files
+# a tool writes whole.
+
+shell_files() {
+    files_shebang bash ansible bin docker github helm lint project runner \
+        shell terraform testing
+    files_shebang bash --recursive test
+}
+
+docker_files() {
+    printf '%s\0' Dockerfile
+}
+
+compose_files() {
+    printf '%s\0' docker-compose.yml
+}
+
+make_files() {
+    printf '%s\0' Makefile
+}
+
+yaml_files() {
+    printf '%s\0' .hadolint.yaml .yamllint.yaml docker-compose.yml \
+        github/review/action.yml
+}
+
+# Also github/review.yml, the template repositories copy, checked as a workflow.
+workflow_files() {
+    local -a dirs=(.github/workflows)
+
+    if [ -d .github/workflows.new ]; then
+        dirs+=(.github/workflows.new)
+    fi
+    files_sorted "${dirs[@]}" -maxdepth 1 -type f \
+        \( -name '*.yml' -o -name '*.yaml' \)
+    printf '%s\0' github/review.yml
+}
+
+toml_files() {
+    printf '%s\0' .mdformat.toml coverage.toml ruff.toml
+}
+
+md_files() {
+    printf '%s\0' README.md
+}
+
+dotenv_files() {
+    printf '%s\0' .env.example
+}
+
+python_files() {
+    files_shebang python3 kubernetes
+}
+
+# Debian's python3-coverage installs no start-up hook, so a sitecustomize on
+# PYTHONPATH starts coverage.py in each Python the tests run.
+coverage_python() {
+    local site=$COVERAGE_RUN_DIR/site
+
+    mkdir -- "$site"
+    echo 'import coverage; coverage.process_startup()' >"$site/sitecustomize.py"
+    export COVERAGE_PROCESS_START=$PWD/coverage.toml
+    export PYTHONPATH=$site${PYTHONPATH:+:$PYTHONPATH}
+}

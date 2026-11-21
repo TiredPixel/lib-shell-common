@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# jq and diff run for real but in one case, which fakes a diff that fails as on
+# an I/O error.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+keys=$root/lint/json-keys
+
+mkdir -- "$test_tmp/j"
+printf '{\n  "a": 1,\n  "b": {\n    "c": 2\n  }\n}\n' >"$test_tmp/j/sorted.json"
+printf '{\n  "b": 1,\n  "a": 2\n}\n' >"$test_tmp/j/top.json"
+printf '{\n  "a": {\n    "d": 1,\n    "c": 2\n  }\n}\n' >"$test_tmp/j/nested.json"
+printf '{"a": 1}\n' >"$test_tmp/j/with space.json"
+printf '{\n' >"$test_tmp/j/invalid.json"
+cd -- "$test_tmp/j"
+
+# Gives json-keys the arguments after -- NUL-separated on stdin, and those
+# before it as its own.
+# shellcheck disable=SC2317 # Called through test_check.
+keys_on() {
+    local -a opts=()
+    while [ "$1" != -- ]; do
+        opts+=("$1")
+        shift
+    done
+    shift
+    printf '%s\0' "$@" | "$keys" "${opts[@]}"
+}
+
+checked() {
+    echo "lint/json-keys: checked $1 file(s)"
+}
+
+top_diff='--- top.json
++++ top.json (sorted)
+@@ -1,4 +1,4 @@
+ {
+-  "b": 1,
+-  "a": 2
++  "a": 2,
++  "b": 1
+ }'
+nested_diff='--- nested.json
++++ nested.json (sorted)
+@@ -1,6 +1,6 @@
+ {
+   "a": {
+-    "d": 1,
+-    "c": 2
++    "c": 2,
++    "d": 1
+   }
+ }'
+space_diff='--- with space.json
++++ with space.json (laid out)
+@@ -1 +1,3 @@
+-{"a": 1}
++{
++  "a": 1
++}'
+
+test_check sorted 0 '' "$(checked 1)" keys_on -- sorted.json
+
+# Every offender is named, not only the first, and a sorted one is not.
+test_check unsorted 1 "$top_diff"$'\n'"$nested_diff" \
+    "lint/json-keys: top.json: keys not sorted
+lint/json-keys: nested.json: keys not sorted
+$(checked 3)" keys_on -- top.json sorted.json nested.json
+
+# Key order is kept, and only the layout jq writes is checked.
+test_check keep-order 1 "$space_diff" \
+    "lint/json-keys: with space.json: not laid out
+$(checked 3)" keys_on --keep-order -- top.json "with space.json" sorted.json
+
+# After --, the arguments are jq's, and only others than the default's change
+# what a difference is called.
+printf '{\n    "a": 1\n}\n' >indented.json
+quoted=$(printf %q "$keys")
+test_check args-pass 0 '' "$(checked 1)" bash -c \
+    "printf '%s\0' indented.json | $quoted -- --indent 4 --sort-keys ."
+test_check args-fail 1 '--- sorted.json
++++ sorted.json (formatted)
+@@ -1,6 +1,6 @@
+ {
+-  "a": 1,
+-  "b": {
+-    "c": 2
+-  }
++    "a": 1,
++    "b": {
++        "c": 2
++    }
+ }' "lint/json-keys: sorted.json: not as formatted
+$(checked 1)" bash -c \
+    "printf '%s\0' sorted.json | $quoted -- --indent 4 --sort-keys ."
+test_check args-default 1 "$top_diff" "lint/json-keys: top.json: keys not sorted
+$(checked 1)" bash -c "printf '%s\0' top.json | $quoted -- --sort-keys ."
+
+# A file jq cannot parse is named after jq's own error, and the others are still
+# checked.
+jq_err=$(jq . invalid.json 2>&1) || [ $? -eq 5 ]
+test_check invalid 1 "$top_diff" "$jq_err
+lint/json-keys: invalid.json: jq could not read it
+lint/json-keys: top.json: keys not sorted
+$(checked 2)" keys_on -- invalid.json top.json
+
+test_check none 0 '' "$(checked 0)" "$keys"
+
+# diff failing other than on a difference stops the run with its status.
+test_stub diff 'echo "fake diff: read error" >&2; exit 2'
+test_check diff-fails 2 '' 'fake diff: read error' \
+    keys_on -- sorted.json top.json
+
+for args in top.json --sort-keys "--keep-order top.json" --; do
+    read -r -a words <<<"$args"
+    test_usage "argument $args" \
+        'lint/json-keys [--keep-order | -- JQ_ARG...] < PATHS' \
+        "$keys" "${words[@]}"
+done
+
+test_finish

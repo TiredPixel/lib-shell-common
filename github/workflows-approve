@@ -20,7 +20,8 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-prog=${0##*/}
+prog=github/workflows-approve
+
 new=.github/workflows.new
 live=.github/workflows
 
@@ -39,10 +40,12 @@ entries_of_new() {
     shopt -s failglob
 }
 
-if [ $# -ne 0 ]; then
+usage() {
     echo "Usage: $prog" >&2
     exit 2
-fi
+}
+
+[ $# -eq 0 ] || usage
 
 cd "$(git rev-parse --show-toplevel)"
 

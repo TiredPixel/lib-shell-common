@@ -1,31 +1,40 @@
 # shellcheck shell=bash
 #
 # Sourced by the docker/ scripts that stamp an image with GIT_DESCRIBE even
-# where no tag describes HEAD, to set describe to what git describe prints. Sets
-# no shell options, since it runs under its caller's.
+# where no tag describes HEAD, and by project/version, to set describe to what
+# git describe prints, or git describe --exact-match where the caller sets
+# describe_exact_match=1 first. Sets no shell options, since it runs under its
+# caller's.
 #
 # Empty is the right stamp for a working copy with no tag to describe HEAD by,
-# so git's three no-tag failures leave describe empty. Any other failure, such
-# as no repository, has its message passed on and exits 1, with or without
-# errexit, so a build never goes ahead with an accidental empty stamp. git runs
-# under LC_ALL=C, so its messages are the English ones matched here.
+# so git's no-tag failures leave describe empty. Any other failure, such as no
+# repository, has its message passed on and exits 1, with or without errexit, so
+# a build never goes ahead with an accidental empty stamp. git runs under
+# LC_ALL=C, so its messages are the English ones matched here.
+
+describe_args=()
+if [ "${describe_exact_match:-}" = 1 ]; then
+    describe_args=(--exact-match)
+fi
+unset describe_exact_match
 
 describe_err=$(mktemp) || exit 1
 
-# Read only by the scripts that source this file, so it looks unused here.
-# shellcheck disable=SC2034
-if describe=$(LC_ALL=C git describe 2>"$describe_err"); then
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+if describe=$(LC_ALL=C git describe "${describe_args[@]}" \
+    2>"$describe_err"); then
     cat -- "$describe_err" >&2
 elif grep -q -e '^fatal: No names found, cannot describe anything\.$' \
     -e "^fatal: No annotated tags can describe '" \
-    -e "^fatal: No tags can describe '" -- "$describe_err"; then
+    -e "^fatal: No tags can describe '" \
+    -e "^fatal: no tag exactly matches '" -- "$describe_err"; then
     describe=""
 else
     cat -- "$describe_err" >&2
     rm -f -- "$describe_err"
-    echo "${0##*/}: git describe failed" >&2
+    echo "${prog:-${0##*/}}: git describe failed" >&2
     exit 1
 fi
 
 rm -f -- "$describe_err"
-unset describe_err
+unset describe_err describe_args

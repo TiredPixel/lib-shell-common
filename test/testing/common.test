@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/testing/common
+
+test_stub nproc 'echo 4'
+
+# Sources the script as a runner would, then prints the worker count and the
+# variable, or with an argument checks it with is_shell_test.
+cat >"$test_tmp/caller" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+prog=caller
+source $(printf %q "$script")
+if [ \$# -gt 0 ]; then
+    is_shell_test "\$1"
+else
+    echo "\$workers \${PYTEST_XDIST_AUTO_NUM_WORKERS-unset}"
+fi
+EOF
+chmod +x -- "$test_tmp/caller"
+
+test_check unset 0 '4 unset' '' \
+    env -u PYTEST_XDIST_AUTO_NUM_WORKERS "$test_tmp/caller"
+test_calls unset nproc ''
+
+# Empty counts as unset, and is unset for pytest-xdist too.
+test_check empty 0 '4 unset' '' \
+    env PYTEST_XDIST_AUTO_NUM_WORKERS= "$test_tmp/caller"
+test_calls empty nproc ''
+
+for n in 1 3 12; do
+    test_check "whole-$n" 0 "$n $n" '' \
+        env PYTEST_XDIST_AUTO_NUM_WORKERS="$n" "$test_tmp/caller"
+    test_calls "whole-$n" nproc
+done
+
+for n in 0 01 -1 1.5 ' 2' 'a b'; do
+    test_check "refused $n" 1 '' \
+        "caller: PYTEST_XDIST_AUTO_NUM_WORKERS is $(printf %q "$n"), not a whole number of at least 1" \
+        env PYTEST_XDIST_AUTO_NUM_WORKERS="$n" "$test_tmp/caller"
+    test_calls "refused $n" nproc
+done
+
+t=$test_tmp/tree
+mkdir -p "$t/test/a/b" "$t/test/d.test" "$t/bin"
+: >"$t/test/a.test"
+: >"$t/test/a/b/c.test"
+: >"$t/test/a.tests"
+: >"$t/bin/x.test"
+
+for name in test/a.test test/a/b/c.test; do
+    test_check "test $name" 0 '' '' env -C "$t" "$test_tmp/caller" "$name"
+done
+
+for name in test/a/missing.test test/d.test test/a.tests bin/x.test \
+    ./test/a.test; do
+    test_check "not a test $name" 1 '' '' \
+        env -C "$t" "$test_tmp/caller" "$name"
+done
+
+test_finish

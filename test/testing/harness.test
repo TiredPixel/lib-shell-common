@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# Each case is a test of its own that sources the harness, run here so that its
+# exit, its output and its EXIT trap are seen from outside.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/testing/harness
+
+# Writes a test at $test_tmp/$1 that sources the harness, then runs the shell
+# code on stdin.
+inner() {
+    {
+        printf '%s\n' '#!/usr/bin/env bash' 'set -Eeuo pipefail' \
+            'shopt -s inherit_errexit failglob'
+        printf 'source %q\n' "$script"
+        cat
+    } >"$test_tmp/$1"
+    chmod +x -- "$test_tmp/$1"
+}
+
+# test_cleanup runs before the scratch directory goes, and the directory goes
+# even where a case left part of it unwritable.
+inner cleanup <<'EOF'
+echo "$test_tmp" >"${0%/*}/cleanup.tmp"
+mkdir -- "$test_tmp/locked"
+: >"$test_tmp/locked/f"
+chmod a-w -- "$test_tmp/locked"
+test_cleanup() {
+    if [ -e "$test_tmp/locked/f" ]; then
+        echo cleaned
+    fi
+}
+test_finish
+EOF
+test_check cleanup 0 cleaned '' "$test_tmp/cleanup"
+if [ -e "$(<"$test_tmp/cleanup.tmp")" ]; then
+    test_fail cleanup "left behind: $(<"$test_tmp/cleanup.tmp")"
+fi
+
+inner failures <<'EOF'
+test_fail one $'a\nb'
+test_fail two c
+test_finish
+EOF
+test_check failures 1 '' \
+    $'failures: one: a\nfailures: one: b\nfailures: two: c' \
+    "$test_tmp/failures"
+
+# A fake logs each call shell-quoted and leaves its stdin to whatever reads
+# next.
+inner stub <<'EOF'
+test_stub fake 'echo "body $#"'
+printf 'kept\n' | {
+    fake 'a b' "c'd"
+    fake
+    cat
+}
+cat -- "$test_tmp/fake.calls"
+if ! [ -e "$test_tmp/fake.stdin" ]; then
+    echo "no stdin log"
+fi
+test_finish
+EOF
+test_check stub 0 $'body 2\nbody 0\nkept\na\\ b c\\\'d\n\nno stdin log' '' \
+    "$test_tmp/stub"
+
+inner stdin <<'EOF'
+test_stub --stdin fake
+printf 'one\n' | fake
+printf 'two\n' | fake x
+cat -- "$test_tmp/fake.stdin" "$test_tmp/fake.calls"
+test_finish
+EOF
+test_check stdin 0 $'one\ntwo\n\nx' '' "$test_tmp/stdin"
+
+# diff's header lines carry paths and times, so they are left out.
+inner calls <<'EOF'
+test_stub fake
+fake a
+fake b
+test_calls match fake a b
+fake c
+test_calls differ fake d 2>"$test_tmp/differ"
+grep -v '^calls: differ: [-+][-+][-+] ' "$test_tmp/differ" >&2
+test_calls emptied fake
+test_finish
+EOF
+test_check calls 1 '' \
+    $'calls: differ: calls to fake differ:\ncalls: differ: @@ -1 +1 @@\ncalls: differ: -d\ncalls: differ: +c' \
+    "$test_tmp/calls"
+
+inner check <<'EOF'
+printf 'in\n' | test_check pass 3 out err bash -c 'cat; echo out; echo err >&2; exit 3'
+test_check status 0 '' '' bash -c 'echo why >&2; exit 4'
+test_check stdout 0 want '' echo got
+test_check stderr 0 '' want bash -c 'echo got >&2'
+test_finish
+EOF
+test_check check 1 '' \
+    $'check: status: exit 4, not 0: why\ncheck: stdout: stdout is: got\ncheck: stderr: stderr is: got' \
+    "$test_tmp/check"
+
+# Calls logged before test_usage do not count against it, and it empties them.
+inner usage <<'EOF'
+test_stub fake
+test_stub other
+fake earlier
+other earlier
+test_usage quiet 'x ARG' bash -c 'echo "Usage: x ARG" >&2; exit 2'
+test_calls emptied fake
+test_usage called 'x ARG' bash -c 'other now; echo "Usage: x ARG" >&2; exit 2' \
+    2>"$test_tmp/called"
+err=$(<"$test_tmp/called")
+echo "${err//"$test_tmp"/TMP}" >&2
+test_finish
+EOF
+test_check usage 1 '' 'usage: called: a fake was called: TMP/other.calls' \
+    "$test_tmp/usage"
+
+test_finish

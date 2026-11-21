@@ -2,13 +2,19 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
+prog=project/release-create-latest
+
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+usage() {
+    echo "Usage: $prog TAG" >&2
+    exit 2
+}
 
 # Checked here as well as in project/tag-create, because tag-create runs only
 # after project/release-assert has checked the tree.
 if [ $# -ne 1 ] || [ -z "$1" ]; then
-    echo "Usage: ${0##*/} TAG" >&2
-    exit 2
+    usage
 fi
 tag=$1
 

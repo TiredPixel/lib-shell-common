@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 #
-# Usage: docker/upgrade-commit RECORD [PATH...]
-#
 # Commits what docker/upgrade --record RECORD wrote, once the build and tests
 # after it have passed, as "Upgrade pins" with the body a list, an item for
 # each move RECORD holds, written "- " then the move as docker/upgrade gave it.
@@ -15,33 +13,34 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ -z "${1:-}" ]; then
-    echo "Usage: ${0##*/} RECORD [PATH...]" >&2
+prog=docker/upgrade-commit
+
+usage() {
+    echo "Usage: $prog RECORD [PATH...]" >&2
     exit 2
-fi
+}
+
+[ -n "${1:-}" ] || usage
 record=$1
 extra=("${@:2}")
 
 if [ ! -e "$record" ]; then
-    echo "${0##*/}: $record: no such file" >&2
+    echo "$prog: $record: no such file" >&2
     exit 1
 elif [ ! -f "$record" ]; then
-    echo "${0##*/}: $record: not a regular file" >&2
+    echo "$prog: $record: not a regular file" >&2
     exit 1
 fi
 
-# Outside a repository, git diff would take --cached as a file comparison's
-# unknown option rather than say so.
-git rev-parse --git-dir >/dev/null
-
 nothing() {
-    echo "${0##*/}: $record: nothing moved, so there is nothing to commit" >&2
+    echo "$prog: $record: nothing moved, so there is nothing to commit" >&2
     rm -- "$record"
     exit 0
 }
 
 # Empty where no pin moved; else the paths written, then a blank line, then the
-# moves.
+# moves. Anything else is refused before it is staged or removed, since RECORD
+# can name any file, and its lines would be taken as paths and a commit's body.
 mapfile -t lines <"$record"
 paths=()
 moves=()
@@ -56,12 +55,12 @@ if [ ${#lines[@]} -gt 0 ]; then
     paths=("${lines[@]:0:${blank:-0}}")
     moves=("${lines[@]:${blank:-0}+1}")
     if [ -z "$blank" ] || [ ${#paths[@]} -eq 0 ] || [ ${#moves[@]} -eq 0 ]; then
-        echo "${0##*/}: $record: not a record docker/upgrade --record writes" >&2
+        echo "$prog: $record: not a record docker/upgrade --record writes" >&2
         exit 1
     fi
     for i in "${!moves[@]}"; do
         if [ -z "${moves[$i]}" ]; then
-            echo "$record:$((blank + i + 2)): a second blank line" >&2
+            echo "$prog: $record:$((blank + i + 2)): a second blank line" >&2
             exit 1
         fi
     done
@@ -84,7 +83,7 @@ others=$(git diff --cached --no-renames --ignore-submodules=none --name-only \
     -- ':/' "${excludes[@]}")
 if [ -n "$others" ]; then
     printf '%s\n' "$others" >&2
-    echo "${0##*/}: already staged beside the upgrade; commit or unstage it" \
+    echo "$prog: already staged beside the upgrade; commit or unstage it" \
         "first" >&2
     exit 1
 fi

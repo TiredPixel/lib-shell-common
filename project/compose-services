@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# Prints the Compose services of the project in the current directory, one a
+# line, and nothing where it has no Compose file or every service sits behind a
+# profile.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=project/compose-services
+
+usage() {
+    echo "Usage: $prog" >&2
+    exit 2
+}
+
+[ $# -eq 0 ] || usage
+
+# Compose resolves a project from any directory inside it, so dropping the file
+# test would let a project carrying none adopt an ancestor's. The file test
+# takes every name compose looks for, so a project is not skipped for which of
+# them it uses.
+for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+    if [ -f "$f" ]; then
+        exec docker compose config --services
+    fi
+done

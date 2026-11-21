@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=docker/build-tags-nopush
+
+usage() {
+    echo "Usage: $prog" >&2
+    exit 2
+}
+
+[ $# -eq 0 ] || usage
+
+dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+
+# Nothing is pushed, so a detached HEAD outside CI is named by its commit.
+init_detached=commit source "$dir/init"
+source "$dir/describe"
+source "$dir/image-source"
+source "$dir/build-image"
+
+build_image "" "$REPO:$TAG" \
+    "$REPO:$TAG.dev" "$REPO:$TAG.prd" "$REPO:latest.dev" "$REPO:latest.prd" \
+    "$REPO:$TAG" "$REPO:latest" >&2
+
+echo "$REPO:$TAG"

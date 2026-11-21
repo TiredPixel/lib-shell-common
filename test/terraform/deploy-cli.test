@@ -1,86 +1,42 @@
 #!/usr/bin/env bash
 #
-# Tests terraform/deploy-cli in a scratch project with terraform faked on PATH,
-# so nothing is applied. The fake terraform logs each call's arguments, then
-# "plan present" where .terraform.plan exists as it runs, and fails where its
-# first argument is FAKE_FAIL.
-#
-# Run: test/terraform/deploy-cli.test. Exits 1 naming each case that failed.
+# terraform is faked on PATH, so nothing is applied. The fake logs each call's
+# arguments, then "plan present" where .terraform.plan exists as it runs, and
+# fails where its first argument is FAKE_FAIL.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-script=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../terraform")/deploy-cli
-fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/terraform/deploy-cli")
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/bin"
-cp -p -- "$fixtures/terraform" "$work/bin/"
+script=$root/terraform/deploy-cli
 
-export FAKE_LOG=$work/log
-export PATH=$work/bin:$PATH
+cp -p -- "$root/test/fixtures/terraform/deploy-cli/terraform" "$test_tmp/path/"
+export FAKE_LOG=$test_tmp/terraform.calls
+: >"$FAKE_LOG"
 
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
+# Makes the project afresh, holding a saved plan, and enters it.
+project() {
+    cd -- "$test_tmp"
+    rm -rf -- project
+    mkdir -- project
+    echo plan >project/.terraform.plan
+    cd -- project
 }
 
-# Runs deploy-cli in a fresh project, holding a saved plan where $2 is "plan",
-# with the fake failing at $3, or nowhere where that is empty, and checks it
-# exits $4, prints nothing on stdout and $5 on stderr, and calls terraform as
-# $6.
-check() {
-    local name=$1 plan=$2 rc=0
-    rm -rf -- "$work/project"
-    mkdir "$work/project"
-    if [ "$plan" = plan ]; then
-        echo plan >"$work/project/.terraform.plan"
-    fi
-    : >"$FAKE_LOG"
-    (cd "$work/project" && FAKE_FAIL=$3 "$script") >"$work/out" \
-        2>"$work/err" || rc=$?
-    if [ "$rc" -ne "$4" ]; then
-        fail "$name" "exit $rc, not $4: $(<"$work/err")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ "$(<"$work/err")" != "$5" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"
-    elif [ "$(<"$FAKE_LOG")" != "$6" ]; then
-        fail "$name" "terraform was called as: $(<"$FAKE_LOG")"
-    fi
-}
+project
+test_check applies 0 '' '' "$script"
+test_calls applies terraform 'apply .terraform.plan' 'plan present'
 
-check applies plan "" 0 "" "apply .terraform.plan"$'\n'"plan present"
-
-# A consumer still running terraform/test-cli to plan is stopped before
-# terraform runs.
-check no-plan "" "" 1 \
-    "deploy-cli: .terraform.plan: no saved plan; run terraform/plan-cli first" ""
-
-check apply-fails plan apply 1 "fake terraform: apply failed" \
-    "apply .terraform.plan"$'\n'"plan present"
+project
+test_check apply-fails 1 '' 'fake terraform: apply failed' \
+    env FAKE_FAIL=apply "$script"
+test_calls apply-fails terraform 'apply .terraform.plan' 'plan present'
 
 # Any argument is a usage error, refused before terraform runs, so --help with a
 # saved plan present applies nothing.
-rm -rf -- "$work/project"
-mkdir "$work/project"
-echo plan >"$work/project/.terraform.plan"
-: >"$FAKE_LOG"
-rc=0
-(cd "$work/project" && "$script" --help) >"$work/out" 2>"$work/err" || rc=$?
-if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
-    [ "$(<"$work/err")" != "Usage: deploy-cli" ]; then
-    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
-elif [ -s "$FAKE_LOG" ]; then
-    fail argument "terraform was called as: $(<"$FAKE_LOG")"
-fi
+project
+test_usage argument terraform/deploy-cli "$script" --help
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

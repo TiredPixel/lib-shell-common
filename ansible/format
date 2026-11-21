@@ -2,13 +2,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
-    exit 2
-fi
-
 dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-
 source "$dir/lint-args"
 
-ansible-lint "${ansible_lint_args[@]}" --fix
+# --fix takes an optional rule list, so -- ends the options before the paths.
+# 8 is ansible-lint's FIXED_VIOLATIONS: files rewritten, nothing left to report.
+status=0
+ansible-lint "${ansible_lint_args[@]}" --fix -- "$@" || status=$?
+case $status in
+0 | 8) ;;
+*) exit "$status" ;;
+esac

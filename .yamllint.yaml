@@ -1,0 +1,6 @@
+---
+extends: default
+rules:
+  # One space before an inline comment, as yq writes it.
+  comments:
+    min-spaces-from-content: 1

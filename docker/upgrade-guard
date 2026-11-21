@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+#
+# Refuses an upgrade before anything moves, since docker/upgrade-commit then
+# commits the whole tree. It refuses where RECORD is not empty, as an earlier
+# upgrade's is while it waits; where a workflow proposal is pending, unless
+# --skip-pending is given for a run that writes no workflow; where the tree
+# holds a staged, unstaged or untracked change outside its submodules; or where
+# a checkout holding this script does, since its scripts would run the upgrade
+# as edited. Submodule pointers, and every other submodule's own state, are
+# passed over, since a sweep from a repository holding this one moves them
+# first. An edited copy of this script runs in its place, so it cannot refuse
+# its own edits.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=docker/upgrade-guard
+
+usage() {
+    echo "Usage: $prog [--skip-pending] RECORD" >&2
+    exit 2
+}
+
+skip_pending=
+if [ "${1-}" = --skip-pending ]; then
+    skip_pending=1
+    shift
+fi
+[ $# -eq 1 ] || usage
+record=$1
+
+dir=$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+top=$(git rev-parse --show-toplevel)
+
+# Exits 1 where checkout $1's index or working tree differs from its HEAD or it
+# holds an untracked file git does not ignore, its own submodules passed over,
+# listing each path once after $2 and then saying the words after it. The index
+# is read apart, since a staged edit whose file was put back matches HEAD in the
+# working tree, and docker/upgrade-commit's add would then discard it.
+refuse_changes() {
+    local changes path
+    changes=$(
+        {
+            git -C "$1" diff --name-only --ignore-submodules=all HEAD
+            git -C "$1" diff --cached --name-only --ignore-submodules=all
+            git -C "$1" ls-files --others --exclude-standard
+        } | awk '!seen[$0]++'
+    )
+    [ -n "$changes" ] || return 0
+    while IFS= read -r path; do
+        echo "$prog: $2$path" >&2
+    done <<<"$changes"
+    echo "$prog: ${*:3}" >&2
+    exit 1
+}
+
+if [ -s "$record" ]; then
+    echo "$prog: $record is not empty, so an earlier upgrade is unfinished;" \
+        "commit or discard it first" >&2
+    exit 1
+fi
+
+if [ -z "$skip_pending" ]; then
+    "$dir/../github/workflows-pending"
+fi
+
+refuse_changes "$top" "" "the tree has changes outside its submodules, which" \
+    "the upgrade would commit; commit or remove them first"
+
+checkout=$(git -C "$dir" rev-parse --show-toplevel)
+while [ "$checkout" != "$top" ]; do
+    name=${checkout#"$top"/}
+    refuse_changes "$checkout" "$name: " "$name has changes, which the" \
+        "upgrade would run as edited; commit or remove them first"
+    checkout=$(git -C "$(dirname -- "$checkout")" rev-parse --show-toplevel)
+done

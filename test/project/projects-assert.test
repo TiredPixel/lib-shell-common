@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#
+# Runs project/projects-assert in scratch directories, with and without a
+# .projects.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+
+script=$root/project/projects-assert
+
+mkdir "$test_tmp/listed" "$test_tmp/unlisted"
+: >"$test_tmp/listed/.projects"
+
+# An empty list passes, since only a missing one is a broken checkout.
+test_check listed 0 '' '' env -C "$test_tmp/listed" "$script" x/sweep
+
+# A missing list fails under the caller's name.
+test_check unlisted 1 '' \
+    "x/sweep: $test_tmp/unlisted: no .projects, so there is nothing to sweep" \
+    env -C "$test_tmp/unlisted" "$script" x/sweep
+
+# The caller is required, and alone.
+usage="project/projects-assert CALLER"
+test_usage none "$usage" env -C "$test_tmp/listed" "$script"
+test_usage extra "$usage" env -C "$test_tmp/listed" "$script" x/sweep y
+
+test_finish

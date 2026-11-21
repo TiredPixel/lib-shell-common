@@ -1,64 +1,42 @@
 #!/usr/bin/env bash
 #
-# Tests docker/login in a scratch project with docker and git faked on PATH, so
-# nothing logs in anywhere. The fake docker logs each call's arguments, then the
-# password it read on stdin, a line each. The fake git puts HEAD on branch
-# FAKE_BRANCH, a/b unless a case says otherwise, "HEAD" where that is the
-# detached state. Each case writes .dockerrepo, or leaves it out, and checks
-# the server docker login is given, or that none is, which is Docker Hub, or
-# that the run is refused before docker is called, comparing stdout and stderr
-# exactly.
-#
-# Run: test/docker/login.test. Exits 1 naming each case that failed.
+# Runs in a scratch project with docker and git faked on PATH, so nothing logs
+# in anywhere. The fake docker logs each call's arguments, then the password it
+# read on stdin, a line each. The fake git puts HEAD on branch FAKE_BRANCH, a/b
+# unless a case says otherwise, "HEAD" where that is the detached state. Each
+# case writes .dockerrepo, or leaves it out, and checks the server docker login
+# is given, or that none is, which is Docker Hub, or that the run is refused
+# before docker is called.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-dir=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../docker")
-fixtures=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../fixtures/docker/login")
-work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-mkdir "$work/bin" "$work/project"
-cp -p -- "$fixtures/docker" "$fixtures/git" "$work/bin/"
+dir=$root/docker
+fixtures=$root/test/fixtures/docker/login
 
-export FAKE_LOG=$work/log
-export PATH=$work/bin:$PATH
+mkdir -- "$test_tmp/project"
+cp -p -- "$fixtures/docker" "$fixtures/git" "$test_tmp/path/"
+
+export FAKE_LOG=$test_tmp/docker.calls
+: >"$FAKE_LOG"
 export DOCKER_USERNAME=u DOCKER_PASSWORD=p FAKE_BRANCH=a/b
-
-failures=0
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
 
 # Runs docker/login with .dockerrepo holding $3, or with none where $3 is -,
 # and the environment after $5, and checks its status is $2, docker was called
 # as $4 has it, its stdout is empty and its stderr is want_err.
 check() {
-    local name=$1 status=$2 repo=$3 calls=$4 rc=0
-    shift 4
-    rm -f -- "$work/project/.dockerrepo"
-    if [ "$repo" != - ]; then
-        echo "$repo" >"$work/project/.dockerrepo"
+    local calls=$4
+    rm -f -- "$test_tmp/project/.dockerrepo"
+    if [ "$3" != - ]; then
+        echo "$3" >"$test_tmp/project/.dockerrepo"
     fi
-    : >"$FAKE_LOG"
-    (cd "$work/project" && env -u CIRCLE_BRANCH -u CIRCLE_TAG \
-        -u GITHUB_HEAD_REF -u GITHUB_REF_NAME "$@" "$dir/login") \
-        >"$work/out" 2>"$work/err" || rc=$?
-    if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$work/err")"
-    elif [ "$(<"$FAKE_LOG")" != "$calls" ]; then
-        fail "$name" "docker was called as: $(<"$FAKE_LOG")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ "$(<"$work/err")" != "$want_err" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"
-    fi
+    test_check "$1" "$2" '' "$want_err" env -C "$test_tmp/project" \
+        -u CIRCLE_BRANCH -u CIRCLE_TAG -u GITHUB_HEAD_REF -u GITHUB_REF_NAME \
+        "${@:5}" "$dir/login"
+    test_calls "$1" docker ${calls:+"$calls"}
 }
 
 # Runs check expecting docker login to be given server $3, or no server where
@@ -83,32 +61,25 @@ logs_in hub-dotted-name a.b ""
 # does not stop it.
 logs_in detached ghcr.io/o/n ghcr.io FAKE_BRANCH=HEAD
 
-# A missing .dockerrepo, or credential, stops the run before docker is called.
-want_err="cat: .dockerrepo: No such file or directory"$'\n'"login: REPO:"
-want_err+=" .dockerrepo missing or empty; write the image repository, such as"
-want_err+=" ghcr.io/OWNER/NAME, to it"
+# A missing or empty .dockerrepo, or a missing credential, stops the run before
+# docker is called.
+no_repo="docker/login: REPO: .dockerrepo missing or empty; write the image"
+no_repo+=" repository, such as ghcr.io/OWNER/NAME, to it"
+want_err="cat: .dockerrepo: No such file or directory"$'\n'"$no_repo"
 check missing-dockerrepo 1 - ""
+want_err=$no_repo
+check empty-dockerrepo 1 "" ""
+check blank-dockerrepo 1 "   " ""
 
 for var in DOCKER_USERNAME DOCKER_PASSWORD; do
-    want_err="login: $var: not set or empty; export the registry credentials"
+    want_err="docker/login: $var: not set or empty; export the registry credentials"
     want_err+=" to log in with"
     check "unset-$var" 1 ghcr.io/o/n "" -u "$var"
     check "empty-$var" 1 ghcr.io/o/n "" "$var="
 done
 
 # Any argument is a usage error, refused before docker is called.
-echo ghcr.io/o/n >"$work/project/.dockerrepo"
-: >"$FAKE_LOG"
-rc=0
-(cd "$work/project" && "$dir/login" --help) >"$work/out" 2>"$work/err" ||
-    rc=$?
-if [ "$rc" != 2 ] || [ -s "$work/out" ] ||
-    [ "$(<"$work/err")" != "Usage: login" ]; then
-    fail argument "exit $rc: $(<"$work/out")$(<"$work/err")"
-elif [ -s "$FAKE_LOG" ]; then
-    fail argument "docker was called as: $(<"$FAKE_LOG")"
-fi
+echo ghcr.io/o/n >"$test_tmp/project/.dockerrepo"
+test_usage argument docker/login env -C "$test_tmp/project" "$dir/login" --help
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

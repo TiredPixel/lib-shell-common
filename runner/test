@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#
+# The gate: bin/lint, then the tests. Runs from the root of the repository.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=${0##*/}
+
+usage() {
+    echo "Usage: $prog [test/PATH.test...]" >&2
+    exit 2
+}
+
+lib=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+# shellcheck source=SCRIPTDIR/../testing/common
+source "$lib/testing/common"
+
+for t in "$@"; do
+    is_shell_test "$t" || usage
+done
+
+failed=()
+if [ $# -eq 0 ]; then
+    # Skipped for named tests: the lint covers the whole tree, so it costs far
+    # more than they do.
+    bin/lint
+fi
+"$lib/testing/run" "$prog" "$@" || failed+=(shell)
+
+if [ ${#failed[@]} -gt 0 ]; then
+    echo "$prog: failed: ${failed[*]}" >&2
+    exit 1
+fi

@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 #
-# Usage: version-assert [--parts 2|3]
-#
 # Fail unless VERSION names a release a mobile client could actually publish. A
 # server-side build may legitimately carry a version like 14.654.4-gdd8f39ac,
 # describing a commit that is not exactly on a tag; a store field may not. Play
-# accepts any string as a versionName, but the number shown there is the same
-# one iOS puts in CFBundleShortVersionString, which takes at most three
-# period-separated integers and nothing else (Android's "Version your app",
-# developer.android.com/studio/publish/versioning, and Apple's
+# accepts any string as a versionName (Android's "Version your app",
+# developer.android.com/studio/publish/versioning, read 2026-11-20), but the
+# number shown there is the same one iOS puts in CFBundleShortVersionString,
+# which takes at most three period-separated integers and nothing else (Apple's
 # CFBundleShortVersionString reference, under
-# developer.apple.com/documentation/bundleresources, checked 2026-11; Apple's
+# developer.apple.com/documentation/bundleresources, read 2026-11-20, which
 # gives the format as three). One rule for both clients is what keeps the two
 # stores showing the same version, and it lives here so an iOS and an Android
 # client cannot compute different numbers from one tag.
@@ -32,10 +30,10 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-prog=${0##*/}
+prog=lint/version-assert
 
 usage() {
-    echo "Usage: $prog [--parts 2|3]" >&2
+    echo "Usage: $prog [--parts 2 | 3]" >&2
     exit 2
 }
 

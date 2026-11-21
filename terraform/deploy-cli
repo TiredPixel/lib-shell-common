@@ -2,22 +2,18 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
-    exit 2
-fi
+prog=terraform/deploy-cli
 
-# No call to HashiCorp's Checkpoint service, which Terraform otherwise makes in
-# the background to ask for a newer release, unless its answer from the last 48
-# hours is cached.
+usage() {
+    echo "Usage: $prog" >&2
+    exit 2
+}
+
+[ $# -eq 0 ] || usage
+
 export CHECKPOINT_DISABLE=1
 
 f_plan=.terraform.plan
-
-if ! [ -e $f_plan ]; then
-    echo "deploy-cli: $f_plan: no saved plan; run terraform/plan-cli first" >&2
-    exit 1
-fi
 
 # The plan terraform/plan-cli saved, so only the change it showed is applied;
 # Terraform refuses a saved plan once the state has moved on since it was made.

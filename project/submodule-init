@@ -15,10 +15,14 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
+prog=project/submodule-init
+
+usage() {
+    echo "Usage: $prog" >&2
     exit 2
-fi
+}
+
+[ $# -eq 0 ] || usage
 
 # A pipeline rather than a process substitution, so pipefail sees git's status,
 # and lastpipe so the loop below runs in this shell and keeps what it reads, for
@@ -44,7 +48,7 @@ git ls-files -s -z |
         # For the reason project/release-assert gives, an empty directory
         # answers with this repository's top level, which marks it missing.
         top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=
-        if [[ ! $top -ef $path ]]; then
+        if [ ! "$top" -ef "$path" ]; then
             missing+=(":(literal)$path")
         fi
     done

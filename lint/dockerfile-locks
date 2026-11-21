@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 #
-# Usage: lint/dockerfile-locks [--] DOCKERFILE...
-#
 # Refuse each RUN or ONBUILD RUN in each DOCKERFILE that runs an installer from
 # PyPI or npm in a way that can fetch what no hashed lock pins, or resolves a
 # lock during the build. Each refused RUN is named on stderr as FILE:LINE: and
@@ -101,7 +99,7 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-prog=${0##*/}
+prog=lint/dockerfile-locks
 
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../docker/dockerfile-parse"
 
@@ -269,10 +267,10 @@ check_named() {
             case $1 in
             --*) ;;
             # -o and -O take the next word.
-            *[oO]) shift || : ;;
+            *[oO]) shift || [ $? -eq 1 ] ;;
             *c*) c=1 ;;
             esac
-            shift || :
+            shift || [ $? -eq 1 ]
         done
         # The shell's prefix reaches its script, a value not exported does
         # not, and its exports reach nothing after it.
@@ -585,7 +583,7 @@ check_run() {
 refuse_at() {
     local why
     printf -v why '%s; ' "${@:3}"
-    found[$2]="$1:$2: ${why%; }"
+    found[$2]="$prog: $1:$2: ${why%; }"
     refused=1
 }
 

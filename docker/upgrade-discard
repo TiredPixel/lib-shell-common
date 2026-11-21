@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# Throws away an upgrade that cannot be finished, so make upgrade can start
+# again. Every tracked change outside the submodules goes back to HEAD, staged
+# or not. Every untracked file at or under a path RECORD lists is removed. Each
+# SUBMODULE goes back to the commit recorded for it, recursively. RECORD is
+# removed. A missing RECORD lists nothing, as where docker/upgrade stopped
+# before writing it. A fix made after the upgrade stopped goes with the rest.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+prog=docker/upgrade-discard
+
+usage() {
+    echo "Usage: $prog RECORD [SUBMODULE...]" >&2
+    exit 2
+}
+
+[ $# -ge 1 ] || usage
+record=$1
+
+# A pipeline rather than a process substitution, so pipefail sees git's status,
+# and lastpipe so mapfile runs in this shell. The index is read apart, since a
+# staged edit whose file was put back matches HEAD in the working tree.
+shopt -s lastpipe
+top=$(git rev-parse --show-toplevel)
+{
+    git -C "$top" diff --name-only -z --no-renames --ignore-submodules=all HEAD
+    git -C "$top" diff --cached --name-only -z --no-renames \
+        --ignore-submodules=all
+} | mapfile -t -d '' changed
+if [ ${#changed[@]} -gt 0 ]; then
+    git -C "$top" restore --source=HEAD --staged --worktree -- \
+        "${changed[@]/#/:(literal)}"
+fi
+
+# The paths are the lines before the first blank one, as docker/upgrade-commit
+# reads them.
+paths=()
+if [ -e "$record" ]; then
+    while IFS= read -r line && [ -n "$line" ]; do
+        paths+=(":(literal)$line")
+    done <"$record"
+fi
+if [ ${#paths[@]} -gt 0 ]; then
+    git clean -fdq -- "${paths[@]}"
+fi
+
+if [ $# -gt 1 ]; then
+    git submodule update --init --checkout --recursive -- "${@:2}" >&2
+fi
+rm -f -- "$record"

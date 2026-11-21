@@ -1,51 +1,27 @@
 #!/usr/bin/env bash
 #
-# Tests lint/dockerfile-locks on Dockerfiles written to a scratch directory,
-# each case's own, with the real jq. Nothing is built, since the lint only reads
-# the file. One case puts a failing jq in front of the real one.
-#
-# Run: test/lint/dockerfile-locks.test. Exits 1 naming each case that failed.
+# Each case writes its own Dockerfile, read with the real jq but in one case,
+# which fakes a failing jq. Nothing is built, since the lint only reads the
+# file.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-locks=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../../lint")/dockerfile-locks
-work=$(mktemp -d)
-trap 'chmod -R u+rwx -- "$work" && rm -rf -- "$work"' EXIT
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
 
-# Reports a failure of case $1 at once, each line of $2 under the program and
-# the case, so a later abort cannot hide it.
-fail() {
-    local line
-    while IFS= read -r line <&3; do
-        echo "${0##*/}: $1: $line" >&2
-    done 3<<<"$2"
-    failures=$((failures + 1))
-}
+locks=$root/lint/dockerfile-locks
 
-failures=0
-
-# Runs dockerfile-locks in $work with the arguments from $4 on, and $PREPATH,
-# where set, in front of PATH, and checks its status is $2, its stdout is empty
-# and its stderr is $3 exactly.
+# Runs dockerfile-locks in $test_tmp with the arguments from $4 on, and checks
+# its status is $2, its stdout is empty and its stderr is $3.
 run() {
-    local name=$1 status=$2 err=$3 rc=0
-    shift 3
-    (
-        cd "$work" && PATH=${PREPATH:+$PREPATH:}$PATH && "$locks" "$@"
-    ) >"$work/out" 2>"$work/err" || rc=$?
-    if [ "$rc" != "$status" ]; then
-        fail "$name" "exit $rc, not $status: $(<"$work/err")"
-    elif [ -s "$work/out" ]; then
-        fail "$name" "stdout is: $(<"$work/out")"
-    elif [ "$(<"$work/err")" != "$err" ]; then
-        fail "$name" "stderr is: $(<"$work/err")"
-    fi
+    test_check "$1" "$2" '' "$3" env -C "$test_tmp" "$locks" "${@:4}"
 }
 
-# Writes stdin to $work/Dockerfile and checks dockerfile-locks on it as run
+# Writes stdin to $test_tmp/Dockerfile and checks dockerfile-locks on it as run
 # does, its status $2 and its stderr $3.
 check() {
-    cat >"$work/Dockerfile"
+    cat >"$test_tmp/Dockerfile"
     run "$1" "$2" "$3" Dockerfile
 }
 
@@ -56,7 +32,7 @@ pass() {
 
 # Checks commands $2 in a RUN refused, at Dockerfile:2, for reasons $3.
 refuse() {
-    check "$1" 1 "Dockerfile:2: $3" < <(printf 'FROM x\nRUN %s\n' "$2")
+    check "$1" 1 "lint/dockerfile-locks: Dockerfile:2: $3" < <(printf 'FROM x\nRUN %s\n' "$2")
 }
 
 # Checks commands $2 refused as refuse does, and let through in a RUN
@@ -67,7 +43,7 @@ twin() {
 }
 
 pipx_args="--pip-args='--disable-pip-version-check --no-index --find-links=/wheels'"
-usage="Usage: dockerfile-locks [--] DOCKERFILE..."
+usage="lint/dockerfile-locks [--] DOCKERFILE..."
 no_hashes="pip install without --require-hashes"
 no_lock="pip install reads no -r lock"
 no_binary="pip install without --only-binary=:all: or --no-build-isolation, so an sdist's build dependencies are fetched with no hash"
@@ -83,23 +59,24 @@ venv="python3 -m venv \"\$PIPX_HOME/shared\""
 auto="export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1"
 
 # Arguments.
-run no-arguments 2 "$usage"
-run option 2 "$usage" -x
-run option-after-file 2 "$usage" Dockerfile --help
-run only-separator 2 "$usage" --
-run missing 3 "dockerfile-locks: nope: no such file" nope
-mkdir "$work/dir"
-run directory 3 "dockerfile-locks: dir: not a regular file" dir
-printf 'FROM x\n' >"$work/-dash"
+test_usage no-arguments "$usage" env -C "$test_tmp" "$locks"
+test_usage option "$usage" env -C "$test_tmp" "$locks" -x
+test_usage option-after-file "$usage" env -C "$test_tmp" "$locks" Dockerfile \
+    --help
+test_usage only-separator "$usage" env -C "$test_tmp" "$locks" --
+run missing 3 "lint/dockerfile-locks: nope: no such file" nope
+mkdir -- "$test_tmp/dir"
+run directory 3 "lint/dockerfile-locks: dir: not a regular file" dir
+printf 'FROM x\n' >"$test_tmp/-dash"
 run separator 0 "" -- -dash
 if [ "$(id -u)" -ne 0 ]; then
-    printf 'FROM x\n' >"$work/locked"
-    chmod 000 "$work/locked"
-    run unreadable 3 "dockerfile-locks: locked: cannot be read" locked
+    printf 'FROM x\n' >"$test_tmp/locked"
+    chmod 000 "$test_tmp/locked"
+    run unreadable 3 "lint/dockerfile-locks: locked: cannot be read" locked
 fi
-printf 'FROM x\nRUN npm install\n' >"$work/a.Dockerfile"
-printf 'FROM x\n\nRUN npm i\n' >"$work/b.Dockerfile"
-run files 1 "a.Dockerfile:2: $npm_install"$'\n'"b.Dockerfile:3: ${npm_install/install/i}" \
+printf 'FROM x\nRUN npm install\n' >"$test_tmp/a.Dockerfile"
+printf 'FROM x\n\nRUN npm i\n' >"$test_tmp/b.Dockerfile"
+run files 1 "lint/dockerfile-locks: a.Dockerfile:2: $npm_install"$'\n'"lint/dockerfile-locks: b.Dockerfile:3: ${npm_install/install/i}" \
     a.Dockerfile b.Dockerfile
 
 # The form this repository's image takes: a wheels stage fetching the lock with
@@ -171,12 +148,12 @@ RUN --network=none python3 -m venv /opt/pipx/shared/ \
     && python3 -m pipx install --pip-args="--no-index -f /wheels" mdformat
 DOCKERFILE
 
-check pipx-online 1 "Dockerfile:2: $online" <<DOCKERFILE
+check pipx-online 1 "lint/dockerfile-locks: Dockerfile:2: $online" <<DOCKERFILE
 FROM x
 RUN $auto && $venv && pipx install $pipx_args mdformat
 DOCKERFILE
 
-check pipx-no-pip-args 1 "Dockerfile:2: pipx inject --pip-args lacks --no-index; pipx inject --pip-args lacks --find-links" <<DOCKERFILE
+check pipx-no-pip-args 1 "lint/dockerfile-locks: Dockerfile:2: pipx inject --pip-args lacks --no-index; pipx inject --pip-args lacks --find-links" <<DOCKERFILE
 FROM x
 RUN --network=none $auto && $venv && pipx inject mdformat mdformat-gfm
 DOCKERFILE
@@ -186,17 +163,17 @@ FROM x
 RUN --network=none $auto && $venv && pipx install --pip-args '--no-index --find-links=/w' mdformat
 DOCKERFILE
 
-check pipx-no-venv 1 "Dockerfile:2: $no_shared" <<DOCKERFILE
+check pipx-no-venv 1 "lint/dockerfile-locks: Dockerfile:2: $no_shared" <<DOCKERFILE
 FROM x
 RUN --network=none $auto && pipx install $pipx_args mdformat
 DOCKERFILE
 
-check pipx-venv-after 1 "Dockerfile:2: $no_shared" <<DOCKERFILE
+check pipx-venv-after 1 "lint/dockerfile-locks: Dockerfile:2: $no_shared" <<DOCKERFILE
 FROM x
 RUN --network=none $auto && pipx install $pipx_args mdformat && $venv
 DOCKERFILE
 
-check pipx-preinstall 1 "Dockerfile:2: pipx --preinstall runs pip without the --pip-args" <<DOCKERFILE
+check pipx-preinstall 1 "lint/dockerfile-locks: Dockerfile:2: pipx --preinstall runs pip without the --pip-args" <<DOCKERFILE
 FROM x
 RUN --network=none $auto && $venv && pipx install $pipx_args --preinstall=pip mdformat
 DOCKERFILE
@@ -205,17 +182,17 @@ pass pipx-other "pipx list && pipx --version"
 
 # The variable keeping pipx from upgrading the shared venv's pip: each form
 # that reaches the command, and each that does not.
-check pipx-no-auto-upgrade 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+check pipx-no-auto-upgrade 1 "lint/dockerfile-locks: Dockerfile:2: $no_auto" <<DOCKERFILE
 FROM x
 RUN --network=none $venv && pipx install $pipx_args mdformat
 DOCKERFILE
 
-check pipx-no-auto-upgrade-inject 1 "Dockerfile:2: ${no_auto/install/inject}" <<DOCKERFILE
+check pipx-no-auto-upgrade-inject 1 "lint/dockerfile-locks: Dockerfile:2: ${no_auto/install/inject}" <<DOCKERFILE
 FROM x
 RUN --network=none $venv && pipx inject $pipx_args mdformat mdformat-gfm
 DOCKERFILE
 
-check pipx-all 1 "Dockerfile:2: $online; $no_shared; $no_auto" <<DOCKERFILE
+check pipx-all 1 "lint/dockerfile-locks: Dockerfile:2: $online; $no_shared; $no_auto" <<DOCKERFILE
 FROM x
 RUN pipx install $pipx_args mdformat
 DOCKERFILE
@@ -251,12 +228,12 @@ for data in "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 &&" \
     "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=false" \
     "env -i PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=no"; do
     n=$((n + 1))
-    check "pipx-auto-upgrade-on-$n" 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+    check "pipx-auto-upgrade-on-$n" 1 "lint/dockerfile-locks: Dockerfile:2: $no_auto" <<DOCKERFILE
 FROM x
 RUN --network=none $venv && $data pipx install $pipx_args mdformat
 DOCKERFILE
 done
-check pipx-export-after 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+check pipx-export-after 1 "lint/dockerfile-locks: Dockerfile:2: $no_auto" <<DOCKERFILE
 FROM x
 RUN --network=none $venv && pipx install $pipx_args mdformat && $auto
 DOCKERFILE
@@ -271,7 +248,7 @@ for data in "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 && PIPX_DISABLE_SHARED_LIBS
     "PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0" \
     "$auto && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=off"; do
     n=$((n + 1))
-    check "pipx-auto-upgrade-undone-$n" 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+    check "pipx-auto-upgrade-undone-$n" 1 "lint/dockerfile-locks: Dockerfile:2: $no_auto" <<DOCKERFILE
 FROM x
 RUN --network=none $venv && $data pipx install $pipx_args mdformat
 DOCKERFILE
@@ -292,17 +269,17 @@ $venv && pipx install $pipx_args mdformat
 EOF
 DOCKERFILE
 
-check pipx-shell-prefix-false 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+check pipx-shell-prefix-false 1 "lint/dockerfile-locks: Dockerfile:2: $no_auto" <<DOCKERFILE
 FROM x
 RUN --network=none $venv && $auto && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=0 sh -c "pipx install $pipx_args mdformat"
 DOCKERFILE
 
-check pipx-shell-export 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+check pipx-shell-export 1 "lint/dockerfile-locks: Dockerfile:2: $no_auto" <<DOCKERFILE
 FROM x
 RUN --network=none $venv && sh -c "$auto" && pipx install $pipx_args mdformat
 DOCKERFILE
 
-check pipx-shell-unexported 1 "Dockerfile:2: $no_auto" <<DOCKERFILE
+check pipx-shell-unexported 1 "lint/dockerfile-locks: Dockerfile:2: $no_auto" <<DOCKERFILE
 FROM x
 RUN --network=none $venv && PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 && sh -c "export PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE && pipx install $pipx_args mdformat"
 DOCKERFILE
@@ -318,8 +295,8 @@ DOCKERFILE
 
 # The heredoc's reader is the command holding the << word, wherever it sits,
 # with its own prefix, and what runs after it counts for nothing in the body.
-check pipx-heredoc-reader 1 "Dockerfile:5: $no_auto
-Dockerfile:8: $no_auto" <<DOCKERFILE
+check pipx-heredoc-reader 1 "lint/dockerfile-locks: Dockerfile:5: $no_auto
+lint/dockerfile-locks: Dockerfile:8: $no_auto" <<DOCKERFILE
 FROM x
 RUN --network=none PIPX_DISABLE_SHARED_LIBS_AUTO_UPGRADE=1 bash <<EOF && true
 $venv && pipx install $pipx_args mdformat
@@ -349,7 +326,7 @@ pass npm-other "npm un x && npm uninstall x && npm ls && npm ll && npm list"
 # to, offline too.
 npm_ci="npm ci without --no-update-notifier, so npm asks the registry for a newer npm"
 refuse npm-ci-notifier "npm ci --prefix /opt/js" "$npm_ci"
-check npm-ci-notifier-offline 1 "Dockerfile:2: $npm_ci" < <(printf 'FROM x\nRUN --network=none npm ci\n')
+check npm-ci-notifier-offline 1 "lint/dockerfile-locks: Dockerfile:2: $npm_ci" < <(printf 'FROM x\nRUN --network=none npm ci\n')
 for c in clean-install ic install-clean isntall-clean install-ci-test cit \
     clean-install-test sit; do
     refuse "npm-$c" "npm $c" "${npm_ci/ci/$c}"
@@ -436,19 +413,17 @@ refuse exec-form-shell '["sh", "-c", "npm i"]' "${npm_install/install/i}"
 refuse shell-form-bracket "[ -f x ] && npm i" "${npm_install/install/i}"
 pass exec-form-not-strings '[1]'
 
-mkdir "$work/badjq"
-printf '#!/usr/bin/env bash\nset -Eeuo pipefail\nshopt -s inherit_errexit failglob\nexit 3\n' \
-    >"$work/badjq/jq"
-chmod +x "$work/badjq/jq"
-printf 'FROM x\nRUN ["npm", "install"]\n' >"$work/Dockerfile"
-PREPATH=$work/badjq run exec-form-jq-fails 3 \
-    "dockerfile-locks: Dockerfile:2: jq failed reading the exec form" \
+test_stub jq 'exit 3'
+printf 'FROM x\nRUN ["npm", "install"]\n' >"$test_tmp/Dockerfile"
+run exec-form-jq-fails 3 \
+    "lint/dockerfile-locks: Dockerfile:2: jq failed reading the exec form" \
     Dockerfile
+rm -- "$test_tmp/path/jq" "$test_tmp/jq.calls"
 
 # Heredocs: a body that is the RUN's script, or a shell's, is read, any other
 # passed over.
-check heredoc-script 1 "Dockerfile:2: $npm_install
-Dockerfile:8: ${npm_install/install/i}" <<'DOCKERFILE'
+check heredoc-script 1 "lint/dockerfile-locks: Dockerfile:2: $npm_install
+lint/dockerfile-locks: Dockerfile:8: ${npm_install/install/i}" <<'DOCKERFILE'
 FROM x
 RUN <<EOF
 echo "a\
@@ -465,7 +440,7 @@ npm i
 EOF
 DOCKERFILE
 
-check heredoc-shell 1 "Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
+check heredoc-shell 1 "lint/dockerfile-locks: Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
 FROM x
 RUN --mount=type=cache,target=/x /bin/bash <<-"EOF"
 	npm i
@@ -474,11 +449,11 @@ DOCKERFILE
 
 # A shell past assignments, quoted or not, wrappers and earlier commands still
 # runs the heredoc, and a shell given -c reads it as input alone.
-check heredoc-shell-wrapped 1 "Dockerfile:2: ${npm_install/install/i}
-Dockerfile:5: ${npm_install/install/i}
-Dockerfile:8: ${npm_install/install/i}
-Dockerfile:11: ${npm_install/install/i}
-Dockerfile:14: ${npm_install/install/i}" <<'DOCKERFILE'
+check heredoc-shell-wrapped 1 "lint/dockerfile-locks: Dockerfile:2: ${npm_install/install/i}
+lint/dockerfile-locks: Dockerfile:5: ${npm_install/install/i}
+lint/dockerfile-locks: Dockerfile:8: ${npm_install/install/i}
+lint/dockerfile-locks: Dockerfile:11: ${npm_install/install/i}
+lint/dockerfile-locks: Dockerfile:14: ${npm_install/install/i}" <<'DOCKERFILE'
 FROM x
 RUN A=1 bash <<EOF
 npm i
@@ -516,21 +491,21 @@ RUN npm i
 EOF
 DOCKERFILE
 
-check heredoc-no-end 3 "dockerfile-locks: Dockerfile: a heredoc's body has no end line EOF" <<'DOCKERFILE'
+check heredoc-no-end 3 "lint/dockerfile-locks: Dockerfile: a heredoc's body has no end line EOF" <<'DOCKERFILE'
 FROM x
 RUN <<EOF
 npm i
 DOCKERFILE
 
 # Instructions, on logical lines.
-check continued 1 "Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
+check continued 1 "lint/dockerfile-locks: Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
 FROM x
 RUN apt-get update \
 # a comment inside, skipped
     && npm i
 DOCKERFILE
 
-check escape-directive 1 "Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
+check escape-directive 1 "lint/dockerfile-locks: Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
 # syntax=docker/dockerfile:1
 # escape=`
 FROM x
@@ -540,7 +515,7 @@ DOCKERFILE
 
 # Parser directives end at an unknown one, as Docker's do, so the escape
 # directive after it is a comment.
-check escape-after-unknown 1 "Dockerfile:5: ${npm_install/install/i}" <<'DOCKERFILE'
+check escape-after-unknown 1 "lint/dockerfile-locks: Dockerfile:5: ${npm_install/install/i}" <<'DOCKERFILE'
 # unknown=x
 # escape=`
 FROM x
@@ -548,12 +523,12 @@ RUN true `
 RUN npm i
 DOCKERFILE
 
-check escape-bad 3 "dockerfile-locks: Dockerfile: escape directive x is not \\ or \`" \
+check escape-bad 3 "lint/dockerfile-locks: Dockerfile: escape directive x is not \\ or \`" \
     < <(printf '# escape=x\nFROM x\nRUN npm i\n')
 
-check continued-at-end 1 "Dockerfile:2: ${npm_install/install/i}" < <(printf 'FROM x\nrun npm i \\\n')
+check continued-at-end 1 "lint/dockerfile-locks: Dockerfile:2: ${npm_install/install/i}" < <(printf 'FROM x\nrun npm i \\\n')
 
-check onbuild 1 "Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
+check onbuild 1 "lint/dockerfile-locks: Dockerfile:2: ${npm_install/install/i}" <<'DOCKERFILE'
 FROM x
 onbuild RUN npm i
 ONBUILD
@@ -567,23 +542,21 @@ FROM x
 RUN npm i
 DOCKERFILE
 
-check ignore-no-reason 1 "Dockerfile:3: dockerfile-locks ignore has no reason" \
+check ignore-no-reason 1 "lint/dockerfile-locks: Dockerfile:3: dockerfile-locks ignore has no reason" \
     < <(printf 'FROM x\n# dockerfile-locks ignore: not the nearest\n# dockerfile-locks ignore:\t \nRUN npm i\n')
 
-check ignore-detached 1 "Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
+check ignore-detached 1 "lint/dockerfile-locks: Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
 FROM x
 # dockerfile-locks ignore: a blank line between
 
 RUN npm i
 DOCKERFILE
 
-check ignore-past-instruction 1 "Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
+check ignore-past-instruction 1 "lint/dockerfile-locks: Dockerfile:4: ${npm_install/install/i}" <<'DOCKERFILE'
 FROM x
 # dockerfile-locks ignore: another instruction between
 FROM y
 RUN npm i
 DOCKERFILE
 
-if [ "$failures" -gt 0 ]; then
-    exit 1
-fi
+test_finish

@@ -2,14 +2,15 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
-if [ $# -ne 0 ]; then
-    echo "Usage: ${0##*/}" >&2
-    exit 2
-fi
+prog=terraform/test-cloud
 
-# No call to HashiCorp's Checkpoint service, which Terraform otherwise makes in
-# the background to ask for a newer release, unless its answer from the last 48
-# hours is cached.
+usage() {
+    echo "Usage: $prog" >&2
+    exit 2
+}
+
+[ $# -eq 0 ] || usage
+
 export CHECKPOINT_DISABLE=1
 
 # -diff, so a failure shows what would change rather than only naming the file.
@@ -18,7 +19,7 @@ terraform fmt -recursive -check -diff
 # The lock file read-only, for the reason terraform/test-cli gives.
 terraform init -lockfile=readonly
 
-# Unsaved, with no deploy-cloud to apply it: Terraform Cloud did not support
-# plan -out as of February 2023. Whether it does now is in HashiCorp's
-# documentation on remote operations.
+# Unsaved, with no deploy-cloud to apply it. HCP Terraform saves a plan under
+# plan -out only from Terraform CLI v1.6.0 (HashiCorp's "CLI-driven run
+# workflow", developer.hashicorp.com, read 2026-11-20).
 terraform plan

@@ -1,0 +1,174 @@
+# shellcheck shell=bash
+#
+# Sourced from the root of the repository served. bin/settings is sourced last,
+# so an override there wins.
+
+prog=${0##*/}
+lib=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+failed=()
+
+# shellcheck source=../shell/collect
+source "$lib/shell/collect"
+# shellcheck source=../shell/rewrite
+source "$lib/shell/rewrite"
+
+# Indented by 4 spaces, where shfmt's default is a tab.
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+shfmt_args=(-i 4)
+# --newline, so each file keeps its final newline.
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+dockerfmt_args=(--newline)
+# Sorted keys, so the same data has one layout.
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+jq_args=(--sort-keys .)
+# Sorted keys, so the same data has one layout.
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+yq_args=(-P 'sort_keys(..)')
+# --strict, so a warning fails as an error does.
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+yamllint_args=(--strict)
+# Standalone, since the Debian and Ubuntu images carry Compose without the
+# docker CLI.
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+compose_cmd=(docker-compose)
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+ansible_env=()
+
+usage() {
+    echo "Usage: $prog" >&2
+    exit 2
+}
+
+defines() {
+    declare -F "$1" >/dev/null
+}
+
+# Records the pass named $1 as failed where the command after it fails, so every
+# pass runs. Under ||, errexit is off inside a function, so a function run here
+# checks each of its own steps.
+check() {
+    local name=$1
+    shift
+    "$@" || failed+=("$name")
+}
+
+finish() {
+    local -A seen=()
+    local name
+    local -a names=()
+
+    for name in "${failed[@]}"; do
+        if [ -z "${seen[$name]+set}" ]; then
+            names+=("$name")
+            seen[$name]=1
+        fi
+    done
+    if [ ${#names[@]} -gt 0 ]; then
+        echo "$prog: failed: ${names[*]}" >&2
+        exit 1
+    fi
+}
+
+files_sorted() {
+    find "$@" -print0 | LC_ALL=C sort -z
+}
+
+# One array for css_files and html_files, since Prettier takes both in one run.
+files_web() {
+    local -n files_web_into=$1
+    local files_web_set
+    local -a files_web_part=()
+
+    files_web_into=()
+    for files_web_set in css_files html_files; do
+        if defines "$files_web_set"; then
+            collect files_web_part "$files_web_set"
+            files_web_into+=("${files_web_part[@]}")
+        fi
+    done
+}
+
+# Prints each file in the directories after $1, or at any depth with
+# --recursive, whose first line is a $1 shebang or, for bash, a shellcheck
+# shell=bash directive, since scripts carry no suffix. A directory that is
+# missing or holds no such file fails the run rather than narrowing the pass.
+files_shebang() {
+    local lang=$1 dir f first found
+    local pattern="^#!.*[/[:space:]]$lang([[:space:]]|\$)"
+    local -a depth=(-maxdepth 1) entries=()
+
+    shift
+    if [ "$lang" = bash ]; then
+        pattern="$pattern|^# shellcheck shell=bash( |\$)"
+    fi
+    if [ "${1:-}" = --recursive ]; then
+        depth=()
+        shift
+    fi
+    for dir; do
+        collect entries --may-be-empty files_sorted "$dir" -mindepth 1 \
+            "${depth[@]}" -type f
+        found=0
+        for f in "${entries[@]}"; do
+            # read, not $(head -n 1), since a command substitution warns of
+            # each NUL byte a binary file holds; a last line with no newline
+            # is still read, so only the redirection's failure stops.
+            first=
+            { IFS= read -r first || :; } <"$f"
+            if [[ $first =~ $pattern ]]; then
+                printf '%s\0' "$f"
+                found=1
+            fi
+        done
+        if [ $found -eq 0 ]; then
+            echo "$prog: $dir/ holds no $lang script" >&2
+            exit 1
+        fi
+    done
+}
+
+# .github/workflows.new/ exists only while a proposal waits.
+workflow_files() {
+    local -a dirs=(.github/workflows)
+
+    if [ -d .github/workflows.new ]; then
+        dirs+=(.github/workflows.new)
+    fi
+    files_sorted "${dirs[@]}" -maxdepth 1 -type f \
+        \( -name '*.yml' -o -name '*.yaml' \)
+}
+
+workflow_yamllint_files() {
+    workflows_unreplaced
+}
+
+# workflow_files less each live workflow a proposal of the same name replaces:
+# only approving the proposal changes the live file, so the proposal carries the
+# fix.
+workflows_unreplaced() {
+    local f
+    local -a all=()
+
+    collect all workflow_files
+    for f in "${all[@]}"; do
+        if [[ $f == .github/workflows/* ]] &&
+            [ -e ".github/workflows.new/${f##*/}" ]; then
+            continue
+        fi
+        printf '%s\0' "$f"
+    done
+}
+
+yamllint_files() {
+    local set
+
+    for set in yaml_files yaml_unsorted_files yaml_lint_files; do
+        if defines "$set"; then
+            "$set"
+        fi
+    done
+    workflow_yamllint_files
+}
+
+# shellcheck source=/dev/null # An override would mark its default unreachable.
+source bin/settings

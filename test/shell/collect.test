@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# Sources shell/collect and runs collect in a subshell per case, with listers
+# defined here, printing what it read one element per line.
+set -Eeuo pipefail
+shopt -s inherit_errexit failglob
+
+root=$(readlink -f "$(dirname "$0")/../..")
+# shellcheck source=testing/harness
+source "$root/testing/harness"
+# shellcheck source=shell/collect
+source "$root/shell/collect"
+
+prog=lint
+
+# shellcheck disable=SC2317 # Called through test_check.
+run() (
+    local -a got=()
+    collect got "$@"
+    if [ ${#got[@]} -gt 0 ]; then
+        printf '%s\n' "${got[@]}"
+    fi
+)
+
+# shellcheck disable=SC2317 # Called through collect.
+two() {
+    printf '%s\0' a 'b c'
+}
+
+# shellcheck disable=SC2317 # Called through collect.
+none() {
+    :
+}
+
+test_check two 0 $'a\nb c' '' run two
+test_check arguments 0 $'x\ny z' '' run printf '%s\0' x 'y z'
+test_check none 1 '' 'lint: bin/settings: none names nothing' run none
+test_check may-be-empty 0 '' '' run --may-be-empty none
+test_check fails 1 '' 'lint: bin/settings: sh failed (3)' \
+    run sh -c 'printf "%s\0" a; exit 3'
+
+test_finish
