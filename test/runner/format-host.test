@@ -79,7 +79,7 @@ test_calls top docker \
     "$(call "$t" --build -T -- .github README.md docs new.md src)"
 
 # A directory holding an ignored path or a submodule is taken entry by entry, so
-# neither is bound, and an untracked dot entry is bound as any other is.
+# neither is bound, and an untracked dot entry is left out.
 t=$(repo ignored)
 printf '/tmp/\n*.log\n' >"$t/.gitignore"
 tracked "$t" .gitignore src/a.css lib/own.sh
@@ -91,13 +91,97 @@ git -C "$t/lib/sub" commit -q -m a
 sub=$(git -C "$t/lib/sub" rev-parse HEAD)
 git -C "$t" update-index --add --cacheinfo "160000,$sub,lib/sub"
 test_check ignored 0 '' '' env -C "$t" "$script" -- tooling format
-test_calls ignored docker "$(call "$t" -- .a.swp .gitignore .idea \
-    lib/own.sh src/.a.css.swp src/a.css)"
+test_calls ignored docker "$(call "$t" -- .gitignore lib/own.sh src/a.css)"
 
 # A run from below the root binds the same entries, from the root.
 test_check subdirectory 0 '' '' env -C "$t/src" "$script" -- tooling format
-test_calls subdirectory docker "$(call "$t" -- .a.swp .gitignore .idea \
-    lib/own.sh src/.a.css.swp src/a.css)"
+test_calls subdirectory docker \
+    "$(call "$t" -- .gitignore lib/own.sh src/a.css)"
+
+# An untracked dot file or directory at the top is left out.
+t=$(repo dots-1)
+tracked "$t" README.md
+write "$t" .netrc .aws/credentials
+test_check dot-top 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-top docker "$(call "$t" -- README.md)"
+
+# One at any depth in a tracked directory, a symlink included, has each parent
+# taken entry by entry, so the rest of the directory is still bound.
+t=$(repo dots-2)
+tracked "$t" src/a.css src/b/c.css
+write "$t" src/.netrc src/b/.aws/credentials src/new.css
+ln -s a.css "$t/src/.link"
+test_check dot-nested 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-nested docker \
+    "$(call "$t" -- src/a.css src/b/c.css src/new.css)"
+
+# A tracked dot path stays bound, beside an untracked one in the same directory.
+t=$(repo dots-3)
+tracked "$t" .gitignore .config/own
+write "$t" .config/.netrc
+test_check dot-tracked 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-tracked docker "$(call "$t" -- .config/own .gitignore)"
+
+# An untracked proposal below .github is bound through it, the single leading
+# .github/ not being counted.
+t=$(repo dots-4)
+tracked "$t" .github/workflows/build.yml
+write "$t" .github/workflows.new/build.yml
+test_check dot-proposal 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-proposal docker "$(call "$t" -- .github)"
+
+# An untracked repository is left out whole, dot-named or not, with or without a
+# commit, and the rest of its directory is still bound.
+t=$(repo dots-5)
+tracked "$t" src/a.css
+write "$t" src/.embedded/f src/vendor/f src/new.css top/f
+for nested in src/.embedded src/vendor top; do
+    git -C "$t/$nested" init -q
+done
+git -C "$t/src/vendor" add f
+git -C "$t/src/vendor" commit -q -m a
+test_check dot-repository 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-repository docker "$(call "$t" -- src/a.css src/new.css)"
+
+# A dot-named file in an untracked directory, at any depth, leaves that
+# directory's other files bound one by one.
+t=$(repo dots-6)
+tracked "$t" src/a.css
+write "$t" newdir/.netrc newdir/kept src/newdir/.netrc src/newdir/kept
+test_check dot-new-directory 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-new-directory docker \
+    "$(call "$t" -- newdir/kept src/a.css src/newdir/kept)"
+
+# An untracked file below a tracked dot directory is left out, not only a
+# dot-named one, while the tracked file beside it stays bound.
+t=$(repo dots-7)
+tracked "$t" .ssh/known_hosts
+write "$t" .ssh/id_ed25519
+test_check dot-beside-tracked 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-beside-tracked docker "$(call "$t" -- .ssh/known_hosts)"
+
+# A dot-named path below .github is left out, and the proposal beside it is
+# bound by name.
+t=$(repo dots-8)
+tracked "$t" .github/workflows/build.yml
+write "$t" .github/workflows.new/build.yml .github/workflows.new/.netrc \
+    .github/.netrc
+test_check dot-in-proposal 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-in-proposal docker \
+    "$(call "$t" -- .github/workflows .github/workflows.new/build.yml)"
+
+# Only a single leading .github/ is not counted: a second, one further down and
+# an untracked file of that name are.
+t=$(repo dots-9)
+tracked "$t" src/a.css
+write "$t" .github/.github/f src/.github/f
+test_check dot-github-once 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-github-once docker "$(call "$t" -- src/a.css)"
+t=$(repo dots-10)
+tracked "$t" README.md
+write "$t" .github
+test_check dot-github-file 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls dot-github-file docker "$(call "$t" -- README.md)"
 
 # A deleted file and a symlink, tracked or not, are left out.
 t=$(repo links)

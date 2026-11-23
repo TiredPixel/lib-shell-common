@@ -5,11 +5,17 @@
 # each move RECORD holds, written "- " then the move as docker/upgrade gave it.
 # It stages exactly the paths RECORD lists and each PATH, such as a library
 # submodule taken forwards beside the upgrade, and refuses, listing them, where
-# any other path is already staged, since the commit would carry it. A
-# submodule PATH that moved adds an item as PATH OLD -> NEW, each commit cut to
-# 7 hex digits, so a PATH that changed is committed even where no pin moved.
-# Where neither a pin nor a PATH moved, it commits nothing. It never pushes.
-# RECORD is removed once used, so a second run cannot commit it again.
+# any other path is already staged, since the commit would carry it. Given the
+# PATH . or ./, it also refuses, listing them, untracked files it would stage
+# that are neither exactly a path RECORD lists or another PATH, nor below a
+# directory RECORD lists with no dot-named component below that directory, since
+# one made after docker/upgrade-guard ran, such as a credential, would be
+# committed. git add lets one through, and tracked edits are committed, since a
+# fix to a failed upgrade and the formatter's rewrites belong in it. A submodule
+# PATH that moved adds an item as PATH OLD -> NEW, each commit cut to 7 hex
+# digits, so a PATH that changed is committed even where no pin moved. Where
+# neither a pin nor a PATH moved, it commits nothing. It never pushes. RECORD is
+# removed once used, so a second run cannot commit it again.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -86,6 +92,89 @@ if [ -n "$others" ]; then
     echo "$prog: already staged beside the upgrade; commit or unstage it" \
         "first" >&2
     exit 1
+fi
+
+declare -A allowed=()
+allowed_dirs=()
+
+# Lets through path $1, read from the current directory as git add reads it,
+# and with $2 set and $1 a directory, what is below it. Held by its path from
+# the root, through the filesystem since a record's path may be absolute. One
+# whose leading directories are missing adds nothing, as git add then refuses
+# it.
+allow() {
+    local path=$1 leaf="" dir
+    while [[ $path == */ ]] && [ "$path" != / ]; do
+        path=${path%/}
+    done
+    # ./ keeps a leading dash and CDPATH from cd.
+    [[ $path == /* ]] || path=./$path
+    if [ -L "$path" ] || ! [ -d "$path" ]; then
+        leaf=${path##*/}
+        path=${path%/*}/
+    fi
+    [ -d "$path" ] || return 0
+    # The closing slash keeps a name ending in a newline through $(...).
+    dir=$(cd -P -- "$path" && printf '%s/' "${PWD%/}")$leaf
+    [[ $dir == "$top"* ]] || return 0
+    dir=${dir#"$top"}
+    dir=${dir%/}
+    [ -z "$dir" ] || allowed[$dir]=1
+    if [ -z "$leaf" ] && [ -n "$2" ]; then
+        allowed_dirs+=("$dir")
+    fi
+}
+
+# Whether untracked path $1, from the root, is let through. A nested repository,
+# which git lists with a trailing slash, holds a dot-named .git, so it passes
+# only where named exactly.
+passes() {
+    local name=$1 dir
+    [ -z "${allowed[${name%/}]+set}" ] || return 0
+    [[ $name != */ ]] || return 1
+    for dir in "${allowed_dirs[@]}"; do
+        if [ -z "$dir" ] || [[ $name == "$dir"/* ]]; then
+            [[ /${name#"$dir"/} == */.* ]] || return 0
+        fi
+    done
+    return 1
+}
+
+whole=""
+for path in "${extra[@]}"; do
+    if [ "$path" = . ] || [ "$path" = ./ ]; then
+        whole=1
+        break
+    fi
+done
+if [ -n "$whole" ]; then
+    top=$(git rev-parse --show-toplevel)
+    top=$(cd -P -- "$top" && printf '%s/' "${PWD%/}")
+    for path in "${paths[@]}"; do
+        allow "$path" below
+    done
+    for path in "${extra[@]}"; do
+        if [ "$path" != . ] && [ "$path" != ./ ]; then
+            allow "$path" ""
+        fi
+    done
+    # Every path git add is about to take, since a recorded directory can lie
+    # outside the current one. A pipeline rather than a process substitution,
+    # so pipefail sees git's status, and lastpipe so mapfile runs in this shell.
+    shopt -s lastpipe
+    git ls-files -z --others --exclude-standard --full-name -- "${specs[@]}" |
+        mapfile -t -d '' untracked
+    refused=()
+    for path in "${untracked[@]}"; do
+        passes "$path" || refused+=(":(top,literal)$path")
+    done
+    if [ ${#refused[@]} -gt 0 ]; then
+        # git's own listing, which quotes a newline so each stays on one line.
+        git ls-files --others --exclude-standard -- "${refused[@]}" >&2
+        echo "$prog: untracked beside the upgrade; git add it to commit" \
+            "it, or remove it" >&2
+        exit 1
+    fi
 fi
 
 git add -- "${specs[@]}"

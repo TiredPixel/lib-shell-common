@@ -30,6 +30,8 @@ export GIT_CONFIG_KEY_4=diff.renames GIT_CONFIG_VALUE_4=true
 n=0
 moves=("V 1.0.0 -> 1.2.3" "o/r@v1 v0 -> 3333333")
 staged="docker/upgrade-commit: already staged beside the upgrade; commit or unstage it first"
+stray="docker/upgrade-commit: untracked beside the upgrade; git add it to commit it, or remove it"
+dot=.
 
 # A fresh fixture in $w: app at $w/app, pushed to $w/app.git, with lib at
 # $w/app/lib one commit past what app records, the upgrade's changes made and
@@ -329,6 +331,226 @@ if [ ! -f "$w/app/.env" ]; then
     test_fail not-a-record "the file was removed"
 elif [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
     test_fail not-a-record "the index is now: $(git -C "$w/app" diff --cached --name-only)"
+fi
+
+# Runs upgrade-commit with $dot in $w/app$2, which case $1 expects to refuse,
+# naming the lines after $2 and leaving HEAD, the remote, the record, the index
+# and the tree as they were.
+refused() {
+    local name=$1 sub=$2 status record_was
+    shift 2
+    status=$(git -C "$w/app" status --porcelain --untracked-files=all)
+    record_was=$(<"$w/record")
+    test_check "$name" 1 '' "$(printf '%s\n' "$@" "$stray")" \
+        env -C "$w/app$sub" "$commit" "$w/record" "$dot"
+    unchanged "$name"
+    if [ "$(<"$w/record")" != "$record_was" ]; then
+        test_fail "$name" "the record was changed"
+    elif [ "$(git -C "$w/app" status --porcelain --untracked-files=all)" != "$status" ]; then
+        test_fail "$name" "the index or tree is now: $(git -C "$w/app" status --porcelain --untracked-files=all)"
+    fi
+}
+
+# With ., an untracked file is refused, a dot file included, before anything is
+# staged; added with git add, it is committed on the next run.
+fixture
+printf 'TOKEN=secret\n' >"$w/app/.netrc"
+refused stray-refused "" .netrc
+git -C "$w/app" add .netrc
+run "" "$w/record" .
+committed stray-added .github/workflows.new/build.yml .netrc Dockerfile lib
+
+# Where no pin moved, the record lists nothing, so every untracked file is
+# refused, the fixture's proposal among them.
+fixture
+: >"$w/record"
+printf 'x\n' >"$w/app/stray"
+refused stray-no-moves "" .github/workflows.new/build.yml stray
+
+# A new file the record lists passes, a lock in a new directory included, and
+# only the file beside it is named.
+fixture
+mkdir -p "$w/app/Dockerfile.lock/m"
+printf 'x\n' >"$w/app/Dockerfile.lock/m/requirements.txt"
+app=$(readlink -f "$w/app")
+printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+    "$app/Dockerfile.lock" "" "${moves[@]}" >"$w/record"
+printf 'x\n' >"$w/app/stray"
+refused stray-recorded-dir "" stray
+git -C "$w/app" add stray
+run "" "$w/record" .
+committed recorded-dir-passes .github/workflows.new/build.yml Dockerfile \
+    Dockerfile.lock/m/requirements.txt lib stray
+
+# An ignored file is not named, and stays out of the commit.
+fixture
+printf '/ignored\n' >"$w/app/.git/info/exclude"
+printf 'x\n' >"$w/app/ignored"
+printf 'x\n' >"$w/app/stray"
+refused stray-ignored "" stray
+git -C "$w/app" add stray
+run "" "$w/record" .
+committed ignored-left-out .github/workflows.new/build.yml Dockerfile lib stray
+
+# A tracked edit does not stop the run and is committed once the stray file is
+# dealt with.
+fixture
+printf 'more notes\n' >>"$w/app/notes.txt"
+printf 'x\n' >"$w/app/stray"
+refused stray-tracked-edit "" stray
+git -C "$w/app" add stray
+run "" "$w/record" .
+committed tracked-edit-committed .github/workflows.new/build.yml Dockerfile \
+    lib notes.txt stray
+
+# Recorded paths match literally: f[1] and "a b" pass, and f1 and a are named.
+fixture
+printf 'x\n' | tee "$w/app/f[1]" "$w/app/f1" "$w/app/a b" >"$w/app/a"
+app=$(readlink -f "$w/app")
+printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+    "$app/f[1]" "$app/a b" "" "${moves[@]}" >"$w/record"
+refused stray-literal "" a f1
+git -C "$w/app" add a f1
+run "" "$w/record" .
+committed literal-passes .github/workflows.new/build.yml Dockerfile a 'a b' \
+    f1 'f[1]' lib
+
+# From a subdirectory, . reaches only that directory, so only a file there is
+# named, by its path from there.
+fixture
+printf 'x\n' | tee "$w/app/outside" >"$w/app/.github/inside"
+refused stray-subdirectory /.github inside
+
+# ./ is read as . is.
+fixture
+printf 'x\n' >"$w/app/stray"
+dot=./
+refused stray-dot-slash "" stray
+dot=.
+git -C "$w/app" add stray
+run "" "$w/record" ./
+committed dot-slash-passes .github/workflows.new/build.yml Dockerfile lib stray
+
+# Another PATH passes where it is exactly the file, and a file below a directory
+# named that way does not.
+fixture
+mkdir "$w/app/named"
+printf 'x\n' | tee "$w/app/extra" >"$w/app/named/below"
+test_check stray-named-directory 1 '' "named/below"$'\n'"$stray" \
+    env -C "$w/app" "$commit" "$w/record" . extra named
+unchanged stray-named-directory
+fixture
+printf 'x\n' >"$w/app/extra"
+run "" "$w/record" . extra
+committed named-path-passes .github/workflows.new/build.yml Dockerfile extra lib
+
+# Below a recorded directory, a file passes unless a component below it is
+# dot-named, and a recorded dot file passes, however each path is written.
+for form in bare slash dotted; do
+    fixture
+    mkdir -p "$w/app/src/fonts/deep" "$w/app/env"
+    printf 'x\n' | tee "$w/app/src/fonts/new.ttf" "$w/app/src/fonts/deep/b.ttf" \
+        >"$w/app/env/.terraform.lock.hcl"
+    case $form in
+    bare) fonts=src/fonts lock=env/.terraform.lock.hcl ;;
+    slash) fonts=src/fonts/ lock=env/.terraform.lock.hcl ;;
+    dotted) fonts=./src/fonts lock=./env/.terraform.lock.hcl ;;
+    esac
+    printf '%s\n' Dockerfile .github/workflows.new/build.yml "$fonts" "$lock" "" \
+        "${moves[@]}" >"$w/record"
+    run "" "$w/record" .
+    committed "recorded-forms-$form" .github/workflows.new/build.yml Dockerfile \
+        env/.terraform.lock.hcl lib src/fonts/deep/b.ttf src/fonts/new.ttf
+done
+
+# A dot-named component below a recorded directory is refused, at any depth,
+# with the rest of the directory not named.
+fixture
+mkdir -p "$w/app/src/fonts/.cache" "$w/app/src/fonts/deep"
+printf 'x\n' | tee "$w/app/src/fonts/new.ttf" "$w/app/src/fonts/.netrc" \
+    "$w/app/src/fonts/.cache/f" >"$w/app/src/fonts/deep/.netrc"
+app=$(readlink -f "$w/app")
+printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+    "$app/src/fonts" "" "${moves[@]}" >"$w/record"
+refused stray-dot-below-recorded "" src/fonts/.cache/f src/fonts/.netrc \
+    src/fonts/deep/.netrc
+
+# A directory that is only a dot file's parent is no recorded directory, so a
+# file beside the recorded dot file is named.
+fixture
+mkdir "$w/app/env"
+printf 'x\n' | tee "$w/app/env/.terraform.lock.hcl" >"$w/app/env/beside"
+app=$(readlink -f "$w/app")
+printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+    "$app/env/.terraform.lock.hcl" "" "${moves[@]}" >"$w/record"
+refused stray-beside-recorded-file "" env/beside
+
+# A nested repository below a recorded directory holds a .git, so it is refused.
+fixture
+mkdir -p "$w/app/src/fonts/vendor"
+git -C "$w/app/src/fonts/vendor" init -q
+printf 'x\n' >"$w/app/src/fonts/vendor/f"
+app=$(readlink -f "$w/app")
+printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+    "$app/src/fonts" "" "${moves[@]}" >"$w/record"
+refused stray-nested-repository "" src/fonts/vendor/
+
+# A recorded directory outside the current one is still checked, since git add
+# takes it from there too, and its file is named by its path from there.
+fixture
+mkdir -p "$w/app/src/fonts"
+printf 'x\n' >"$w/app/src/fonts/.netrc"
+app=$(readlink -f "$w/app")
+printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+    "$app/src/fonts" "" "${moves[@]}" >"$w/record"
+refused stray-recorded-outside /.github ../src/fonts/.netrc
+
+# Spaces, leading dashes, newlines and glob characters are matched literally
+# and listed one to a line, a newline as git quotes it.
+fixture
+nl=$'n\nl'
+printf 'x\n' | tee "$w/app/-dash" "$w/app/s p" "$w/app/g[1]*" "$w/app/g1" \
+    >"$w/app/$nl"
+refused stray-odd-names "" -dash g1 'g[1]*' '"n\nl"' 's p'
+
+# The same names pass where the record lists them or a PATH names them, and g1
+# is not taken for g[1].
+app=$(readlink -f "$w/app")
+printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+    "$app/-dash" "$app/s p" "$app/g[1]*" "" "${moves[@]}" >"$w/record"
+test_check odd-names-literal 1 '' "g1"$'\n'"$stray" \
+    env -C "$w/app" "$commit" "$w/record" . "$nl"
+unchanged odd-names-literal
+git -C "$w/app" add g1
+run "" "$w/record" . "$nl"
+committed odd-names-pass -dash .github/workflows.new/build.yml Dockerfile g1 \
+    'g[1]*' lib '"n\nl"' 's p'
+
+# A recorded directory is matched literally too, so d 1 is not taken for d [1].
+fixture
+mkdir "$w/app/d [1]" "$w/app/d 1"
+printf 'x\n' | tee "$w/app/d [1]/f" >"$w/app/d 1/f"
+app=$(readlink -f "$w/app")
+printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+    "$app/d [1]" "" "${moves[@]}" >"$w/record"
+refused stray-literal-directory "" 'd 1/f'
+
+# With no PATH, an untracked dot file neither stops the run nor is committed.
+fixture
+printf 'x\n' >"$w/app/.netrc"
+run "" "$w/record"
+committed stray-no-path .github/workflows.new/build.yml Dockerfile
+if [ "$(git -C "$w/app" status --porcelain -- .netrc)" != '?? .netrc' ]; then
+    test_fail stray-no-path "the tree is now: $(git -C "$w/app" status --porcelain -- .netrc)"
+fi
+
+# A form without . takes no untracked file and is not stopped by one.
+fixture
+printf 'x\n' >"$w/app/stray"
+run "" "$w/record" lib
+committed stray-without-dot .github/workflows.new/build.yml Dockerfile lib
+if [ "$(git -C "$w/app" status --porcelain)" != '?? stray' ]; then
+    test_fail stray-without-dot "the tree is now: $(git -C "$w/app" status --porcelain)"
 fi
 
 # A recorded path git cannot add fails the run, and the record stays. git's

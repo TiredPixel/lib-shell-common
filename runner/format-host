@@ -4,12 +4,19 @@
 # each top-level entry git lists bound by name over the image's copy of the tree
 # at /home/x/r, so the command's writes reach the host and nothing else of the
 # container does, and with FORMAT_MOUNTS=1, which bin/format needs before it
-# rewrites anything. A directory holding a submodule or an ignored path is
-# descended into, so neither is bound. A symlink, which the image's copy already
-# carries, and a path missing on disk, which a bind would create as a directory,
-# are left out. Each run's container is fresh, so a single-file bind cannot go
-# stale across an editor's save by rename. Each RUN_OPTION, such as --build or
-# -T, goes to docker compose run as given.
+# rewrites anything. A tracked path stays bound, dot-named or not. An untracked
+# path with a dot-named component at any depth from the root is left out, since
+# it can hold a credential and a run can have the network; a single leading
+# .github/ is not counted, so a proposal in .github/workflows.new/ is bound. An
+# untracked nested repository is left out whole, since what it holds cannot be
+# seen from git's listing. This governs the binds only: the image's own copy
+# follows .dockerignore, whose /.* covers top-level names only. A directory
+# holding a submodule, an ignored path or a path left out is descended into, so
+# none of them is bound and its other files still are. A symlink, which the
+# image's copy already carries, and a path missing on disk, which a bind would
+# create as a directory, are left out. Each run's container is fresh, so a
+# single-file bind cannot go stale across an editor's save by rename. Each
+# RUN_OPTION, such as --build or -T, goes to docker compose run as given.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -59,6 +66,14 @@ descend_into_parents() {
     done
 }
 
+# Whether an untracked path is left out: a nested repository, which git lists
+# with a trailing slash, or a path with a dot-named component past a single
+# leading .github/.
+left_out() {
+    [[ $1 != */ ]] || return 0
+    [[ /${1#.github/} == */.* ]]
+}
+
 # The entry a listed path is bound through: its first leading directory that is
 # not descended into, or nothing where that is a submodule.
 add_entry() {
@@ -87,7 +102,18 @@ for path in "${ignored[@]}"; do
     descend_into_parents "$path"
 done
 
-for path in "${cached[@]}" "${others[@]}"; do
+# Before any entry is added, so a directory holding a path left out is already
+# one to descend into.
+bound_others=()
+for path in "${others[@]}"; do
+    if left_out "$path"; then
+        descend_into_parents "$path"
+    else
+        bound_others+=("$path")
+    fi
+done
+
+for path in "${cached[@]}" "${bound_others[@]}"; do
     add_entry "$path"
 done
 
