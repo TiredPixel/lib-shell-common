@@ -90,12 +90,14 @@ lint_extra() {
 }
 ```
 
-`bin/format` refuses to run unless `FORMAT_MOUNTS` is `1`, since its writes to the image's copy of the tree would be lost. `runner/format-host [RUN_OPTION...] -- SERVICE COMMAND...` runs on the host and sets it: it runs `COMMAND` in the Compose service `SERVICE` with each top-level entry git lists bound over the image's copy of the tree at `/home/x/r`, submodules and ignored paths left out, passing each `RUN_OPTION` to `docker compose run`:
+`bin/format` refuses to run unless `FORMAT_MOUNTS` is `1`, since its writes to the image's copy of the tree would be lost. `runner/format-host [RUN_OPTION...] -- SERVICE COMMAND...` runs on the host and sets it: it runs `COMMAND` in the Compose service `SERVICE` with each top-level entry git lists bound over the image's copy of the tree at `/home/x/r`, passing each `RUN_OPTION` to `docker compose run`:
 
 ```make
 format:
 	lib/shell-common/runner/format-host --build -- tooling format
 ```
+
+Tracked paths stay bound, dot-named or not. Submodules, ignored paths, untracked nested repositories and any untracked path with a dot-named component at any depth, such as `.netrc` or `src/.aws/credentials`, are left out, a single leading `.github/` not counting, so a proposal in `.github/workflows.new/` is bound. This governs the binds only: the image's own copy follows `.dockerignore`, whose `/.*` covers top-level names only.
 
 `bin/test [test/PATH.test...]` runs `bin/lint`, unless tests are named, then the tests through `testing/run`, as many at a time as there are CPUs, or as `PYTEST_XDIST_AUTO_NUM_WORKERS` gives. A test is an executable `test/PATH.test` that sources `testing/harness`, which gives it the scratch directory `$test_tmp` and the functions `test_check`, `test_usage`, `test_stub`, `test_calls`, `test_fail` and `test_finish`, each described where it is defined. `bin/coverage [test/PATH.test...]` runs the tests under kcov and writes the report to stdout as a tar, since the container mounts nothing, and `runner/coverage --extract`, on the host, unpacks it into `tmp/coverage/`:
 
@@ -134,7 +136,7 @@ upgrade-discard:
 
 The first two lines of `upgrade-pre` make each submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
 
-`docker/upgrade-guard` refuses to start where the tree has changes, a workflow proposal is pending or an earlier upgrade's record is left, since the commit takes the whole tree. `project/submodule-upgrade` moves each submodule, fast-forward only, to the head of its origin's default branch. `docker/upgrade-record RECORD PATH...` adds a step's own moves, read on stdin, and the paths the step writes to the record, for a step run between `upgrade-pre` and `upgrade-post`. `docker/upgrade-commit` commits the files the record lists and each path given after it, `.` for the whole tree, as `Upgrade pins`, with an item in the body for each move, a submodule's included; it never pushes. `docker/upgrade-discard` puts back what an unfinished upgrade moved and removes what it wrote, returning each submodule given to the commit recorded for it.
+`docker/upgrade-guard` refuses to start where the tree has changes, a workflow proposal is pending or an earlier upgrade's record is left, since the commit takes the whole tree. `project/submodule-upgrade` moves each submodule, fast-forward only, to the head of its origin's default branch. `docker/upgrade-record RECORD PATH...` adds a step's own moves, read on stdin, and the paths the step writes to the record, for a step run between `upgrade-pre` and `upgrade-post`. `docker/upgrade-commit` commits the files the record lists and each path given after it, `.` for the whole tree, as `Upgrade pins`, with an item in the body for each move, a submodule's included; it never pushes. Given `.` or `./`, it refuses, listing them, untracked files that are neither exactly a path the record lists or another path given, nor below a directory the record lists with no dot-named component below that directory, since the guard has run by then and one made since, such as a credential, would be committed; tracked edits are committed, and a new file passes once added with `git add`. `docker/upgrade-discard` puts back what an unfinished upgrade moved and removes what it wrote, returning each submodule given to the commit recorded for it.
 
 A step of the repository's own pipes its moves into the record, and `upgrade` runs it between the two:
 
@@ -162,7 +164,7 @@ A named workflow or other file names the tag or branch each action it uses follo
 
 The `# TRACK FROM`, `# TRACK ARG`, `# TRACK LOCK` and `# TRACK USES` lines `docker/upgrade` reads, including the `sha256:` pins that keep a downloaded tool's checksum in step with its version, and what `--record` refuses, are described at the top of `docker/upgrade`, and how to hold each pin back in *Holding a pin back*.
 
-Where a step of the repository's own stops, fix it, then rerun it and each step after it, then finish. Where the build or tests fail, fix them, then finish:
+Where a step of the repository's own stops, fix it, then rerun it and each step after it, then finish. Where the build or tests fail, fix them, then finish. Either way, `git add` any new file the record does not cover, since `docker/upgrade-commit` refuses it. To finish:
 
 ```sh
 make upgrade-post
