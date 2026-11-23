@@ -97,7 +97,7 @@ format:
 	lib/shell-common/runner/format-host --build -- tooling format
 ```
 
-Tracked paths stay bound, dot-named or not. Submodules, ignored paths, untracked nested repositories and any untracked path with a dot-named component at any depth, such as `.netrc` or `src/.aws/credentials`, are left out, a single leading `.github/` not counting, so a proposal in `.github/workflows.new/` is bound. A tracked make file, named `Makefile`, `makefile`, `GNUmakefile` or `*.mk` at any depth, is bound read-only, since the host's next `make` reads it and no format pass writes one; a Dockerfile or Compose file stays writable, since the formatters rewrite them. This governs the binds only: the image's own copy follows `.dockerignore`, whose `/.*` covers top-level names only.
+Tracked paths stay bound, dot-named or not. Submodules, ignored paths, untracked nested repositories, a directory holding a `.git` that Git does not report, such as a broken repository or one from `git init` in a tracked directory, apart from its tracked files, and any untracked path with a dot-named component at any depth, such as `.netrc` or `src/.aws/credentials`, are left out, a single leading `.github/` not counting, so a proposal in `.github/workflows.new/` is bound. A tracked make file, named `Makefile`, `makefile`, `GNUmakefile` or `*.mk` at any depth, is bound read-only, since the host's next `make` reads it and no format pass writes one; a Dockerfile or Compose file stays writable, since the formatters rewrite them. This governs the binds only: the image's own copy follows the repository's `.dockerignore`, in which `/.*` covers top-level names only and `**/.*` every depth.
 
 `bin/test [test/PATH.test...]` runs `bin/lint`, unless tests are named, then the tests through `testing/run`, as many at a time as there are CPUs, or as `PYTEST_XDIST_AUTO_NUM_WORKERS` gives. A test is an executable `test/PATH.test` that sources `testing/harness`, which gives it the scratch directory `$test_tmp` and the functions `test_check`, `test_usage`, `test_stub`, `test_calls`, `test_fail` and `test_finish`, each described where it is defined. `bin/coverage [test/PATH.test...]` runs the tests under kcov and writes the report to stdout as a tar, since the container mounts nothing, and `runner/coverage --extract`, on the host, unpacks it into `tmp/coverage/`:
 
@@ -177,6 +177,26 @@ make upgrade-discard
 ```
 
 A repository that also sweeps projects with `project/upgrade` orders these steps differently, and finishes a stopped sweep before its own `upgrade-post` (*Working across projects*).
+
+### Keeping a repository's own files in step
+
+An upgrade never edits these files, so a repository brings them into line by hand at its next upgrade:
+
+- `.dockerignore`, without which an image's `COPY . .` can take an untracked nested dot path such as `src/.netrc`, holds:
+  - `**/.*` in place of both `/.*` and `**/.git`, so a dot path is kept out at every depth, a nested repository's `.git` with it
+  - `/.github/**/.*` after any `!/.github`, since letting `.github` in lets in all it holds
+  - `/lib/shell-common/**/.*` after the last rule letting in a path from `lib/shell-common`, for the same reason, and not `/lib/**/.*`, which would also cancel a rule naming a file of another submodule, such as `!/lib/design-tools/.shellcheckrc`
+  - each tracked nested dot file its image needs, let back in by name after `**/.*`, such as a Terraform repository's `!/*/.envrc.example` and `!/*/.terraform.lock.hcl`
+- `.github/workflows/review.yml`, in a repository with the review gate, is copied again from `github/review.yml` whenever the template changes other than in the two pins an upgrade moves, as described above
+
+To confirm that no tracked file left the build context, run this from the root before and after changing `.dockerignore`. It prints each tracked file the context leaves out, and the two lists must match:
+
+```sh
+mkdir -p tmp
+printf 'FROM scratch\nCOPY . /\n' | docker build -q -f - -o - . | tar -t |
+    sed 's|/$||' | LC_ALL=C sort -u >tmp/context
+git ls-files | LC_ALL=C sort | LC_ALL=C comm -23 - tmp/context
+```
 
 ## Locking Python and npm tools
 

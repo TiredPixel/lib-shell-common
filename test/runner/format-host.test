@@ -189,6 +189,39 @@ write "$t" .github
 test_check dot-github-file 0 '' '' env -C "$t" "$script" -- tooling format
 test_calls dot-github-file docker "$(call "$t" -- README.md)"
 
+# A .git that git does not report leaves its directory unbound, a broken one or
+# one from git init in a tracked directory, as a directory or a file, at any
+# depth: its tracked files are bound one by one, a make file still read-only,
+# and an untracked file beside it is left out.
+t=$(repo unreported)
+tracked "$t" src/a.css src/deep/b.css src/Makefile plain/c.css
+write "$t" src/new.css broken/f broken/sub/g plain/new.css gitfile/f
+git -C "$t/src" init -q
+mkdir "$t/broken/.git"
+echo 'gitdir: /nonexistent' >"$t/gitfile/.git"
+test_check unreported 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls unreported docker "$(call "$t" -- plain src/Makefile:ro src/a.css \
+    src/deep)"
+
+# One further down leaves only the directories above it descended into.
+t=$(repo unreported-deep)
+tracked "$t" a/kept.css a/b/c/d.css a/b/other/e.css
+mkdir "$t/a/b/c/.git"
+test_check unreported-deep 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls unreported-deep docker \
+    "$(call "$t" -- a/b/c/d.css a/b/other a/kept.css)"
+
+# A real submodule, whose .git is a file, is neither bound nor counted as one
+# git does not report, so the rest of its directory is bound as before.
+t=$(repo with-submodule)
+u=$(repo submodule-origin)
+tracked "$u" f
+git -C "$u" commit -q -m a
+tracked "$t" lib/own.sh
+git -C "$t" -c protocol.file.allow=always submodule add -q -- "$u" lib/sub
+test_check real-submodule 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls real-submodule docker "$(call "$t" -- .gitmodules lib/own.sh)"
+
 # Each name make reads is bound read-only at any depth, over a directory bound
 # whole, and a name that only resembles one stays writable with its directory.
 t=$(repo make-files)
