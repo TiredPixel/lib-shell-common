@@ -1,0 +1,20 @@
+# shellcheck shell=bash
+#
+# Sourced by docker/upgrade-record and docker/upgrade-commit, so a line the one
+# takes the other takes too, and a step that prints any other stops as it
+# records rather than at the commit after the build and tests. Sets no shell
+# options, since it runs under its caller's.
+
+# Whether $1 is a move as docker/upgrade --record writes it: SUBJECT OLD -> NEW,
+# SUBJECT one or more words and OLD and NEW one each, with a single arrow, or
+# LOCK NAME: then files changed, 1 dependency moved or N dependencies moved for
+# N of 2 or more. Free text is no move, since a record's moves become a commit's
+# body and it could not be told from a file merely laid out like a record.
+is_move() {
+    local word='[^[:space:]]+' arrow summary
+    arrow="^$word( $word)* $word -> $word\$"
+    summary='^LOCK [A-Za-z0-9_][A-Za-z0-9_.-]*: (files changed|1 dependency moved|([2-9]|[1-9][0-9]+) dependencies moved)$'
+    [[ ! $1 =~ $summary ]] || return 0
+    [[ $1 =~ $arrow ]] || return 1
+    [[ " ${1#* -> }" != *' -> '* ]]
+}

@@ -9,14 +9,20 @@
 # it can hold a credential and a run can have the network; a single leading
 # .github/ is not counted, so a proposal in .github/workflows.new/ is bound. An
 # untracked nested repository is left out whole, since what it holds cannot be
-# seen from git's listing. This governs the binds only: the image's own copy
-# follows .dockerignore, whose /.* covers top-level names only. A directory
-# holding a submodule, an ignored path or a path left out is descended into, so
-# none of them is bound and its other files still are. A symlink, which the
-# image's copy already carries, and a path missing on disk, which a bind would
-# create as a directory, are left out. Each run's container is fresh, so a
-# single-file bind cannot go stale across an editor's save by rename. Each
-# RUN_OPTION, such as --build or -T, goes to docker compose run as given.
+# seen from git's listing. So is a directory holding a .git that git does not
+# report, such as a broken repository or one made by git init in a tracked
+# directory, apart from its tracked files, which are bound one by one. This
+# governs the binds only: the image's own copy follows the repository's
+# .dockerignore, in which /.* covers top-level names only and **/.* every depth.
+# A directory holding a submodule, an ignored path or a path left out is
+# descended into, so none of them is bound and its other files still are. A
+# symlink, which the image's copy already carries, and a path missing on disk,
+# which a bind would create as a directory, are left out. Each run's container
+# is fresh, so a single-file bind cannot go stale across an editor's save by
+# rename. A tracked make file, named Makefile, makefile, GNUmakefile or *.mk at
+# any depth, is bound read-only, over any directory bound around it, since the
+# host's next make reads it and no format pass writes one. Each RUN_OPTION, such
+# as --build or -T, goes to docker compose run as given.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -55,7 +61,7 @@ mapfile -t -d '' others <"$lists/others"
 mapfile -t -d '' ignored <"$lists/ignored"
 mapfile -t -d '' stage <"$lists/stage"
 
-declare -A gitlink=() descend=() entries=()
+declare -A gitlink=() descend=() entries=() unreported=()
 
 descend_into_parents() {
     local path=${1%/}
@@ -67,11 +73,18 @@ descend_into_parents() {
 }
 
 # Whether an untracked path is left out: a nested repository, which git lists
-# with a trailing slash, or a path with a dot-named component past a single
-# leading .github/.
+# with a trailing slash, a path with a dot-named component past a single leading
+# .github/, or a path below a directory holding a .git git does not report.
 left_out() {
+    local dir=$1
+
     [[ $1 != */ ]] || return 0
-    [[ /${1#.github/} == */.* ]]
+    [[ /${1#.github/} != */.* ]] || return 0
+    while [[ $dir == */* ]]; do
+        dir=${dir%/*}
+        [ -z "${unreported[$dir]+set}" ] || return 0
+    done
+    return 1
 }
 
 # The entry a listed path is bound through: its first leading directory that is
@@ -89,6 +102,26 @@ add_entry() {
     entries[$entry]=1
 }
 
+# Whether $1 is named as make reads a file by default or as an included one.
+is_make_file() {
+    case ${1##*/} in
+    Makefile | makefile | GNUmakefile | *.mk) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+# Whether a leading directory of $1 is a symlink, which a bind of $1 would
+# follow out of the tree.
+below_symlink() {
+    local path=$1
+
+    while [[ $path == */* ]]; do
+        path=${path%/*}
+        [ ! -L "$path" ] || return 0
+    done
+    return 1
+}
+
 # --stage lists each entry as MODE OBJECT STAGE, a tab, then the path; 160000 is
 # a gitlink, a submodule's commit.
 for record in "${stage[@]}"; do
@@ -102,19 +135,59 @@ for path in "${ignored[@]}"; do
     descend_into_parents "$path"
 done
 
-# Before any entry is added, so a directory holding a path left out is already
-# one to descend into.
-bound_others=()
-for path in "${others[@]}"; do
-    if left_out "$path"; then
-        descend_into_parents "$path"
-    else
-        bound_others+=("$path")
+# Sets entries from the listings. Each path left out is found first, so a
+# directory holding one is already one to descend into.
+list_entries() {
+    local path
+    local -a bound_others=()
+
+    for path in "${others[@]}"; do
+        if left_out "$path"; then
+            descend_into_parents "$path"
+        else
+            bound_others+=("$path")
+        fi
+    done
+    entries=()
+    for path in "${cached[@]}" "${bound_others[@]}"; do
+        add_entry "$path"
+    done
+}
+
+list_entries
+
+# A .git below an entry is one git did not report, since an entry holds no
+# submodule or repository git listed. Only entries are searched, so a submodule
+# and an ignored tree cost nothing and neither is read. Into a file, so a failed
+# search stops the run rather than binding what it could not see.
+directories=()
+for entry in "${!entries[@]}"; do
+    if [ -d "$entry" ] && ! [ -L "$entry" ]; then
+        directories+=("./$entry")
     fi
 done
+if [ ${#directories[@]} -gt 0 ]; then
+    find "${directories[@]}" -name .git -prune -print0 >"$lists/unreported"
+    mapfile -t -d '' found <"$lists/unreported"
+    if [ ${#found[@]} -gt 0 ]; then
+        for path in "${found[@]}"; do
+            path=${path#./}
+            unreported[${path%/.git}]=1
+            descend_into_parents "$path"
+        done
+        list_entries
+    fi
+fi
 
-for path in "${cached[@]}" "${bound_others[@]}"; do
-    add_entry "$path"
+# Each also an entry of its own, whether or not a directory above it is bound.
+# A submodule's files are not listed, and a gitlink is no file to bind.
+declare -A read_only=()
+for path in "${cached[@]}"; do
+    if is_make_file "$path" && [ -z "${gitlink[$path]+set}" ] &&
+        ! below_symlink "$path"; then
+        read_only[$path]=1
+        entries[$path]=1
+    fi
 done
 
 volumes=()
@@ -127,7 +200,8 @@ if [ ${#entries[@]} -gt 0 ]; then
             continue
         fi
         # Absolute, since Docker reads a relative source as a named volume.
-        volumes+=(-v "$PWD/$entry:$root/$entry")
+        mode=${read_only[$entry]+:ro}
+        volumes+=(-v "$PWD/$entry:$root/$entry$mode")
     done
 fi
 
