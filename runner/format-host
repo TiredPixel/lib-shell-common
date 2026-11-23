@@ -15,8 +15,11 @@
 # none of them is bound and its other files still are. A symlink, which the
 # image's copy already carries, and a path missing on disk, which a bind would
 # create as a directory, are left out. Each run's container is fresh, so a
-# single-file bind cannot go stale across an editor's save by rename. Each
-# RUN_OPTION, such as --build or -T, goes to docker compose run as given.
+# single-file bind cannot go stale across an editor's save by rename. A tracked
+# make file, named Makefile, makefile, GNUmakefile or *.mk at any depth, is
+# bound read-only, over any directory bound around it, since the host's next
+# make reads it and no format pass writes one. Each RUN_OPTION, such as --build
+# or -T, goes to docker compose run as given.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -89,6 +92,26 @@ add_entry() {
     entries[$entry]=1
 }
 
+# Whether $1 is named as make reads a file by default or as an included one.
+is_make_file() {
+    case ${1##*/} in
+    Makefile | makefile | GNUmakefile | *.mk) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+# Whether a leading directory of $1 is a symlink, which a bind of $1 would
+# follow out of the tree.
+below_symlink() {
+    local path=$1
+
+    while [[ $path == */* ]]; do
+        path=${path%/*}
+        [ ! -L "$path" ] || return 0
+    done
+    return 1
+}
+
 # --stage lists each entry as MODE OBJECT STAGE, a tab, then the path; 160000 is
 # a gitlink, a submodule's commit.
 for record in "${stage[@]}"; do
@@ -117,6 +140,17 @@ for path in "${cached[@]}" "${bound_others[@]}"; do
     add_entry "$path"
 done
 
+# Each also an entry of its own, whether or not a directory above it is bound.
+# A submodule's files are not listed, and a gitlink is no file to bind.
+declare -A read_only=()
+for path in "${cached[@]}"; do
+    if is_make_file "$path" && [ -z "${gitlink[$path]+set}" ] &&
+        ! below_symlink "$path"; then
+        read_only[$path]=1
+        entries[$path]=1
+    fi
+done
+
 volumes=()
 if [ ${#entries[@]} -gt 0 ]; then
     printf '%s\0' "${!entries[@]}" >"$lists/entries"
@@ -127,7 +161,8 @@ if [ ${#entries[@]} -gt 0 ]; then
             continue
         fi
         # Absolute, since Docker reads a relative source as a named volume.
-        volumes+=(-v "$PWD/$entry:$root/$entry")
+        mode=${read_only[$entry]+:ro}
+        volumes+=(-v "$PWD/$entry:$root/$entry$mode")
     done
 fi
 

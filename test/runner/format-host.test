@@ -51,9 +51,10 @@ tracked() {
 }
 
 # The docker call a run in repository $1 makes, with the options given before --
-# and each entry after it bound by its absolute path.
+# and each entry after it bound by its absolute path, read-only where it ends in
+# :ro.
 call() {
-    local t=$1 entry
+    local t=$1 entry mode
     local -a args=(compose run --rm)
     shift
     while [ "$1" != -- ]; do
@@ -63,7 +64,12 @@ call() {
     shift
     args+=(-e FORMAT_MOUNTS=1)
     for entry; do
-        args+=(-v "$t/$entry:/home/x/r/$entry")
+        mode=
+        if [[ $entry == *:ro ]]; then
+            mode=:ro
+            entry=${entry%:ro}
+        fi
+        args+=(-v "$t/$entry:/home/x/r/$entry$mode")
     done
     args+=(tooling format)
     printf ' %q' "${args[@]}" | cut -c 2-
@@ -182,6 +188,38 @@ tracked "$t" README.md
 write "$t" .github
 test_check dot-github-file 0 '' '' env -C "$t" "$script" -- tooling format
 test_calls dot-github-file docker "$(call "$t" -- README.md)"
+
+# Each name make reads is bound read-only at any depth, over a directory bound
+# whole, and a name that only resembles one stays writable with its directory.
+t=$(repo make-files)
+tracked "$t" Makefile env.mk env/Makefile env/main.tf deep/er/GNUmakefile \
+    deep/er/rules.mk low/makefile other/Makefile.bak other/mk
+test_check make-files 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls make-files docker \
+    "$(call "$t" -- Makefile:ro deep deep/er/GNUmakefile:ro deep/er/rules.mk:ro \
+        env env.mk:ro env/Makefile:ro low low/makefile:ro other)"
+
+# An untracked make file is bound as its directory is, not read-only; a tracked
+# one that is deleted or a symlink, or below a symlinked directory, is left out;
+# and a submodule's is not reached, even one whose path reads as a make file.
+t=$(repo make-skipped)
+tracked "$t" kept/Makefile gone/Makefile real/Makefile mod/own.sh
+write "$t" kept/new.mk mod/sub/Makefile mod/sub.mk/f
+ln -s Makefile "$t/kept/link.mk"
+git -C "$t" add kept/link.mk
+rm -r -- "$t/gone"
+mv -- "$t/real" "$t/moved"
+ln -s moved "$t/real"
+for sub in mod/sub mod/sub.mk; do
+    git -C "$t/$sub" init -q
+    git -C "$t/$sub" add .
+    git -C "$t/$sub" commit -q -m a
+    git -C "$t" update-index --add --cacheinfo \
+        "160000,$(git -C "$t/$sub" rev-parse HEAD),$sub"
+done
+test_check make-skipped 0 '' '' env -C "$t" "$script" -- tooling format
+test_calls make-skipped docker \
+    "$(call "$t" -- kept kept/Makefile:ro mod/own.sh moved)"
 
 # A deleted file and a symlink, tracked or not, are left out.
 t=$(repo links)
