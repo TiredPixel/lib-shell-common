@@ -3,17 +3,21 @@
 # Adds a step's moves, read on stdin, to RECORD, the record docker/upgrade
 # --record writes and docker/upgrade-commit reads. It adds each PATH, a path the
 # step may write, to RECORD's paths, making RECORD where it is missing or empty.
-# A line is SUBJECT OLD -> NEW, or SUBJECT: TEXT for a summary. A SUBJECT
-# already recorded keeps its first OLD and takes the latest NEW or TEXT, so a
-# step rerun after a stop neither repeats nor loses a move. With no line on
-# stdin, a RECORD there is left as it is and a missing one is made empty, as
-# docker/upgrade leaves it where nothing moved, so docker/upgrade-commit always
-# has a record to read. Whatever arrives before a failing mover stops is
-# recorded. Prints each line it adds.
+# A line is a move as docker/upgrade-move defines it, SUBJECT OLD -> NEW or a
+# LOCK NAME: summary, and any other is refused before anything is written. A
+# SUBJECT already recorded keeps its first OLD and takes the latest NEW or
+# summary, so a step rerun after a stop neither repeats nor loses a move. With
+# no line on stdin, a RECORD there is left as it is and a missing one is made
+# empty, as docker/upgrade leaves it where nothing moved, so
+# docker/upgrade-commit always has a record to read. Whatever arrives before a
+# failing mover stops is recorded. Prints each line it adds.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
 prog=docker/upgrade-record
+
+# shellcheck source=docker/upgrade-move
+source "$(dirname -- "${BASH_SOURCE[0]}")/upgrade-move"
 
 usage() {
     echo "Usage: $prog RECORD PATH... < MOVES" >&2
@@ -58,8 +62,9 @@ split() {
 }
 
 for i in "${!input[@]}"; do
-    if ! split "${input[$i]}"; then
-        echo "$prog: stdin:$((i + 1)): not SUBJECT OLD -> NEW or SUBJECT: TEXT" >&2
+    if ! is_move "${input[$i]}"; then
+        echo "$prog: stdin:$((i + 1)): not a move docker/upgrade --record" \
+            "writes" >&2
         exit 1
     fi
 done

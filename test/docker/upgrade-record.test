@@ -60,11 +60,13 @@ run merge $'V 2 -> 3\nLOCK a: 1 dependency moved\nLOCK a b:c 1 -> 2\n' 0 \
 holds merge Dockerfile a.lock '' 'V 1 -> 3' 'LOCK a: 1 dependency moved' \
     'LOCK a b:c 1 -> 2'
 
-# A blank or unsplittable line is refused by its line number, nothing written.
+# A line docker/upgrade-commit would refuse is refused here by its line number,
+# nothing written, so a step stops as it records and not after the build.
 printf '%s\n' Dockerfile '' 'V 1 -> 2' >"$record"
-for bad in '' 'x -> 2' 'P 1 -> ' 'no move' ': text'; do
+for bad in '' 'x -> 2' 'P 1 -> ' 'no move' ': text' 'FOO: 3 files changed' \
+    'ENV prov 1.0 -> 1.1 beta' 'V 1 -> 2 -> 3' 'LOCK m: 1 dependencies moved'; do
     run "bad-${bad:-blank}" "V 2 -> 3"$'\n'"$bad"$'\n' 1 '' \
-        "$prog: stdin:2: not SUBJECT OLD -> NEW or SUBJECT: TEXT" a.lock
+        "$prog: stdin:2: not a move docker/upgrade --record writes" a.lock
     holds "bad-${bad:-blank}" Dockerfile '' 'V 1 -> 2'
 done
 

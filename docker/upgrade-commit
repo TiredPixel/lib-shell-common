@@ -15,7 +15,10 @@
 # PATH that moved adds an item as PATH OLD -> NEW, each commit cut to 7 hex
 # digits, so a PATH that changed is committed even where no pin moved. Where
 # neither a pin nor a PATH moved, it commits nothing. It never pushes. RECORD is
-# removed once used, so a second run cannot commit it again.
+# removed once used, so a second run cannot commit it again. A file whose lines
+# after the blank are not moves as docker/upgrade --record writes them is
+# refused before anything is staged or removed, since its text would become the
+# commit's body.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -44,6 +47,9 @@ nothing() {
     exit 0
 }
 
+# shellcheck source=docker/upgrade-move
+source "$(dirname -- "${BASH_SOURCE[0]}")/upgrade-move"
+
 # Empty where no pin moved; else the paths written, then a blank line, then the
 # moves. Anything else is refused before it is staged or removed, since RECORD
 # can name any file, and its lines would be taken as paths and a commit's body.
@@ -67,6 +73,10 @@ if [ ${#lines[@]} -gt 0 ]; then
     for i in "${!moves[@]}"; do
         if [ -z "${moves[$i]}" ]; then
             echo "$prog: $record:$((blank + i + 2)): a second blank line" >&2
+            exit 1
+        elif ! is_move "${moves[$i]}"; then
+            echo "$prog: $record:$((blank + i + 2)): not a move docker/upgrade" \
+                "--record writes" >&2
             exit 1
         fi
     done
@@ -164,13 +174,22 @@ if [ -n "$whole" ]; then
     shopt -s lastpipe
     git ls-files -z --others --exclude-standard --full-name -- "${specs[@]}" |
         mapfile -t -d '' untracked
+    # The same list in the same order as git prints it for a person, from the
+    # current directory and with a newline quoted so each stays on one line.
+    # Taken whole and picked from here, since naming each refused path to git
+    # could pass the argument limit.
+    git ls-files --others --exclude-standard -- "${specs[@]}" |
+        mapfile -t shown
+    if [ ${#shown[@]} -ne ${#untracked[@]} ]; then
+        echo "$prog: the untracked files changed while being listed" >&2
+        exit 1
+    fi
     refused=()
-    for path in "${untracked[@]}"; do
-        passes "$path" || refused+=(":(top,literal)$path")
+    for i in "${!untracked[@]}"; do
+        passes "${untracked[$i]}" || refused+=("${shown[$i]}")
     done
     if [ ${#refused[@]} -gt 0 ]; then
-        # git's own listing, which quotes a newline so each stays on one line.
-        git ls-files --others --exclude-standard -- "${refused[@]}" >&2
+        printf '%s\n' "${refused[@]}" >&2
         echo "$prog: untracked beside the upgrade; git add it to commit" \
             "it, or remove it" >&2
         exit 1
