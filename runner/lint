@@ -73,11 +73,14 @@ echo "$prog: checking ${#yamllint[@]} YAML file(s) with yamllint" >&2
 check yamllint yamllint "${yamllint_args[@]}" -- "${yamllint[@]}"
 
 echo "$prog: checking ${#workflow[@]} workflow(s)" >&2
-actionlint_args=()
+# GitHub documents concurrency's queue key, which github/review.yml sets, but
+# actionlint 1.7.12 rejects it; rhysd/actionlint#654 adds it. The ignore also
+# leaves a queue key unchecked anywhere else.
+actionlint_args=(-ignore '^unexpected key "queue" for "concurrency" section\.')
 if [ -e .github/actionlint.yaml ]; then
     # Named, since actionlint finds its config only beside .git, which the
     # image's copy of the tree leaves out.
-    actionlint_args=(-config-file .github/actionlint.yaml)
+    actionlint_args+=(-config-file .github/actionlint.yaml)
 fi
 check actionlint actionlint "${actionlint_args[@]}" "${workflow[@]}"
 

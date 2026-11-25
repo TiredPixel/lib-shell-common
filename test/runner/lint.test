@@ -41,6 +41,8 @@ fake --stdin kubeconform
 calls=$(printf %q "$test_tmp/ansible-lint.calls")
 fake ansible-lint "echo \"ANSIBLE_CONFIG=\${ANSIBLE_CONFIG-}\" >>$calls"
 : >"$order"
+# Passed to actionlint in every tree, as test_stub logs it.
+actionlint_ignore="-ignore $(printf %q '^unexpected key "queue" for "concurrency" section\.')"
 
 # Makes a tree at $test_tmp/$1 with one workflow, and prints its path; each case
 # writes the tree's bin/settings.
@@ -127,7 +129,7 @@ test_calls full yq "-P sort_keys\\(..\\) a.yml" \
     "-P sort_keys\\(..\\) .github/workflows/build.yml" '-P . u.yml'
 test_calls full yamllint \
     '--strict -- a.yml u.yml l.yml .github/workflows/build.yml'
-test_calls full actionlint .github/workflows/build.yml
+test_calls full actionlint "$actionlint_ignore .github/workflows/build.yml"
 test_calls full kubeconform \
     "-strict -schema-location /opt/kube-schemas/\\{\\{.ResourceKind\\}\\}-\\{\\{.Group\\}\\}-\\{\\{.ResourceAPIVersion\\}\\}.json -"
 test_calls full jq '--sort-keys . a.json' '. o.json'
@@ -207,7 +209,7 @@ lint: checking 1 YAML file(s) with yamllint
 lint: checking 1 workflow(s)
 lint: checking Ansible' env -C "$t" "$script"
 test_calls bare order yq yamllint actionlint ansible-lint
-test_calls bare actionlint .github/workflows/build.yml
+test_calls bare actionlint "$actionlint_ignore .github/workflows/build.yml"
 test_calls bare ansible-lint \
     "--offline --project-dir . --strict --exclude lib/ --exclude group_vars/\\*/\\*vault.yml --" \
     ANSIBLE_CONFIG=
@@ -218,7 +220,7 @@ lint: checking 1 YAML file(s) with yamllint
 lint: checking 1 workflow(s)
 lint: checking Ansible' env -C "$t" "$script"
 test_calls actionlint-config actionlint \
-    '-config-file .github/actionlint.yaml .github/workflows/build.yml'
+    "$actionlint_ignore -config-file .github/actionlint.yaml .github/workflows/build.yml"
 
 # The formatter's arguments reach the checks, so both enforce one layout.
 : >"$test_tmp/yq.calls"
