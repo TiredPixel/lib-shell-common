@@ -245,7 +245,7 @@ A locked Python tool takes two stages. The first downloads the locked wheels, ea
 FROM docker.io/library/debian@sha256:DIGEST AS wheels
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -261,7 +261,7 @@ The second installs from them into a venv with no network, so pip can take only 
 FROM docker.io/library/debian@sha256:DIGEST AS dev
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
@@ -292,7 +292,7 @@ An npm tool installs with `npm ci`, the one npm command that installs a lock as 
 
 ```dockerfile
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         npm \
     && rm -rf /var/lib/apt/lists/*
 

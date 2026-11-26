@@ -1,3 +1,4 @@
+# check=error=true
 # TRACK FROM docker.io/library/debian:13
 # TRACK ARG ACTIONLINT_SHA256_AMD64 sha256:https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_checksums.txt
 # TRACK ARG ACTIONLINT_SHA256_ARM64 sha256:https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_arm64.tar.gz https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_checksums.txt
@@ -30,7 +31,7 @@ FROM docker.io/library/debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505
 SHELL ["/bin/bash", "-Eeuo", "pipefail", "-O", "inherit_errexit", "-O", "failglob", "-c"]
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -44,7 +45,7 @@ FROM docker.io/library/debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505
 SHELL ["/bin/bash", "-Eeuo", "pipefail", "-O", "inherit_errexit", "-O", "failglob", "-c"]
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         diffutils \
@@ -149,10 +150,14 @@ RUN case $(uname -m) in \
 
 # taplo publishes no SHA-256 (github.com/tamasfe/taplo/releases, read
 # 2026-11-20), so the hashes are of the downloads.
-ENV TAPLO_CONFIG=/etc/taplo.toml
 ARG TAPLO_SHA256_AMD64=8fe196b894ccf9072f98d4e1013a180306e17d244830b03986ee5e8eabeb6156
 ARG TAPLO_SHA256_ARM64=033681d01eec8376c3fd38fa3703c79316f5e14bb013d859943b60a07bccdcc3
 ARG TAPLO_VERSION=0.10.0
+# /etc/taplo.toml, which the RUN below writes, turns schemas off: taplo's lint,
+# check and validate otherwise fetch the schema a #:schema directive or a
+# top-level $schema key names, which --no-schema does not stop (README,
+# Turning off update checks and self-upgrades).
+ENV TAPLO_CONFIG=/etc/taplo.toml
 RUN case $(uname -m) in \
         aarch64) arch=aarch64 sha256=${TAPLO_SHA256_ARM64} ;; \
         x86_64) arch=x86_64 sha256=${TAPLO_SHA256_AMD64} ;; \
