@@ -9,8 +9,8 @@
 # the pull reached it. Only app has a compose file, and docker is faked on PATH:
 # compose config --services prints web, compose pull --ignore-buildable logs
 # "images" and the project, compose up logs "start" and the project and exits
-# FAKE_UP_RC, compose stop logs "stop" and the project, ps does nothing, and any
-# other call fails. Every case builds its fixture afresh and runs
+# FAKE_UP_RC, compose stop logs "stop" and the project, compose ps does nothing,
+# and any other call fails. Every case builds its fixture afresh and runs
 # project/upgrade in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -44,7 +44,7 @@ case $* in
     exit "${FAKE_UP_RC:-0}"
     ;;
 "compose stop") echo "stop ${PWD##*/}" >>"$FAKE_LOG" ;;
-ps) ;;
+"compose ps") ;;
 *) exit 2 ;;
 esac
 EOF
