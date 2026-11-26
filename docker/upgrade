@@ -70,7 +70,10 @@
 # architecture or kernel, unless the marker also requires an extra, with and and
 # no or, that nothing resolved asks for. sys_platform, platform_system and
 # os_name are passed over, since every image is Linux, whatever its
-# architecture.
+# architecture. A package npm resolves, optional ones apart, whose engines the
+# image's Node or npm do not meet fails the run, as npm ci --engine-strict would
+# fail the build; the package, or the whole lock, is then held back, or the
+# image moved to a newer Node or npm.
 #
 # A version held back is one whose TRACK ARG line is removed, the ARG set to the
 # version that works and a comment beside it saying why; nothing here then

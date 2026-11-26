@@ -5,8 +5,8 @@
 # it runs in and its arguments, a line to a call. compose config --services
 # prints the project's file fake-services, if any, or fails where it holds
 # fake-config-fails; compose pull --ignore-buildable exits FAKE_PULL_RC; compose
-# up exits FAKE_UP_RC; ps does nothing. Any other call fails, so a pull of any
-# other kind does too. Every case builds its fixture afresh and runs
+# up exits FAKE_UP_RC; compose ps does nothing. Any other call fails, so a pull
+# of any other kind does too. Every case builds its fixture afresh and runs
 # project/start in app.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
@@ -43,7 +43,7 @@ case $* in
 "compose up -d --pull missing --wait --wait-timeout "*)
     exit "${FAKE_UP_RC:-0}"
     ;;
-ps) ;;
+"compose ps") ;;
 *) exit 2 ;;
 esac
 EOF
@@ -89,39 +89,41 @@ check() {
     fi
 }
 
-# Project $1 asked for its services and, with timeout $2, brought up.
+# Project $1 asked for its services, brought up with timeout $2 and its
+# containers listed.
 up() {
     printf '%s\n' "$1 compose config --services" \
-        "$1 compose up -d --pull missing --wait --wait-timeout $2"
+        "$1 compose up -d --pull missing --wait --wait-timeout $2" \
+        "$1 compose ps"
 }
 
 # As up, with the images compose does not build pulled first.
 pulled_up() {
     printf '%s\n' "$1 compose config --services" \
         "$1 compose pull --ignore-buildable" \
-        "$1 compose up -d --pull missing --wait --wait-timeout $2"
+        "$1 compose up -d --pull missing --wait --wait-timeout $2" \
+        "$1 compose ps"
 }
 
 # What the sweep writes to stderr as it enters lib, and then app.
 lib="project/each-without-project: lib"
 both="$lib"$'\n'"project/each: app"
 
-# Each project is brought up, waiting 300 seconds by default, and the containers
-# listed.
+# Each project is brought up, waiting 300 seconds by default, and its
+# containers listed.
 fixture
-check both 0 "$(up lib 300 && up app 300 && echo "app ps")" "$both"
+check both 0 "$(up lib 300 && up app 300)" "$both"
 
 # DC_WAIT_TIMEOUT overrides the wait.
 fixture
-DC_WAIT_TIMEOUT=7 check timeout 0 "$(up lib 7 && up app 7 && echo "app ps")" \
-    "$both"
+DC_WAIT_TIMEOUT=7 check timeout 0 "$(up lib 7 && up app 7)" "$both"
 
 # A project with no service to bring up, such as one whose services all sit
 # behind a profile, is passed over.
 fixture
 : >"$w/app/lib/fake-services"
-check no-services 0 "$(echo "lib compose config --services" &&
-    up app 300 && echo "app ps")" "$both"
+check no-services 0 "$(echo "lib compose config --services" && up app 300)" \
+    "$both"
 
 # A project whose configuration compose cannot read fails the sweep, rather than
 # passing as one with nothing to bring up.
@@ -130,19 +132,21 @@ touch "$w/app/lib/fake-config-fails"
 check config-fails 1 "lib compose config --services" \
     "$lib"$'\n'"fake docker: invalid compose project"
 
-# A project that fails to come up fails the sweep.
+# A project that fails to come up fails the sweep before its containers are
+# listed.
 fixture
-FAKE_UP_RC=1 check up-fails 1 "$(up lib 300)" "$lib"
+FAKE_UP_RC=1 check up-fails 1 "$(printf '%s\n' \
+    "lib compose config --services" \
+    "lib compose up -d --pull missing --wait --wait-timeout 300")" "$lib"
 
 # --pull pulls each project's images that compose does not build before
 # bringing it up; a project with nothing to bring up pulls nothing.
 fixture
-check pull 0 "$(pulled_up lib 300 && pulled_up app 300 && echo "app ps")" \
-    "$both" --pull
+check pull 0 "$(pulled_up lib 300 && pulled_up app 300)" "$both" --pull
 fixture
 : >"$w/app/lib/fake-services"
 check pull-no-services 0 "$(echo "lib compose config --services" &&
-    pulled_up app 300 && echo "app ps")" "$both" --pull
+    pulled_up app 300)" "$both" --pull
 
 # A failed pull fails the sweep before that project comes up.
 fixture

@@ -136,7 +136,7 @@ upgrade-discard:
 
 The first two lines of `upgrade-pre` make each submodule a repository of its own, at the URL `.gitmodules` names, before anything runs in it: uninitialised, it is an empty directory, and git run there acts on the parent instead.
 
-`docker/upgrade-guard` refuses to start where the tree has changes, a workflow proposal is pending or an earlier upgrade's record is left, since the commit takes the whole tree. `project/submodule-upgrade` moves each submodule, fast-forward only, to the head of its origin's default branch. `docker/upgrade-record RECORD PATH...` adds a step's own moves, read on stdin, and the paths the step writes to the record, for a step run between `upgrade-pre` and `upgrade-post`. `docker/upgrade-commit` commits the files the record lists and each path given after it, `.` for the whole tree, as `Upgrade pins`, with an item in the body for each move, a submodule's included; it never pushes. It refuses, before anything is staged or removed, a file whose lines after the blank are not moves as `docker/upgrade --record` writes them: `SUBJECT OLD -> NEW`, or `LOCK NAME: ` then `files changed`, `1 dependency moved` or `N dependencies moved`. `docker/upgrade-record` refuses any other line before it writes, so a step that prints one stops there rather than at the commit. Given `.` or `./`, it refuses, listing them, untracked files that are neither exactly a path the record lists or another path given, nor below a directory the record lists with no dot-named component below that directory, since the guard has run by then and one made since, such as a credential, would be committed; tracked edits are committed, and a new file passes once added with `git add`. `docker/upgrade-discard` puts back what an unfinished upgrade moved and removes what it wrote, returning each submodule given to the commit recorded for it.
+`docker/upgrade-guard` refuses to start where the tree has changes, a workflow proposal is pending or an earlier upgrade's record is left, since the commit takes the whole tree. `project/submodule-upgrade` moves each submodule, fast-forward only, to the head of its origin's default branch. `docker/upgrade-record RECORD PATH...` adds a step's own moves, read on stdin, and the paths the step writes to the record, for a step run between `upgrade-pre` and `upgrade-post`. `docker/upgrade-commit` commits the files the record lists and each path given after it, `.` for the whole tree, as `Upgrade pins`, with an item in the body for each move, a submodule's included; it never pushes. It refuses, before anything is staged or removed, a file whose lines after the blank are not moves as `docker/upgrade --record` writes them: `SUBJECT OLD -> NEW`, or `LOCK NAME: ` then `files changed`, `1 dependency moved` or `N dependencies moved`. `docker/upgrade-record` refuses any other line before it writes, so a step that prints one stops there rather than at the commit. Given `.` or `./`, it refuses, listing them, untracked files that are neither exactly a path the record lists or another path given, nor below a directory the record lists with no dot-named component below that directory, since the guard has run by then and one made since, such as a credential, would be committed; tracked edits are committed, and a new file passes once added with `git add`. `--except PATH`, given before the record once for each path, leaves PATH out of the commit: it is neither staged nor checked for untracked files, and a submodule there adds no item. A change already staged there is still refused, as is an excepted path that a path the record lists is at, above or below, since the record goes once used, or that another path given is at or below, since that path would then commit nothing. `docker/upgrade-discard` puts back what an unfinished upgrade moved and removes what it wrote, returning each submodule given to the commit recorded for it.
 
 A step of the repository's own pipes its moves into the record, and `upgrade` runs it between the two:
 
@@ -225,6 +225,8 @@ FROM docker.io/library/python@sha256:DIGEST AS wheels
 FROM docker.io/library/node@sha256:DIGEST AS js
 ```
 
+An npm lock is refused where a package it holds, optional ones apart, declares `engines` the image's Node or npm do not meet, as `npm ci --engine-strict` would refuse it at the build; the package, or the whole lock, is then held back (*Holding a pin back*), or the image moved to a newer Node or npm.
+
 Which images can resolve a lock, how `stage=` is followed, and which requirement markers fail the run, since the lock would not hold on another architecture or kernel, are described at the top of `docker/upgrade`.
 
 `docker/upgrade` writes the first lock, as it moves every other pin, and the lock is committed with the `Dockerfile`:
@@ -243,7 +245,7 @@ A locked Python tool takes two stages. The first downloads the locked wheels, ea
 FROM docker.io/library/debian@sha256:DIGEST AS wheels
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -259,7 +261,7 @@ The second installs from them into a venv with no network, so pip can take only 
 FROM docker.io/library/debian@sha256:DIGEST AS dev
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
@@ -290,7 +292,7 @@ An npm tool installs with `npm ci`, the one npm command that installs a lock as 
 
 ```dockerfile
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         npm \
     && rm -rf /var/lib/apt/lists/*
 
@@ -377,8 +379,10 @@ curl -fsSL https://pypi.org/pypi/mdformat/1.0.0/json | jq -r '"mdformat==1.0.0 "
 A package in an npm lock is moved by editing its version in `package.json`, then rewriting `package-lock.json` in the lock's own directory, since npm names the lock after it:
 
 ```sh
-npm install --prefix Dockerfile.lock/js --package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier
+npm install --prefix Dockerfile.lock/js --package-lock-only --engine-strict --ignore-scripts --no-audit --no-fund --no-update-notifier
 ```
+
+`--engine-strict` refuses a package whose `engines` the Node or npm running it do not meet, so it answers for the build only when run in the image that installs the lock.
 
 ## Checking Dockerfiles for unlocked installs
 
@@ -649,7 +653,7 @@ lib/shell-common/project/pull
 
 `project/upgrade-pull`, which `project/upgrade` runs, does the upgrade's moving instead: it fast-forwards the repository, then every submodule, listed or not and recursively, to the default branch of its origin, and checks out any submodule added upstream. A branch with no upstream, such as one made for the sweep, or whose upstream its remote no longer holds, as once a merged pull request's branch is deleted, is fast-forwarded to origin's default branch instead, so one merged by a merge commit follows it. A branch that has diverged, such as one merged by squash or rebase whose own commits origin's default branch lacks, or a detached HEAD, stops it. Run from a branch other than the repository's default, it checks out a branch of the same name in each listed project instead, so that every project's upgrade lands on a branch ready for a pull request, as a default branch protected for pull requests needs: a local one is taken as it stands, and a new one starts from origin's default branch, with no upstream. A branch of that name only on a project's origin stops it before any submodule moves, since the upgrade would run that branch's `Makefile`; it is checked out by hand once reviewed. Nothing is pushed.
 
-`project/start` brings up the Compose services of the repository and of each listed project that has a Compose file and a service to start, waiting for each to run or turn healthy, and `project/stop` stops them. It starts the images already present, so it runs what `make build` has just built rather than a registry's image under the same tag; with `--pull`, it first pulls each image Compose does not build. A Compose file Compose cannot read stops the sweep. `DC_WAIT_TIMEOUT` sets, in seconds, how long `project/start` waits on each project; its default is set in `project/start`.
+`project/start` brings up the Compose services of the repository and of each listed project that has a Compose file and a service to start, waiting for each to run or turn healthy, then lists that project's containers, and `project/stop` stops them. It starts the images already present, so it runs what `make build` has just built rather than a registry's image under the same tag; with `--pull`, it first pulls each image Compose does not build. A Compose file Compose cannot read stops the sweep. `DC_WAIT_TIMEOUT` sets, in seconds, how long `project/start` waits on each project; its default is set in `project/start`.
 
 ```sh
 DC_WAIT_TIMEOUT=600 lib/shell-common/project/start
@@ -693,7 +697,17 @@ upgrade:
 	$(MAKE) upgrade-post
 ```
 
-The sweep's start and stop then run the repository's own services on the old pins; `upgrade-post`, as *Upgrading the library* gives it, builds, formats and tests the new ones, and names the paths to commit in place of `.`, leaving out the listed projects, whose pointers a release commits. Where a listed project's upgrade stops the sweep, the repository's own `make upgrade-pin` and `make upgrade-post` run last, after the resumed sweep completes: the resumed sweep's pull can move the library's submodule again, and `docker/upgrade-commit` removes the record once it has used it, so an `upgrade-post` run before the resume would leave any such move with no record to commit it by.
+The sweep's start and stop then run the repository's own services on the old pins; `upgrade-post` builds, formats and tests the new ones as in *Upgrading the library*, but commits `.` with an `--except` for each listed project, whose pointers a release commits, so an untracked file left in the tree is still refused:
+
+```make
+upgrade-post:
+	$(MAKE) build
+	$(MAKE) format
+	$(MAKE) test
+	lib/shell-common/docker/upgrade-commit $(foreach p,$(shell cat .projects),--except $(p)) tmp/upgrade.record .
+```
+
+Where a listed project's upgrade stops the sweep, the repository's own `make upgrade-pin` and `make upgrade-post` run last, after the resumed sweep completes: the resumed sweep's pull can move the library's submodule again, and `docker/upgrade-commit` removes the record once it has used it, so an `upgrade-post` run before the resume would leave any such move with no record to commit it by.
 
 ## Releasing
 

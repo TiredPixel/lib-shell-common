@@ -32,6 +32,10 @@ pull=${1:+1}
 # an image nothing has pulled yet (observed with Compose 5.7.0). --pull, which
 # only project/upgrade passes, first pulls each image Compose cannot build,
 # --ignore-buildable leaving the rest.
+#
+# compose ps, run in each project, lists that project's running containers;
+# docker ps would list every running container on the daemon, whichever project
+# or user started it.
 # shellcheck disable=SC2016 # Expanded by bash in each project.
 "$dir/each" bash -c '
     set -Eeuo pipefail
@@ -40,7 +44,6 @@ pull=${1:+1}
     [ -n "$services" ] || exit 0
     [ -z "$2" ] || docker compose pull --ignore-buildable
     docker compose up -d --pull missing --wait \
-        --wait-timeout "${DC_WAIT_TIMEOUT:-300}"' \
+        --wait-timeout "${DC_WAIT_TIMEOUT:-300}"
+    docker compose ps' \
     _ "$dir/compose-services" "$pull"
-
-docker ps

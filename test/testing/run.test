@@ -192,38 +192,66 @@ else
 fi
 
 # The gated cases hold each test until released, so once the script has started
-# some and the kernel shows it blocked waiting for a child, it has started every
-# test it will before one ends, and its children are exactly those, whatever the
-# timing. Each gate is held open read-write on the fd gate_fd names, so a
-# release is buffered for a test not yet started rather than blocking.
+# some and is asleep, it is waiting for a child: it has started every test it
+# will before one ends, and its children are exactly those, whatever the timing.
+# Each gate is held open read-write on the fd gate_fd names, so a release is
+# buffered for a test not yet started rather than blocking.
 declare -A gate_fd=([one.test]=4 [two.test]=5 [three.test]=6)
 
+# Sets fields to the fields of /proc/$1/stat after the last ), state first and
+# start time 20th, or returns 1 where that process is gone.
+proc_fields() {
+    local line
+    read -r line 2>/dev/null <"/proc/$1/stat" || return 1
+    read -r -a fields <<<"${line##*) }"
+}
+
 # Runs the script in the background in tree $2, with the worker count $3 and its
-# tests held at gates in $test_tmp/gates-$1, and sets pid.
+# tests held at gates in $test_tmp/gates-$1, and sets pid, and pid_start to its
+# start time, or to nothing where it has already gone. It runs without BASH_ENV,
+# so under runner/coverage kcov does not trace it: a trace line kcov has yet to
+# read would leave it asleep before it waits for a child.
 gated() {
-    local gates=$test_tmp/gates-$1 f
+    local gates=$test_tmp/gates-$1 f fields
     mkdir "$gates"
     for f in "${!gate_fd[@]}"; do
         mkfifo "$gates/$f"
     done
     exec 4<>"$gates/one.test" 5<>"$gates/two.test" 6<>"$gates/three.test"
     : >"$FAKE_LOG"
-    (cd "$2" && PYTEST_XDIST_AUTO_NUM_WORKERS=$3 FAKE_GATES=$gates \
-        exec "$script" gate 4>&- 5>&- 6>&-) </dev/null >"$test_tmp/out" \
+    (cd "$2" && unset BASH_ENV &&
+        PYTEST_XDIST_AUTO_NUM_WORKERS=$3 FAKE_GATES=$gates \
+            exec "$script" gate 4>&- 5>&- 6>&-) </dev/null >"$test_tmp/out" \
         2>"$test_tmp/err" &
     pid=$!
+    pid_start=
+    if proc_fields "$pid"; then
+        pid_start=${fields[19]}
+    fi
 }
 
-# Waits until $2 tests have started and the script is blocked waiting for a
-# child, or else records that case $1 never got there and returns 1. Bounded so
-# a script that never settles fails the case rather than hanging; the sleep only
-# paces the polling, and no result depends on it.
+# Waits until $2 tests have started and the script is asleep, or else records
+# that case $1 never got there and returns 1. Its state, S while it sleeps, is
+# read after the count so a sleep before the last test started cannot pass. No
+# gated test can end first, so a script that is Z, or gone once this shell has
+# reaped it, has failed and the case fails at once. Its PID is then free for
+# reuse, so a process whose start time, set by fork and kept by exec, is not the
+# script's counts as gone. Bounded at five minutes so a script that never
+# settles fails the case rather than hanging; the sleep only paces the polling,
+# and no result depends on it.
 settled() {
-    local _
-    for _ in {1..3000}; do
-        if [ "$(grep -c '^start ' "$FAKE_LOG" || [ $? -eq 1 ])" -ge "$2" ] &&
-            [ -r "/proc/$pid/wchan" ] &&
-            [ "$(<"/proc/$pid/wchan")" = do_wait ]; then
+    local deadline=$((SECONDS + 300)) started fields state
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        started=$(grep -c '^start ' "$FAKE_LOG" || [ $? -eq 1 ])
+        state=Z
+        if proc_fields "$pid" && [ "${fields[19]}" = "$pid_start" ]; then
+            state=${fields[0]}
+        fi
+        if [ "$state" = Z ]; then
+            test_fail "$1" "exited with $started test(s) started:"$'\n'"$(<"$test_tmp/err")"
+            return 1
+        fi
+        if [ "$started" -ge "$2" ] && [ "$state" = S ]; then
             return 0
         fi
         sleep 0.01

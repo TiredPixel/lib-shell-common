@@ -4,14 +4,24 @@
 # after it have passed, as "Upgrade pins" with the body a list, an item for
 # each move RECORD holds, written "- " then the move as docker/upgrade gave it.
 # It stages exactly the paths RECORD lists and each PATH, such as a library
-# submodule taken forwards beside the upgrade, and refuses, listing them, where
-# any other path is already staged, since the commit would carry it. Given the
-# PATH . or ./, it also refuses, listing them, untracked files it would stage
-# that are neither exactly a path RECORD lists or another PATH, nor below a
-# directory RECORD lists with no dot-named component below that directory, since
-# one made after docker/upgrade-guard ran, such as a credential, would be
-# committed. git add lets one through, and tracked edits are committed, since a
-# fix to a failed upgrade and the formatter's rewrites belong in it. A submodule
+# submodule taken forwards beside the upgrade, leaving out each --except PATH,
+# and refuses, listing them, where any other path is already staged, since the
+# commit would carry it. Given the PATH . or ./, it also refuses, listing them,
+# untracked files it would stage that are neither exactly a path RECORD lists or
+# another PATH, nor below a directory RECORD lists with no dot-named component
+# below that directory, since one made after docker/upgrade-guard ran, such as a
+# credential, would be committed. git add lets one through, and tracked edits
+# are committed, since a fix to a failed upgrade and the formatter's rewrites
+# belong in it. --except PATH, given once for each path to leave out and before
+# RECORD, keeps PATH out of the git add, so it is neither staged nor checked
+# among the untracked files, and a submodule there adds no item; . with an
+# --except for each listed project commits the rest of the tree, as a
+# repository sweeping projects needs, since a release commits their pointers. A
+# change already staged at or below an excepted PATH is still refused, since
+# git commit takes the whole index. Refused too, before anything is staged or
+# removed, is an excepted PATH that a path RECORD lists is at, above or below,
+# since RECORD is removed with that path never committed, and one that another
+# PATH is at or below, since that PATH would commit nothing. A submodule
 # PATH that moved adds an item as PATH OLD -> NEW, each commit cut to 7 hex
 # digits, so a PATH that changed is committed even where no pin moved. Where
 # neither a pin nor a PATH moved, it commits nothing. It never pushes. RECORD is
@@ -25,10 +35,23 @@ shopt -s inherit_errexit failglob
 prog=docker/upgrade-commit
 
 usage() {
-    echo "Usage: $prog RECORD [PATH...]" >&2
+    echo "Usage: $prog [--except PATH]... RECORD [PATH...]" >&2
     exit 2
 }
 
+except=()
+while [ "${1:-}" = --except ]; do
+    [ -n "${2:-}" ] || usage
+    path=$2
+    # Trailing slashes are stripped, as rooted strips them for the overlap check
+    # below, since git reads a pathspec ending in / as a directory's or a
+    # submodule's only, and would stage a file excepted as f/.
+    while [[ $path == */ ]] && [ "$path" != / ]; do
+        path=${path%/}
+    done
+    except+=("$path")
+    shift 2
+done
 [ -n "${1:-}" ] || usage
 record=$1
 extra=("${@:2}")
@@ -85,18 +108,147 @@ if [ ${#paths[@]} -eq 0 ] && [ ${#extra[@]} -eq 0 ]; then
     nothing
 fi
 
+top=$(git rev-parse --show-toplevel)
+top=$(cd -P -- "$top" && printf '%s/' "${PWD%/}")
+
+# Sets root_path to path $1, read from the current directory as git add reads
+# it, as its path from the root, empty for the root itself, through the
+# filesystem since a record's path may be absolute, root_leaf to its last
+# component where $1 is no directory, and root_ok to 1, or to empty where it
+# lies outside the tree or cannot be read. A directory missing from $1 may still
+# hold tracked deletions, so $1 is read from the deepest directory in it that
+# exists, the rest appended as written; root_lost is set to 1 where that rest
+# holds . or .., which only the missing directories could resolve. Always
+# returns 0, so it is called bare and root_ok tested after it: called as the
+# left of || it would run with errexit off, and a cd that failed would go
+# unnoticed.
+rooted() {
+    local path=$1 dir rest=""
+    root_path=""
+    root_leaf=""
+    root_ok=""
+    root_lost=""
+    while [[ $path == */ ]] && [ "$path" != / ]; do
+        path=${path%/}
+    done
+    # ./ keeps a leading dash and CDPATH from cd. A leading // is cut to /, since
+    # $PWD keeps it and the path would never start with top.
+    [[ $path == /* ]] || path=./$path
+    while [[ $path == //* ]]; do
+        path=${path#/}
+    done
+    if [ -L "$path" ] || ! [ -d "$path" ]; then
+        root_leaf=${path##*/}
+        path=${path%/*}/
+    fi
+    while ! [ -d "$path" ]; do
+        while [[ $path == */ ]] && [ "$path" != / ]; do
+            path=${path%/}
+        done
+        [[ $path == */* ]] || return 0
+        rest=${path##*/}/$rest
+        path=${path%/*}/
+    done
+    if [ -n "$rest" ] && [[ /$rest$root_leaf/ =~ /\.{1,2}/ ]]; then
+        root_lost=1
+        return 0
+    fi
+    # The closing slash keeps a name ending in a newline through $(...).
+    dir=$(cd -P -- "$path" && printf '%s/' "${PWD%/}")$rest$root_leaf
+    [[ $dir == "$top"* ]] || return 0
+    dir=${dir#"$top"}
+    root_path=${dir%/}
+    root_ok=1
+}
+
+# Roots path $1 as rooted does, refusing one that sets root_lost.
+checked() {
+    rooted "$1"
+    if [ -n "$root_lost" ]; then
+        echo "$prog: $1: read through . or .. below what is no directory," \
+            "so cannot be checked against --except" >&2
+        exit 1
+    fi
+}
+
+# An excepted path that a recorded one is at, above or below is refused, since
+# RECORD is removed once used and that path would never be committed; so is one
+# that a PATH is at or below, since that PATH would commit nothing. A path read
+# through . or .. below what is no directory is refused, since where it lies
+# cannot be told. One outside the tree is passed over, since git refuses that
+# loudly at the first diff below, before anything is staged or removed.
+if [ ${#except[@]} -gt 0 ]; then
+    held=()
+    held_as=()
+    for path in "${paths[@]}"; do
+        checked "$path"
+        [ -n "$root_ok" ] || continue
+        held+=("$root_path")
+        held_as+=("$path")
+    done
+    given=()
+    given_as=()
+    for path in "${extra[@]}"; do
+        checked "$path"
+        [ -n "$root_ok" ] || continue
+        given+=("$root_path")
+        given_as+=("$path")
+    done
+    for path in "${except[@]}"; do
+        checked "$path"
+        [ -n "$root_ok" ] || continue
+        for i in "${!held[@]}"; do
+            p=${held[$i]}
+            if [ "$root_path" = "$p" ] || [ -z "$root_path" ] ||
+                [[ $p == "$root_path"/* ]] || [ -z "$p" ] ||
+                [[ $root_path == "$p"/* ]]; then
+                echo "$prog: $path: excepted, but ${held_as[$i]} is to be" \
+                    "committed" >&2
+                exit 1
+            fi
+        done
+        for i in "${!given[@]}"; do
+            p=${given[$i]}
+            if [ "$root_path" = "$p" ] || [ -z "$root_path" ] ||
+                [[ $p == "$root_path"/* ]]; then
+                echo "$prog: $path: excepted, but ${given_as[$i]} is to be" \
+                    "committed" >&2
+                exit 1
+            fi
+        done
+    done
+fi
+
 # :(literal) so a path is never read as a pattern; --no-renames so a staged
 # rename lists the path it leaves as well as the one it makes. Every diff here
 # takes --ignore-submodules=none, since a submodule.<name>.ignore setting would
-# otherwise hide a staged gitlink from it.
+# otherwise hide a staged gitlink from it. An excepted path is excluded from
+# every pathspec that git add, the listings and the diffs take.
 specs=()
 excludes=()
 for path in "${paths[@]}" "${extra[@]}"; do
     specs+=(":(literal)$path")
     excludes+=(":(exclude,literal)$path")
 done
+except_specs=()
+except_excludes=()
+for path in "${except[@]}"; do
+    except_specs+=(":(literal)$path")
+    except_excludes+=(":(exclude,literal)$path")
+done
 others=$(git diff --cached --no-renames --ignore-submodules=none --name-only \
-    -- ':/' "${excludes[@]}")
+    -- ':/' "${excludes[@]}" "${except_excludes[@]}")
+# What is staged at or below an excepted path is listed on its own, since a PATH
+# above it, such as ., excludes it from the first listing, yet git commit would
+# take it; only with an excepted path, since a diff given no pathspec lists the
+# whole index.
+if [ ${#except[@]} -gt 0 ]; then
+    under=$(git diff --cached --no-renames --ignore-submodules=none \
+        --name-only -- "${except_specs[@]}")
+    if [ -n "$under" ]; then
+        others+=${others:+$'\n'}$under
+    fi
+fi
 if [ -n "$others" ]; then
     printf '%s\n' "$others" >&2
     echo "$prog: already staged beside the upgrade; commit or unstage it" \
@@ -108,30 +260,15 @@ declare -A allowed=()
 allowed_dirs=()
 
 # Lets through path $1, read from the current directory as git add reads it,
-# and with $2 set and $1 a directory, what is below it. Held by its path from
-# the root, through the filesystem since a record's path may be absolute. One
-# whose leading directories are missing adds nothing, as git add then refuses
-# it.
+# and with $2 set and $1 a directory, what is below it, each held by its path
+# from the root. One rooted cannot place adds nothing, and nothing untracked
+# lies below a missing directory.
 allow() {
-    local path=$1 leaf="" dir
-    while [[ $path == */ ]] && [ "$path" != / ]; do
-        path=${path%/}
-    done
-    # ./ keeps a leading dash and CDPATH from cd.
-    [[ $path == /* ]] || path=./$path
-    if [ -L "$path" ] || ! [ -d "$path" ]; then
-        leaf=${path##*/}
-        path=${path%/*}/
-    fi
-    [ -d "$path" ] || return 0
-    # The closing slash keeps a name ending in a newline through $(...).
-    dir=$(cd -P -- "$path" && printf '%s/' "${PWD%/}")$leaf
-    [[ $dir == "$top"* ]] || return 0
-    dir=${dir#"$top"}
-    dir=${dir%/}
-    [ -z "$dir" ] || allowed[$dir]=1
-    if [ -z "$leaf" ] && [ -n "$2" ]; then
-        allowed_dirs+=("$dir")
+    rooted "$1"
+    [ -n "$root_ok" ] || return 0
+    [ -z "$root_path" ] || allowed[$root_path]=1
+    if [ -z "$root_leaf" ] && [ -n "$2" ]; then
+        allowed_dirs+=("$root_path")
     fi
 }
 
@@ -158,8 +295,6 @@ for path in "${extra[@]}"; do
     fi
 done
 if [ -n "$whole" ]; then
-    top=$(git rev-parse --show-toplevel)
-    top=$(cd -P -- "$top" && printf '%s/' "${PWD%/}")
     for path in "${paths[@]}"; do
         allow "$path" below
     done
@@ -172,14 +307,14 @@ if [ -n "$whole" ]; then
     # outside the current one. A pipeline rather than a process substitution,
     # so pipefail sees git's status, and lastpipe so mapfile runs in this shell.
     shopt -s lastpipe
-    git ls-files -z --others --exclude-standard --full-name -- "${specs[@]}" |
-        mapfile -t -d '' untracked
+    git ls-files -z --others --exclude-standard --full-name -- "${specs[@]}" \
+        "${except_excludes[@]}" | mapfile -t -d '' untracked
     # The same list in the same order as git prints it for a person, from the
     # current directory and with a newline quoted so each stays on one line.
     # Taken whole and picked from here, since naming each refused path to git
     # could pass the argument limit.
-    git ls-files --others --exclude-standard -- "${specs[@]}" |
-        mapfile -t shown
+    git ls-files --others --exclude-standard -- "${specs[@]}" \
+        "${except_excludes[@]}" | mapfile -t shown
     if [ ${#shown[@]} -ne ${#untracked[@]} ]; then
         echo "$prog: the untracked files changed while being listed" >&2
         exit 1
@@ -196,7 +331,7 @@ if [ -n "$whole" ]; then
     fi
 fi
 
-git add -- "${specs[@]}"
+git add -- "${specs[@]}" "${except_excludes[@]}"
 
 # Each raw entry is ":OLDMODE NEWMODE OLD NEW STATUS" then the path, both ended
 # by NUL under -z; 160000 on both sides is a submodule that moved. Through a
@@ -205,7 +340,8 @@ if [ ${#extra[@]} -gt 0 ]; then
     raw=$(mktemp)
     trap 'rm -f -- "$raw"' EXIT
     git diff --cached --raw -z --no-renames --ignore-submodules=none \
-        --no-abbrev -- "${specs[@]:${#paths[@]}}" >"$raw"
+        --no-abbrev -- "${specs[@]:${#paths[@]}}" "${except_excludes[@]}" \
+        >"$raw"
     while IFS= read -r -d '' meta <&3 && IFS= read -r -d '' name <&3; do
         read -r old_mode new_mode old new _ <<<"${meta#:}"
         if [ "$old_mode" = 160000 ] && [ "$new_mode" = 160000 ]; then

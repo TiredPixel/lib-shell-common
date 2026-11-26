@@ -29,9 +29,10 @@
 # holding the tag's lines, or nothing where there is none; the status of one
 # literal path, and a directory's top level, it passes to the real git, which a
 # --record run asks for. FAKE_PULL=fail, FAKE_RUN=fail, FAKE_PIP=fail,
-# FAKE_CURL=fail and FAKE_GIT=fail make each fail as the real one would, and
-# FAKE_GIT=timeout exits silently with timeout's 124. A fake mktemp fails for
-# the template FAKE_MKTEMP_FAIL names, and otherwise runs the real one.
+# FAKE_NPM_INSTALL=fail, FAKE_CURL=fail and FAKE_GIT=fail make each fail as the
+# real one would, npm as for a package whose engines the image does not meet,
+# and FAKE_GIT=timeout exits silently with timeout's 124. A fake mktemp fails
+# for the template FAKE_MKTEMP_FAIL names, and otherwise runs the real one.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -220,8 +221,8 @@ cat >/dev/null
 if [ "$*" = --version ]; then
     echo 10.9.2
     exit
-elif [ $# -ne 9 ] || [ "$1 $2" != "install --prefix" ] || ! [ -d "$3" ] ||
-    [ "${*:4}" != "--package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier --registry=https://registry.npmjs.org/" ]; then
+elif [ $# -ne 10 ] || [ "$1 $2" != "install --prefix" ] || ! [ -d "$3" ] ||
+    [ "${*:4}" != "--package-lock-only --engine-strict --ignore-scripts --no-audit --no-fund --no-update-notifier --registry=https://registry.npmjs.org/" ]; then
     echo "fake npm: unexpected arguments: $*" >&2
     exit 2
 fi
@@ -235,6 +236,11 @@ if [ -z "$user" ] || [ -z "$global" ] || [ "$user" = "$global" ] ||
     exit 2
 fi
 echo "fake npm: package.json in ${3##*/}: $(jq -c . "$3/package.json")" >&2
+if [ "${FAKE_NPM_INSTALL:-}" = fail ]; then
+    echo "npm error code EBADENGINE" >&2
+    echo "npm error engine Unsupported engine" >&2
+    exit 1
+fi
 cp -- "$FAKE_NPM_LOCK" "$3/package-lock.json"
 EOF
 chmod +x "$test_tmp/container/apt-get" "$test_tmp/container/dnf" "$test_tmp/container/microdnf" \
@@ -2225,6 +2231,13 @@ lockcase lock-npm-range $'# TRACK FROM r/x:1\n# TRACK LOCK js npm:n-d@3.4\nFROM 
 lockgo
 if expect lock-npm-range 1 "TRACK LOCK js: npm locked n-d at 3.4.5, not 3.4"; then
     [ ! -e "$d/Dockerfile.lock" ] || test_fail lock-npm-range "a lock was written"
+fi
+# A package whose engines the image's Node or npm do not meet fails the run,
+# writing nothing.
+lockcase lock-npm-engine "$ndf"
+FAKE_NPM_INSTALL=fail lockgo
+if expect lock-npm-engine 1 "npm error code EBADENGINE"$'\n'"TRACK LOCK js: resolving it in r/x@$new failed"; then
+    [ ! -e "$d/Dockerfile.lock" ] || test_fail lock-npm-engine "a lock was written"
 fi
 n=0
 for data in '{}' '<html>'; do

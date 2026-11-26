@@ -32,6 +32,8 @@ moves=("V 1.0.0 -> 1.2.3" "o/r@v1 v0 -> 3333333")
 staged="docker/upgrade-commit: already staged beside the upgrade; commit or unstage it first"
 stray="docker/upgrade-commit: untracked beside the upgrade; git add it to commit it, or remove it"
 dot=.
+# Options refused passes before the record; each case that sets it resets it.
+opts=()
 
 # A fresh fixture in $w: app at $w/app, pushed to $w/app.git, with lib at
 # $w/app/lib one commit past what app records, the upgrade's changes made and
@@ -396,16 +398,16 @@ elif [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
     test_fail not-a-record "the index is now: $(git -C "$w/app" diff --cached --name-only)"
 fi
 
-# Runs upgrade-commit with $dot in $w/app$2, which case $1 expects to refuse,
-# naming the lines after $2 and leaving HEAD, the remote, the record, the index
-# and the tree as they were.
+# Runs upgrade-commit with opts, the record and $dot in $w/app$2, which case $1
+# expects to refuse, naming the lines after $2 and leaving HEAD, the remote, the
+# record, the index and the tree as they were.
 refused() {
     local name=$1 sub=$2 status record_was
     shift 2
     status=$(git -C "$w/app" status --porcelain --untracked-files=all)
     record_was=$(<"$w/record")
     test_check "$name" 1 '' "$(printf '%s\n' "$@" "$stray")" \
-        env -C "$w/app$sub" "$commit" "$w/record" "$dot"
+        env -C "$w/app$sub" "$commit" "${opts[@]}" "$w/record" "$dot"
     unchanged "$name"
     if [ "$(<"$w/record")" != "$record_was" ]; then
         test_fail "$name" "the record was changed"
@@ -638,6 +640,148 @@ if [ "$(git -C "$w/app" status --porcelain)" != '?? stray' ]; then
     test_fail stray-without-dot "the tree is now: $(git -C "$w/app" status --porcelain)"
 fi
 
+# With ., an excepted submodule, however it is written, is neither staged nor
+# given an item, and the rest of the tree is committed.
+for except in lib lib/; do
+    case $except in
+    lib) name='except-commits' ;;
+    lib/) name='except-trailing-slash' ;;
+    esac
+    fixture
+    run "" --except "$except" "$w/record" .
+    committed "$name" .github/workflows.new/build.yml Dockerfile
+    if [ "$(git -C "$w/app" status --porcelain)" != ' M lib' ]; then
+        test_fail "$name" "the tree is now: $(git -C "$w/app" status --porcelain)"
+    fi
+done
+
+# An excepted path leaves the check on for the rest of the tree.
+fixture
+printf 'x\n' >"$w/app/stray"
+opts=(--except lib)
+refused stray-except "" stray
+opts=()
+
+# An untracked file below an excepted directory is neither named nor committed.
+fixture
+mkdir "$w/app/scratch"
+printf 'x\n' >"$w/app/scratch/f"
+run "" --except scratch "$w/record" .
+committed except-directory .github/workflows.new/build.yml Dockerfile lib
+if [ "$(git -C "$w/app" status --porcelain -- scratch)" != '?? scratch/' ]; then
+    test_fail except-directory "scratch is now: $(git -C "$w/app" status --porcelain -- scratch)"
+fi
+
+# A file excepted with a trailing slash is left out as the file itself, though
+# git reads such a pathspec as a directory's.
+fixture
+printf 'x\n' >"$w/app/stray"
+run "" --except stray/ "$w/record" .
+committed except-file-slash .github/workflows.new/build.yml Dockerfile lib
+if [ "$(git -C "$w/app" status --porcelain -- stray)" != '?? stray' ]; then
+    test_fail except-file-slash "stray is now: $(git -C "$w/app" status --porcelain -- stray)"
+fi
+
+# A change already staged at an excepted path is still refused, since the
+# commit would carry it, however the path is written.
+for except in lib lib/; do
+    fixture
+    git -C "$w/app" add lib
+    test_check "except-staged-$except" 1 '' "lib"$'\n'"$staged" \
+        env -C "$w/app" "$commit" --except "$except" "$w/record" .
+    unchanged "except-staged-$except"
+    if [ "$(git -C "$w/app" diff --cached --ignore-submodules=none --name-only)" != lib ]; then
+        test_fail "except-staged-$except" "the index is now: $(git -C "$w/app" diff --cached --ignore-submodules=none --name-only)"
+    fi
+done
+
+# An excepted path that a recorded one is at, above or below is refused before
+# anything is staged or removed, one written from // as well.
+for how in exact slashes above below; do
+    fixture
+    app=$(readlink -f "$w/app")
+    case $how in
+    exact) except=Dockerfile recorded=$app/Dockerfile ;;
+    slashes) except=/$app/Dockerfile recorded=$app/Dockerfile ;;
+    above) except=.github recorded=$app/.github/workflows.new/build.yml ;;
+    below)
+        mkdir -p "$w/app/Dockerfile.lock/m"
+        printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+            "$app/Dockerfile.lock" "" "${moves[@]}" >"$w/record"
+        except=Dockerfile.lock/m recorded=$app/Dockerfile.lock
+        ;;
+    esac
+    record_was=$(<"$w/record")
+    test_check "except-recorded-$how" 1 '' \
+        "docker/upgrade-commit: $except: excepted, but $recorded is to be committed" \
+        env -C "$w/app" "$commit" --except "$except" "$w/record" .
+    unchanged "except-recorded-$how"
+    # unchanged reports a record that is gone, and reading it would end the test
+    # before the cases after this one.
+    if [ -f "$w/record" ] && [ "$(<"$w/record")" != "$record_was" ]; then
+        test_fail "except-recorded-$how" "the record was changed"
+    elif [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
+        test_fail "except-recorded-$how" "the index is now: $(git -C "$w/app" diff --cached --name-only)"
+    fi
+done
+
+# A deleted directory still holds tracked deletions, so an overlap through it is
+# refused too, and a path read through .. below it, whose place cannot be told.
+for how in below above dots; do
+    fixture
+    app=$(readlink -f "$w/app")
+    mkdir "$w/app/locks"
+    printf 'a\n' >"$w/app/locks/a"
+    printf 'b\n' >"$w/app/locks/b"
+    git -C "$w/app" add locks
+    git -C "$w/app" commit -q -m locks
+    git -C "$w/app" push -q origin main
+    pushed=$(git -C "$w/app.git" rev-parse main)
+    rm -r "$w/app/locks"
+    case $how in
+    below)
+        recorded=$app/locks except=locks/a
+        want="docker/upgrade-commit: locks/a: excepted, but $recorded is to be committed"
+        ;;
+    above)
+        recorded=$app/locks/a except=locks
+        want="docker/upgrade-commit: locks: excepted, but $recorded is to be committed"
+        ;;
+    dots)
+        recorded=$app/locks except=locks/../x
+        want="docker/upgrade-commit: locks/../x: read through . or .. below what is no directory, so cannot be checked against --except"
+        ;;
+    esac
+    printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+        "$recorded" "" "${moves[@]}" >"$w/record"
+    test_check "except-deleted-$how" 1 '' "$want" \
+        env -C "$w/app" "$commit" --except "$except" "$w/record" .
+    unchanged "except-deleted-$how"
+    if [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
+        test_fail "except-deleted-$how" "the index is now: $(git -C "$w/app" diff --cached --name-only)"
+    fi
+done
+
+# An excepted path that a PATH is at is refused, since that PATH would commit
+# nothing.
+fixture
+test_check except-path 1 '' \
+    "docker/upgrade-commit: lib: excepted, but lib is to be committed" \
+    env -C "$w/app" "$commit" --except lib "$w/record" lib
+unchanged except-path
+
+# An excepted path outside the tree fails the run before anything is staged.
+# git's words vary by release, so only the path is matched.
+fixture
+run "" --except ../x "$w/record" .
+if [ "$rc" = 0 ] || [[ "$err" != *../x* ]]; then
+    test_fail except-outside "exit $rc: $err"
+fi
+unchanged except-outside
+if [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
+    test_fail except-outside "the index is now: $(git -C "$w/app" diff --cached --name-only)"
+fi
+
 # A recorded path git cannot add fails the run, and the record stays. git's
 # words vary by release, so only the path is matched.
 fixture
@@ -648,14 +792,17 @@ if [ "$rc" = 0 ] || [[ "$err" != *absent* ]]; then
 fi
 unchanged add-fails
 
-for how in none empty; do
+for how in none empty except-none except-empty except-only; do
     fixture
-    if [ "$how" = none ]; then
-        set --
-    else
-        set -- ""
-    fi
-    test_usage "usage-$how" 'docker/upgrade-commit RECORD [PATH...]' \
+    case $how in
+    none) set -- ;;
+    empty) set -- "" ;;
+    except-none) set -- --except ;;
+    except-empty) set -- --except "" "$w/record" ;;
+    except-only) set -- --except lib ;;
+    esac
+    test_usage "usage-$how" \
+        'docker/upgrade-commit [--except PATH]... RECORD [PATH...]' \
         env -C "$w/app" "$commit" "$@"
     unchanged "usage-$how"
 done
