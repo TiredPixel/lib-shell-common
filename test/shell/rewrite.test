@@ -40,17 +40,20 @@ holds unchanged a "$inode"
 test_check fails 1 '' 'said' rewrite "$f" sh -c 'echo said >&2; echo x; exit 3'
 holds fails a "$inode"
 
-# bash's own message for the failed redirection names the file.
-chmod -w -- "$f"
-rc=0
-rewrite "$f" sed s/a/c/ 2>"$test_tmp/err" || rc=$?
-chmod u+w -- "$f"
-if [ "$rc" != 1 ]; then
-    test_fail write-fails "exit $rc, not 1: $(<"$test_tmp/err")"
-elif [[ $(<"$test_tmp/err") != *": $f: Permission denied" ]]; then
-    test_fail write-fails "stderr is: $(<"$test_tmp/err")"
+# A file that cannot be written; root writes any. bash's own message for the
+# failed redirection names the file.
+if [ "$(id -u)" -ne 0 ]; then
+    chmod -w -- "$f"
+    rc=0
+    rewrite "$f" sed s/a/c/ 2>"$test_tmp/err" || rc=$?
+    chmod u+w -- "$f"
+    if [ "$rc" != 1 ]; then
+        test_fail write-fails "exit $rc, not 1: $(<"$test_tmp/err")"
+    elif [[ $(<"$test_tmp/err") != *": $f: Permission denied" ]]; then
+        test_fail write-fails "stderr is: $(<"$test_tmp/err")"
+    fi
+    holds write-fails a "$inode"
 fi
-holds write-fails a "$inode"
 
 # Stands in for cat. Copying f fails while copy_fails is set. Each of the next
 # write_fails writes to f leaves a part of the new content and fails, as on a
