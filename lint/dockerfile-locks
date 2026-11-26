@@ -44,10 +44,12 @@
 #       given
 #   npm ci or install-ci-test, or any alias npm gives them, such as ic, cit or
 #   sit
-#       unless given --no-update-notifier, since npm otherwise asks the
-#       registry for a newer npm whenever its cache does not show it asked in
-#       the last week, which a fresh image's never does, in a RUN
-#       --network=none included
+#       unless given --engine-strict and --no-update-notifier, in a RUN
+#       --network=none too, since npm otherwise installs, warning only, a
+#       package whose engines the image's Node or npm do not meet, which
+#       docker/upgrade refuses in resolving the lock, and asks the registry
+#       for a newer npm whenever its cache does not show it asked in the last
+#       week, which a fresh image's never does
 #   pip lock, pip-compile, uv pip compile, uv lock, uv export, poetry lock or
 #   export, pipenv lock, and pdm lock or export
 #       unless the RUN is --network=none, since a lock resolved during the
@@ -88,8 +90,8 @@
 # redirection before the command word, a RUN with several heredocs, whose
 # bodies are read as one by the first command holding a << word, a << word
 # quoted or inside a script, a << word with no command other than as the whole
-# RUN, and npm's update-notifier set through npm_config_update_notifier or an
-# .npmrc.
+# RUN, and npm's engine-strict and update-notifier set through
+# npm_config_engine_strict, npm_config_update_notifier or an .npmrc.
 #
 # A RUN is let through by a comment line among those directly above its first
 # line, the nearest such comment taken, REASON required, so one with no reason
@@ -332,14 +334,18 @@ check_named() {
         return 0
         ;;
     # npm ci, install-ci-test and their aliases, which install a lock as given
-    # but ask for a newer npm, offline or not.
+    # but, offline or not, install a package whose engines the image's Node or
+    # npm do not meet, which the lock was resolved to refuse, and ask for a
+    # newer npm.
     "npm ci "* | "npm clean-install "* | "npm ic "* | "npm install-clean "* | \
         "npm isntall-clean "* | "npm install-ci-test "* | "npm cit "* | \
         "npm clean-install-test "* | "npm sit "*)
-        ! has --no-update-notifier "$@" ||
-            return 0
-        why "npm ${pos[0]} without --no-update-notifier, so npm asks the" \
-            "registry for a newer npm"
+        has --engine-strict "$@" ||
+            why "npm ${pos[0]} without --engine-strict, so npm only warns of" \
+                "a package whose engines the image's Node or npm do not meet"
+        has --no-update-notifier "$@" ||
+            why "npm ${pos[0]} without --no-update-notifier, so npm asks the" \
+                "registry for a newer npm"
         return 0
         ;;
     esac

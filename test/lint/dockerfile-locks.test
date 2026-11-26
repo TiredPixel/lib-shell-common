@@ -94,7 +94,7 @@ RUN --network=none \\
     && $venv \\
     && pipx install $pipx_args mdformat \\
     && pipx inject $pipx_args mdformat mdformat-gfm mdformat-frontmatter
-RUN npm ci --prefix /opt/js --ignore-scripts --no-update-notifier
+RUN npm ci --prefix /opt/js --engine-strict --ignore-scripts --no-update-notifier
 DOCKERFILE
 
 pass nothing "apt-get update && apt-get install -y pipx"
@@ -320,17 +320,24 @@ for c in i in ins inst insta instal isnt isnta isntal isntall u up upgrade \
     udpate update install-test it link ln dedupe ddp; do
     refuse "npm-$c" "npm $c x" "${npm_install/install/$c}"
 done
-pass npm-ci "npm ci --no-update-notifier && npm run build && npm test"
+pass npm-ci "npm ci --engine-strict --no-update-notifier && npm run build && npm test"
 pass npm-other "npm un x && npm uninstall x && npm ls && npm ll && npm list"
-# npm ci installs the lock as given, but asks for a newer npm unless told not
-# to, offline too.
-npm_ci="npm ci without --no-update-notifier, so npm asks the registry for a newer npm"
-refuse npm-ci-notifier "npm ci --prefix /opt/js" "$npm_ci"
-check npm-ci-notifier-offline 1 "lint/dockerfile-locks: Dockerfile:2: $npm_ci" < <(printf 'FROM x\nRUN --network=none npm ci\n')
+# npm ci installs the lock as given, but installs a package whose engines the
+# image does not meet and asks for a newer npm unless told not to, offline too,
+# each reason given where both flags are missing.
+npm_engine="npm ci without --engine-strict, so npm only warns of a package whose engines the image's Node or npm do not meet"
+npm_notifier="npm ci without --no-update-notifier, so npm asks the registry for a newer npm"
+npm_ci="$npm_engine; $npm_notifier"
+refuse npm-ci-engine "npm ci --prefix /opt/js --no-update-notifier" "$npm_engine"
+refuse npm-ci-notifier "npm ci --prefix /opt/js --engine-strict" "$npm_notifier"
+refuse npm-ci-both "npm ci --prefix /opt/js" "$npm_ci"
+check npm-ci-engine-offline 1 "lint/dockerfile-locks: Dockerfile:2: $npm_engine" < <(printf 'FROM x\nRUN --network=none npm ci --no-update-notifier\n')
+check npm-ci-notifier-offline 1 "lint/dockerfile-locks: Dockerfile:2: $npm_notifier" < <(printf 'FROM x\nRUN --network=none npm ci --engine-strict\n')
+check npm-ci-both-offline 1 "lint/dockerfile-locks: Dockerfile:2: $npm_ci" < <(printf 'FROM x\nRUN --network=none npm ci\n')
 for c in clean-install ic install-clean isntall-clean install-ci-test cit \
     clean-install-test sit; do
-    refuse "npm-$c" "npm $c" "${npm_ci/ci/$c}"
-    pass "npm-$c-notifier" "npm $c --no-update-notifier"
+    refuse "npm-$c" "npm $c" "${npm_ci//ci/$c}"
+    pass "npm-$c-flags" "npm $c --engine-strict --no-update-notifier"
 done
 
 # Lock generators.
