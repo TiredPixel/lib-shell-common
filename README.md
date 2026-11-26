@@ -305,7 +305,7 @@ RUN --mount=type=bind,source=Dockerfile.lock,target=/lock \
 ENV PATH=/opt/js/node_modules/.bin:$PATH
 ```
 
-`--no-update-notifier` keeps npm from asking the registry for a newer npm, which it otherwise does whenever its cache does not show it asked in the last week, which a fresh image's never does; `lint/dockerfile-locks` requires it.
+`--engine-strict` makes npm refuse a package whose `engines` the image's Node or npm do not meet, which it otherwise installs with only a warning, so the build fails on one as `docker/upgrade` does in resolving the lock (*Locking Python and npm tools*). `--no-update-notifier` keeps npm from asking the registry for a newer npm, which it otherwise does whenever its cache does not show it asked in the last week, which a fresh image's never does. `lint/dockerfile-locks` requires both, in a `RUN --network=none` too.
 
 ## Turning off update checks and self-upgrades
 
