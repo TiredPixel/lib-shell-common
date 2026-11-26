@@ -696,12 +696,13 @@ for except in lib lib/; do
 done
 
 # An excepted path that a recorded one is at, above or below is refused before
-# anything is staged or removed.
-for how in exact above below; do
+# anything is staged or removed, one written from // as well.
+for how in exact slashes above below; do
     fixture
     app=$(readlink -f "$w/app")
     case $how in
     exact) except=Dockerfile recorded=$app/Dockerfile ;;
+    slashes) except=/$app/Dockerfile recorded=$app/Dockerfile ;;
     above) except=.github recorded=$app/.github/workflows.new/build.yml ;;
     below)
         mkdir -p "$w/app/Dockerfile.lock/m"
@@ -721,6 +722,43 @@ for how in exact above below; do
         test_fail "except-recorded-$how" "the record was changed"
     elif [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
         test_fail "except-recorded-$how" "the index is now: $(git -C "$w/app" diff --cached --name-only)"
+    fi
+done
+
+# A deleted directory still holds tracked deletions, so an overlap through it is
+# refused too, and a path read through .. below it, whose place cannot be told.
+for how in below above dots; do
+    fixture
+    app=$(readlink -f "$w/app")
+    mkdir "$w/app/locks"
+    printf 'a\n' >"$w/app/locks/a"
+    printf 'b\n' >"$w/app/locks/b"
+    git -C "$w/app" add locks
+    git -C "$w/app" commit -q -m locks
+    git -C "$w/app" push -q origin main
+    pushed=$(git -C "$w/app.git" rev-parse main)
+    rm -r "$w/app/locks"
+    case $how in
+    below)
+        recorded=$app/locks except=locks/a
+        want="docker/upgrade-commit: locks/a: excepted, but $recorded is to be committed"
+        ;;
+    above)
+        recorded=$app/locks/a except=locks
+        want="docker/upgrade-commit: locks: excepted, but $recorded is to be committed"
+        ;;
+    dots)
+        recorded=$app/locks except=locks/../x
+        want="docker/upgrade-commit: locks/../x: read through . or .. below what is no directory, so cannot be checked against --except"
+        ;;
+    esac
+    printf '%s\n' "$app/Dockerfile" "$app/.github/workflows.new/build.yml" \
+        "$recorded" "" "${moves[@]}" >"$w/record"
+    test_check "except-deleted-$how" 1 '' "$want" \
+        env -C "$w/app" "$commit" --except "$except" "$w/record" .
+    unchanged "except-deleted-$how"
+    if [ -n "$(git -C "$w/app" diff --cached --name-only)" ]; then
+        test_fail "except-deleted-$how" "the index is now: $(git -C "$w/app" diff --cached --name-only)"
     fi
 done
 

@@ -114,44 +114,74 @@ top=$(cd -P -- "$top" && printf '%s/' "${PWD%/}")
 # Sets root_path to path $1, read from the current directory as git add reads
 # it, as its path from the root, empty for the root itself, through the
 # filesystem since a record's path may be absolute, root_leaf to its last
-# component where $1 is no directory, and root_ok to 1, or to empty where its
-# leading directories are missing or it lies outside the tree. Always returns
-# 0, so it is called bare and root_ok tested after it: called as the left of ||
-# it would run with errexit off, and a cd that failed would go unnoticed.
+# component where $1 is no directory, and root_ok to 1, or to empty where it
+# lies outside the tree or cannot be read. A directory missing from $1 may still
+# hold tracked deletions, so $1 is read from the deepest directory in it that
+# exists, the rest appended as written; root_lost is set to 1 where that rest
+# holds . or .., which only the missing directories could resolve. Always
+# returns 0, so it is called bare and root_ok tested after it: called as the
+# left of || it would run with errexit off, and a cd that failed would go
+# unnoticed.
 rooted() {
-    local path=$1 dir
+    local path=$1 dir rest=""
     root_path=""
     root_leaf=""
     root_ok=""
+    root_lost=""
     while [[ $path == */ ]] && [ "$path" != / ]; do
         path=${path%/}
     done
-    # ./ keeps a leading dash and CDPATH from cd.
+    # ./ keeps a leading dash and CDPATH from cd. A leading // is cut to /, since
+    # $PWD keeps it and the path would never start with top.
     [[ $path == /* ]] || path=./$path
+    while [[ $path == //* ]]; do
+        path=${path#/}
+    done
     if [ -L "$path" ] || ! [ -d "$path" ]; then
         root_leaf=${path##*/}
         path=${path%/*}/
     fi
-    [ -d "$path" ] || return 0
+    while ! [ -d "$path" ]; do
+        while [[ $path == */ ]] && [ "$path" != / ]; do
+            path=${path%/}
+        done
+        [[ $path == */* ]] || return 0
+        rest=${path##*/}/$rest
+        path=${path%/*}/
+    done
+    if [ -n "$rest" ] && [[ /$rest$root_leaf/ =~ /\.{1,2}/ ]]; then
+        root_lost=1
+        return 0
+    fi
     # The closing slash keeps a name ending in a newline through $(...).
-    dir=$(cd -P -- "$path" && printf '%s/' "${PWD%/}")$root_leaf
+    dir=$(cd -P -- "$path" && printf '%s/' "${PWD%/}")$rest$root_leaf
     [[ $dir == "$top"* ]] || return 0
     dir=${dir#"$top"}
     root_path=${dir%/}
     root_ok=1
 }
 
+# Roots path $1 as rooted does, refusing one that sets root_lost.
+checked() {
+    rooted "$1"
+    if [ -n "$root_lost" ]; then
+        echo "$prog: $1: read through . or .. below what is no directory," \
+            "so cannot be checked against --except" >&2
+        exit 1
+    fi
+}
+
 # An excepted path that a recorded one is at, above or below is refused, since
 # RECORD is removed once used and that path would never be committed; so is one
-# that a PATH is at or below, since that PATH would commit nothing. One whose
-# leading directories are missing is passed over, since nothing below it exists
-# to be left out, and so is one outside the tree, since git refuses that loudly
-# at the first diff below, before anything is staged or removed.
+# that a PATH is at or below, since that PATH would commit nothing. A path read
+# through . or .. below what is no directory is refused, since where it lies
+# cannot be told. One outside the tree is passed over, since git refuses that
+# loudly at the first diff below, before anything is staged or removed.
 if [ ${#except[@]} -gt 0 ]; then
     held=()
     held_as=()
     for path in "${paths[@]}"; do
-        rooted "$path"
+        checked "$path"
         [ -n "$root_ok" ] || continue
         held+=("$root_path")
         held_as+=("$path")
@@ -159,13 +189,13 @@ if [ ${#except[@]} -gt 0 ]; then
     given=()
     given_as=()
     for path in "${extra[@]}"; do
-        rooted "$path"
+        checked "$path"
         [ -n "$root_ok" ] || continue
         given+=("$root_path")
         given_as+=("$path")
     done
     for path in "${except[@]}"; do
-        rooted "$path"
+        checked "$path"
         [ -n "$root_ok" ] || continue
         for i in "${!held[@]}"; do
             p=${held[$i]}
@@ -231,8 +261,8 @@ allowed_dirs=()
 
 # Lets through path $1, read from the current directory as git add reads it,
 # and with $2 set and $1 a directory, what is below it, each held by its path
-# from the root. One whose leading directories are missing adds nothing, as git
-# add then refuses it.
+# from the root. One rooted cannot place adds nothing, and nothing untracked
+# lies below a missing directory.
 allow() {
     rooted "$1"
     [ -n "$root_ok" ] || return 0
