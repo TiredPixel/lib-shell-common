@@ -17,8 +17,10 @@
 # than 22.2. With npm, it is the package-lock.json npm writes from
 # registry.npmjs.org for PACKAGE_JSON, the package.json's contents, in a
 # directory named NAME, as a lock's own is, since npm names the lock after it;
-# no install script is run, and npm is not asked for a newer npm. Everything
-# else goes to stderr.
+# no install script is run, npm is not asked for a newer npm, and a package,
+# optional ones apart, whose engines the image's Node or npm do not meet makes
+# npm fail, as npm ci --engine-strict would fail the build. Everything else
+# goes to stderr.
 set -Eeuo pipefail
 shopt -s inherit_errexit failglob
 
@@ -173,13 +175,16 @@ npm)
     printf '%s\n' "$3" >"$dir/package.json"
     # No .npmrc is read, so a scoped registry cannot redirect any package: the
     # user and global ones are empty files of their own, since npm refuses to
-    # load one file as both.
+    # load one file as both. --engine-strict, since the lock resolves under the
+    # image's own Node and npm: without it npm only warns of a package whose
+    # engines they do not meet, which would then stop the build rather than the
+    # upgrade.
     : >"$top/user.npmrc"
     : >"$top/global.npmrc"
     NPM_CONFIG_USERCONFIG=$top/user.npmrc \
         NPM_CONFIG_GLOBALCONFIG=$top/global.npmrc \
-        npm install --prefix "$dir" --package-lock-only --ignore-scripts \
-        --no-audit --no-fund --no-update-notifier \
+        npm install --prefix "$dir" --package-lock-only --engine-strict \
+        --ignore-scripts --no-audit --no-fund --no-update-notifier \
         --registry=https://registry.npmjs.org/ </dev/null
     cat -- "$dir/package-lock.json" >&3
     ;;

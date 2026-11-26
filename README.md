@@ -225,6 +225,8 @@ FROM docker.io/library/python@sha256:DIGEST AS wheels
 FROM docker.io/library/node@sha256:DIGEST AS js
 ```
 
+An npm lock is refused where a package it holds, optional ones apart, declares `engines` the image's Node or npm do not meet, as `npm ci --engine-strict` would refuse it at the build; the package, or the whole lock, is then held back (*Holding a pin back*), or the image moved to a newer Node or npm.
+
 Which images can resolve a lock, how `stage=` is followed, and which requirement markers fail the run, since the lock would not hold on another architecture or kernel, are described at the top of `docker/upgrade`.
 
 `docker/upgrade` writes the first lock, as it moves every other pin, and the lock is committed with the `Dockerfile`:
@@ -377,8 +379,10 @@ curl -fsSL https://pypi.org/pypi/mdformat/1.0.0/json | jq -r '"mdformat==1.0.0 "
 A package in an npm lock is moved by editing its version in `package.json`, then rewriting `package-lock.json` in the lock's own directory, since npm names the lock after it:
 
 ```sh
-npm install --prefix Dockerfile.lock/js --package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier
+npm install --prefix Dockerfile.lock/js --package-lock-only --engine-strict --ignore-scripts --no-audit --no-fund --no-update-notifier
 ```
+
+`--engine-strict` refuses a package whose `engines` the Node or npm running it do not meet, so it answers for the build only when run in the image that installs the lock.
 
 ## Checking Dockerfiles for unlocked installs
 
